@@ -2,7 +2,7 @@
 
 > 基于 Suricata + Zeek + Elastic Stack + AI 的轻量级 SOC 安全运营平台，一键 Docker 化部署。
 
-SenseMind 将网络流量深度分析（Suricata IDS / Zeek）、日志聚合检索（Filebeat + Logstash + Elasticsearch + Kibana）与 AI 智能研判融为一体。提供各类日志接入能力，全流程自动化，排查人力这个最薄弱环节，自动优化策略，实现对未知风险攻击的发现告警
+SenseMind 将网络流量深度分析（Suricata IDS / Zeek）、日志聚合检索（Filebeat + Logstash + Elasticsearch + Kibana）与 AI 智能研判融为一体。提供各类日志接入能力，全流程自动化，排除人力这个最薄弱环节，自动优化策略，实现对未知风险攻击的发现告警
 
 ## 特性
 
