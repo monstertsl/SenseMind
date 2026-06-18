@@ -153,15 +153,14 @@ if [ ! -f "$CERTS_DIR/elastic-certificates.p12" ] || [ ! -f "$CERTS_DIR/ca.crt" 
 else
     echo "[+] SSL 证书已存在，跳过生成"
 fi
-# 自动检测旧的 Suricata/Zeek 命名卷，清理旧容器和旧卷
-OLD_VOLS=$(docker volume ls --format '{{.Name}}' | grep -E 'suricata_logs$|zeek_logs$' || true)
-if [ -n "$OLD_VOLS" ]; then
-    echo "[*] 检测到旧的 Suricata/Zeek 容器卷，正在清理旧容器和旧卷..."
-    docker compose down || true
-    for VOL in $OLD_VOLS; do
-        docker volume rm "$VOL" >/dev/null 2>&1 || true
-    done
-fi
+
+########################################
+# 0.2 清理残留容器
+#     - 非全新部署时，上次失败可能残留容器，按服务名强制移除避免重名冲突
+########################################
+echo "[*] 清理可能残留的旧容器..."
+docker compose down --remove-orphans 2>/dev/null >/dev/null || true
+docker compose config --services 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true
 
 echo "[*] =============================================="
 
@@ -454,7 +453,7 @@ echo "[*] 5. 更新 Suricata 规则 suricata-update (-f)，将显示实时输出
 docker exec --user suricata suricata suricata-update update-sources || true
 
 echo "[*] 正在启用免费 Suricata 规则源..."
-ENABLED_MSG=$(docker exec -i suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源\"")
+ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源\"")
 echo "$ENABLED_MSG"
 
 TMP_LOG=$(mktemp)
