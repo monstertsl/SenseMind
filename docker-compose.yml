@@ -1,0 +1,163 @@
+networks:
+  elastic:
+    driver: bridge
+
+volumes:
+  esdata:
+  filebeat-data:
+
+services:
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.16
+    container_name: elasticsearch
+    restart: unless-stopped
+
+    environment:
+      - node.name=soc-node
+      - cluster.name=soc-cluster
+      - discovery.type=single-node
+      - ingest.geoip.downloader.enabled=false
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.keystore.path=elastic-certificates.p12
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.keystore.path=elastic-certificates.p12
+      # 首次启动时以此引导 elastic 用户密码；后续启动 ES 会忽略此变量
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    ports:
+      - "127.0.0.1:9200:9200"
+
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+      - ./certs/elastic-certificates.p12:/usr/share/elasticsearch/config/elastic-certificates.p12:ro
+
+    networks:
+      - elastic
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9200' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.16
+    container_name: kibana
+    restart: unless-stopped
+
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+    environment:
+      - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
+      - ELASTICSEARCH_SERVICEACCOUNTTOKEN=${KIBANA_TOKEN}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca.crt
+      - ELASTICSEARCH_SSL_VERIFICATIONMODE=certificate
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_KEY_1}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_KEY_2}
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_KEY_3}
+      - XPACK_TELEMETRY_ENABLED=false
+      - XPACK_SECURITYSOLUTION_TELEMETRY_ENABLED=false
+
+    ports:
+      - "5601:5601"
+
+    volumes:
+      - ./certs/ca.crt:/usr/share/kibana/config/certs/ca.crt:ro
+
+    networks:
+      - elastic
+
+  suricata:
+    image: jasonish/suricata:latest
+    container_name: suricata
+    restart: unless-stopped
+    network_mode: host
+
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+
+    volumes:
+      - /data/suricata/logs:/var/log/suricata
+      - /data/suricata/lib:/var/lib/suricata
+      - /data/suricata/etc:/etc/suricata
+
+    command:
+      - -i
+      - ${INTERFACE:-ens192}
+
+  zeek:
+    image: zeek/zeek:latest
+    container_name: zeek
+    restart: unless-stopped
+    network_mode: host
+    user: root
+    working_dir: /opt/logs
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    volumes:
+      - /data/zeek/logs:/opt/logs
+
+    command:
+      - zeek
+      - -i
+      - ${INTERFACE:-ens192}
+      - policy/tuning/json-logs
+      - policy/protocols/conn/community-id-logging
+      - LogAscii::json_timestamps=JSON::TS_ISO8601
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.19.16
+    container_name: filebeat
+    user: root
+    restart: unless-stopped
+
+    networks:
+      - elastic
+
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /data/suricata/logs:/var/log/suricata:ro
+      - /data/zeek/logs:/var/log/zeek:ro
+      - filebeat-data:/usr/share/filebeat/data
+
+    command: ["--strict.perms=false"]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.19.16
+    container_name: logstash
+    restart: unless-stopped
+
+    ports:
+      - "5044:5044"
+
+    volumes:
+      - ./logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./certs/ca.crt:/usr/share/logstash/config/certs/ca.crt:ro
+
+    environment:
+      - LOGSTASH_API_KEY=${LOGSTASH_API_KEY}
+      - LS_JAVA_OPTS=-Xms1g -Xmx1g
+
+    networks:
+      - elastic

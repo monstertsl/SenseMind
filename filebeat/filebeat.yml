@@ -1,0 +1,46 @@
+filebeat.config.modules:
+  path: /etc/filebeat/modules.d/*.yml
+  reload.enabled: false
+
+
+# =========================
+# Modules
+# =========================
+filebeat.modules:
+
+- module: suricata
+  eve:
+    enabled: true
+    var.paths: ["/var/log/suricata/eve.json"]
+
+- module: zeek
+  connection:
+    enabled: true
+    var.paths: ["/var/log/zeek/conn.log"]
+  dns:
+    enabled: true
+    var.paths: ["/var/log/zeek/dns.log"]
+  http:
+    enabled: true
+    var.paths: ["/var/log/zeek/http.log"]
+  ssl:
+    enabled: true
+    var.paths: ["/var/log/zeek/ssl.log"]
+
+
+# =========================
+# OUTPUT
+# =========================
+#output.elasticsearch:
+#  hosts: ["http://elasticsearch:9200"]
+#  api_key: "${FILEBEAT_API_KEY}"
+
+output.logstash:
+  hosts:
+    - "logstash:5044"
+
+# =========================
+setup.template.enabled: true
+setup.ilm.enabled: false
+logging.to_stderr: true
+logging.level: info
