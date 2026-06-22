@@ -4,25 +4,20 @@
 
 node.name: soc-logstash
 
+# 多pipeline配置
 pipeline.workers: 2
-
 pipeline.batch.size: 125
-
 pipeline.batch.delay: 50
-
 
 # 持久化队列
 queue.type: persisted
 
-
 # 日志
 log.level: info
 
-
-# API关闭
+# API
 api.enabled: true
 api.http.host: "0.0.0.0"
 
-
-# 禁止自动加载默认pipeline
+# 禁止自动加载默认pipeline（使用 pipelines.yml）
 config.reload.automatic: false

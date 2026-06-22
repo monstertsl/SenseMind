@@ -1,0 +1,376 @@
+{
+  "_comment": "SOC重点安全检测分类映射字典 - Logstash ruby filter 加载此文件做告警分类",
+  "_usage": "1. category_exact: 按 Suricata alert.category 精确匹配; 2. signature_keywords: 按 alert.signature 关键词模糊匹配(不区分大小写)",
+  "category_exact": {
+    "Web Application Attack": {
+      "soc_category": "01_web_attack",
+      "soc_name": "Web应用攻击",
+      "mitre_id": "T1190",
+      "stage": "initial_access"
+    },
+    "Attempted Administrator Privilege Gain": {
+      "soc_category": "02_auth_attack",
+      "soc_name": "身份认证攻击",
+      "mitre_id": "T1110",
+      "stage": "credential_access"
+    },
+    "A Network Trojan was detected": {
+      "soc_category": "05_c2",
+      "soc_name": "恶意通信与C2",
+      "mitre_id": "T1071",
+      "stage": "command_and_control"
+    },
+    "Attempted Information Leak": {
+      "soc_category": "13_info_leak",
+      "soc_name": "信息泄露",
+      "mitre_id": "T1552",
+      "stage": "discovery"
+    },
+    "Attempted Denial of Service": {
+      "soc_category": "09_ddos",
+      "soc_name": "DDoS攻击",
+      "mitre_id": "T1498",
+      "stage": "impact"
+    },
+    "Attempted User Privilege Gain": {
+      "soc_category": "02_auth_attack",
+      "soc_name": "身份认证攻击",
+      "mitre_id": "T1110",
+      "stage": "credential_access"
+    },
+    "Potentially Bad Traffic": {
+      "soc_category": "01_web_attack",
+      "soc_name": "Web应用攻击",
+      "mitre_id": "T1190",
+      "stage": "initial_access"
+    }
+  },
+  "signature_keywords": [
+    {
+      "keywords": [
+        "sql injection",
+        "sqli",
+        "xss",
+        "cross site",
+        "rce",
+        "remote code execution",
+        "code injection",
+        "command injection",
+        "xxe",
+        "ssti",
+        "template inject",
+        "file upload",
+        "webshell",
+        "path traversal",
+        "directory traversal",
+        "lfi",
+        "rfi",
+        "file include",
+        "file read",
+        "file download",
+        "file write",
+        "behinder",
+        "antsword",
+        "godzilla",
+        "xml external entity",
+        "xxe injection",
+        "object injection",
+        "admin:admin",
+        "magic bytes",
+        "wp-admin",
+        "wp-content",
+        "wordpress",
+        "expression injection",
+        "ognl",
+        "file disclosure",
+        "local file",
+        "ssrf",
+        "server-side request",
+        "eval(",
+        "tgi hunt",
+        "php magic bytes",
+        "java invocation",
+        "http client body",
+        "..%2f",
+        "%2e%2e",
+        "etc/passwd"
+      ],
+      "soc_category": "01_web_attack",
+      "soc_name": "Web应用攻击",
+      "mitre_id": "T1190",
+      "stage": "initial_access"
+    },
+    {
+      "keywords": [
+        "brute force",
+        "bruteforce",
+        "brute-force",
+        "ssh login",
+        "ftp login",
+        "rdp brute",
+        "login attempt",
+        "credential stuff",
+        "password spray",
+        "weak password",
+        "default password",
+        "account enum",
+        "session attack",
+        "cookie attack",
+        "jwt",
+        "mfa bypass"
+      ],
+      "soc_category": "02_auth_attack",
+      "soc_name": "身份认证攻击",
+      "mitre_id": "T1110",
+      "stage": "credential_access"
+    },
+    {
+      "keywords": [
+        "nmap",
+        "masscan",
+        "port scan",
+        "portscan",
+        "network scan",
+        "reconnaissance",
+        "recon",
+        "banner grab",
+        "directory scan",
+        "dirb",
+        "gobuster",
+        "nikto",
+        "nessus",
+        "nuclei",
+        "awvs",
+        "burp suite",
+        "vulnerability scan",
+        "scan detected",
+        "service discovery",
+        "massive port scan",
+        "syn scan",
+        "tcp/syn",
+        "nbt-ns",
+        "unusual http port",
+        "unusual port",
+        "network discovery"
+      ],
+      "soc_category": "03_recon",
+      "soc_name": "扫描探测行为",
+      "mitre_id": "T1046",
+      "stage": "discovery"
+    },
+    {
+      "keywords": [
+        "struts",
+        "log4j",
+        "spring",
+        "thinkphp",
+        "fastjson",
+        "shiro",
+        "jackson",
+        "deserialization",
+        "weblogic",
+        "tomcat",
+        "apache vuln",
+        "nginx vuln",
+        "cve-",
+        "exploit attempt",
+        "exploit kit",
+        "exploit activity",
+        "vulnerable to",
+        "regresssion",
+        "rce attempt",
+        "rce aka",
+        "xstream",
+        "cisco asa",
+        "kibana",
+        "solarwinds",
+        "drupal",
+        "coldfusion",
+        "f5",
+        "big-ip",
+        "jira"
+      ],
+      "soc_category": "04_exploit",
+      "soc_name": "漏洞利用攻击",
+      "mitre_id": "T1068",
+      "stage": "exploitation"
+    },
+    {
+      "keywords": [
+        "trojan",
+        "c2 ",
+        "c2.",
+        "beacon",
+        "dga",
+        "fast flux",
+        "domain front",
+        "tor ",
+        "tor.",
+        "malware download",
+        "payload download",
+        "loader",
+        "backdoor",
+        "botnet",
+        "cobalt strike",
+        "metasploit",
+        "reverse shell",
+        "bind shell"
+      ],
+      "soc_category": "05_c2",
+      "soc_name": "恶意通信与C2",
+      "mitre_id": "T1071",
+      "stage": "command_and_control"
+    },
+    {
+      "keywords": [
+        "lateral",
+        "pass the hash",
+        "pass the ticket",
+        "kerberos",
+        "psexec",
+        "winrm",
+        "wmi exec",
+        "smb exec",
+        "remote service"
+      ],
+      "soc_category": "06_lateral",
+      "soc_name": "横向移动",
+      "mitre_id": "T1021",
+      "stage": "lateral_movement"
+    },
+    {
+      "keywords": [
+        "exfil",
+        "data leak",
+        "data dump",
+        "bulk upload",
+        "mass download",
+        "sensitive data"
+      ],
+      "soc_category": "07_exfil",
+      "soc_name": "数据泄露与外传",
+      "mitre_id": "T1041",
+      "stage": "exfiltration"
+    },
+    {
+      "keywords": [
+        "dns tunnel",
+        "icmp tunnel",
+        "http tunnel",
+        "ssh tunnel",
+        "covert channel",
+        "dns covert"
+      ],
+      "soc_category": "08_tunnel",
+      "soc_name": "隧道通信",
+      "mitre_id": "T1572",
+      "stage": "command_and_control"
+    },
+    {
+      "keywords": [
+        "flood",
+        "ddos",
+        "syn flood",
+        "udp flood",
+        "icmp flood",
+        "http flood",
+        "slowloris",
+        "slow http",
+        "cc attack"
+      ],
+      "soc_category": "09_ddos",
+      "soc_name": "DDoS攻击",
+      "mitre_id": "T1498",
+      "stage": "impact"
+    },
+    {
+      "keywords": [
+        "persistence",
+        "cron job",
+        "scheduled task",
+        "registry run",
+        "startup item",
+        "privilege escalation",
+        "priv esc",
+        "privilege escal",
+        "lsass",
+        "credential dump",
+        "mimikatz",
+        "sam dump",
+        "ssh key"
+      ],
+      "soc_category": "10_host_attack",
+      "soc_name": "主机攻击",
+      "mitre_id": "T1055",
+      "stage": "persistence"
+    },
+    {
+      "keywords": [
+        "powershell",
+        "cmd.exe",
+        "shell exec",
+        "script exec",
+        "macro",
+        "office macro",
+        "malicious script",
+        "command execution",
+        "java invocation",
+        "util/bash"
+      ],
+      "soc_category": "11_execution",
+      "soc_name": "命令与脚本执行",
+      "mitre_id": "T1059",
+      "stage": "execution"
+    },
+    {
+      "keywords": [
+        "certutil",
+        "bitsadmin",
+        "mshta",
+        "rundll32",
+        "regsvr32",
+        "wmic",
+        "installutil",
+        "lolbin"
+      ],
+      "soc_category": "12_lolbin",
+      "soc_name": "LOLBin攻击",
+      "mitre_id": "T1218",
+      "stage": "execution"
+    },
+    {
+      "keywords": [
+        ".git/",
+        ".svn/",
+        ".env ",
+        "source leak",
+        "backup leak",
+        "config leak",
+        "access key",
+        "secret key",
+        "token leak",
+        "password leak"
+      ],
+      "soc_category": "13_info_leak",
+      "soc_name": "信息泄露",
+      "mitre_id": "T1552",
+      "stage": "discovery"
+    },
+    {
+      "keywords": [
+        "malware",
+        "dropper",
+        "ransomware",
+        "remote access trojan",
+        "rat ",
+        "rat.",
+        "virus",
+        "malicious dll"
+      ],
+      "soc_category": "14_malware",
+      "soc_name": "恶意文件与木马行为",
+      "mitre_id": "T1204",
+      "stage": "execution"
+    }
+  ]
+}
