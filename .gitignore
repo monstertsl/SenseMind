@@ -1,6 +1,3 @@
-# 需求文档
-需求.md
-
 # 清理脚本
 remove.sh
 
@@ -10,3 +7,6 @@ certs/
 # 环境变量文件
 .env
 .env.bak
+
+# 测试调用
+hello_ai.py

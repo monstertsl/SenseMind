@@ -1,3 +1,5 @@
+name: sensemind
+
 networks:
   elastic:
     driver: bridge
@@ -152,12 +154,41 @@ services:
 
     volumes:
       - ./logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
       - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./logstash/ai-push.conf:/usr/share/logstash/pipeline/ai-push.conf:ro
+      - ./logstash/soc_categories.json:/usr/share/logstash/config/soc_categories.json:ro
       - ./certs/ca.crt:/usr/share/logstash/config/certs/ca.crt:ro
 
     environment:
       - LOGSTASH_API_KEY=${LOGSTASH_API_KEY}
+      - AI_ANALYZER_URL=http://ai-analyzer:9090/api/alert
       - LS_JAVA_OPTS=-Xms1g -Xmx1g
+
+    networks:
+      - elastic
+
+  ai-analyzer:
+    build:
+      context: ./ai-analyzer
+      dockerfile: Dockerfile
+    image: sensemind/ai-analyzer:latest
+    container_name: ai-analyzer
+    restart: unless-stopped
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./ai-analyzer/config.yaml:/usr/share/ai-analyzer/config.yaml:ro
+      - ./certs/ca.crt:/usr/share/ai-analyzer/certs/ca.crt:ro
+
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
 
     networks:
       - elastic

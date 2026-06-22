@@ -452,8 +452,13 @@ echo "[*] 5. 更新 Suricata 规则 suricata-update (-f)，将显示实时输出
 
 docker exec --user suricata suricata suricata-update update-sources || true
 
-echo "[*] 正在启用免费 Suricata 规则源..."
-ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源\"")
+echo "[*] 正在启用免费 Suricata 规则源（排除低价值源）..."
+# 排除以下低价值噪音源：
+#   oisf/trafficid           - 流量识别，产生大量低价值告警
+#   pawpatrules              - emoji系列规则，告警噪音大
+#   julioliraup/antiphishing - 钓鱼检测，质量未知且重复
+#   ipfire/dbl               - 域名黑名单，娱乐/合规分类
+ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\" && name!=\"oisf/trafficid\" && name!=\"pawpatrules\" && name!=\"julioliraup/antiphishing\" && name!=\"ipfire/dbl\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源\"")
 echo "$ENABLED_MSG"
 
 TMP_LOG=$(mktemp)
@@ -535,6 +540,27 @@ else
         else
             echo "[-] 警告：Kibana 数据视图创建失败，响应: $DV_RESPONSE"
             echo "[-] 可稍后手动在 Kibana → Stack Management → Data Views 中创建 soc-*。"
+        fi
+    fi
+
+    # 创建 soc-ai-* 数据视图（AI 分析结果）
+    AI_DV_SEARCH=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
+        "http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=soc-ai-%2A" 2>/dev/null)
+    AI_DV_COUNT=$(echo "$AI_DV_SEARCH" | jq -r '.total // 0' 2>/dev/null)
+
+    if [ "${AI_DV_COUNT:-0}" != "0" ]; then
+        echo "[+] Kibana 数据视图 soc-ai-* 已存在，跳过创建。"
+    else
+        AI_DV_RESPONSE=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
+            -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
+            -H "Content-Type: application/json" \
+            -H "kbn-xsrf: true" \
+            -d '{"attributes":{"title":"soc-ai-*","timeFieldName":"@timestamp"}}' 2>/dev/null)
+        AI_DV_ID=$(echo "$AI_DV_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
+        if [ -n "$AI_DV_ID" ]; then
+            echo "[+] Kibana 数据视图 soc-ai-* 已创建 (id: $AI_DV_ID)"
+        else
+            echo "[-] 警告：Kibana 数据视图 soc-ai-* 创建失败，响应: $AI_DV_RESPONSE"
         fi
     fi
 fi

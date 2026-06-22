@@ -1,0 +1,7 @@
+# Pipeline 1: 主管道 - Filebeat采集 → ES写入
+- pipeline.id: main
+  path.config: "/usr/share/logstash/pipeline/logstash.conf"
+
+# Pipeline 2: AI推送 - 从主pipeline接收matched告警，异步推送到AI分析中心
+- pipeline.id: ai-push
+  path.config: "/usr/share/logstash/pipeline/ai-push.conf"

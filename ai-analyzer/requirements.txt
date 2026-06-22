@@ -1,0 +1,9 @@
+langchain
+langchain-openai
+openai
+elasticsearch>=8.0,<9.0
+fastapi
+uvicorn
+pydantic
+pyyaml
+httpx
