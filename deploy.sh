@@ -435,15 +435,6 @@ docker compose up -d
 echo "[*] 4.1 强制重启 logstash 以加载最新 API Key..."
 docker compose up -d --force-recreate logstash
 
-# 更新 Logstash ai-push 超时配置（LLM 分析耗时较长，默认30s会超时断开）
-AI_PUSH_CONF="$BASE_DIR/logstash/ai-push.conf"
-if [ -f "$AI_PUSH_CONF" ]; then
-    sed -i -E 's/request_timeout => 30/request_timeout => 90/' "$AI_PUSH_CONF"
-    sed -i -E 's/socket_timeout => 30/socket_timeout => 90/' "$AI_PUSH_CONF"
-    docker compose restart logstash 2>/dev/null || true
-    echo "[+] Logstash ai-push 超时已更新为 90s"
-fi
-
 # 修改 Suricata 配置：community-id、payload、http-body-inline、local.rules
 # jasonish/suricata 容器启动时会自动复制默认配置到挂载目录
 SURICATA_YAML="/data/suricata/etc/suricata.yaml"
