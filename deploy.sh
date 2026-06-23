@@ -28,6 +28,7 @@ check_dependency docker "docker.io docker-compose-plugin"
 check_dependency curl "curl"
 check_dependency jq "jq"
 check_dependency unzip "unzip"
+check_dependency openssl "openssl"
 
 # 检查 docker compose 子命令（v2 插件）
 if ! docker compose version >/dev/null 2>&1; then
@@ -224,9 +225,9 @@ if [ -f "$BASE_DIR/filebeat/filebeat.yml" ]; then
 fi
 
 # 预创建宿主机 Suricata/Zeek 目录，以便日志、配置和规则持久化
-mkdir -p /data/suricata/logs /data/suricata/lib /data/suricata/etc /data/zeek/logs
-chmod 755 /data /data/suricata /data/zeek /data/suricata/logs /data/suricata/lib /data/suricata/etc /data/zeek/logs
-chown -R "$PUID:$PGID" /data/suricata/logs /data/suricata/lib /data/suricata/etc
+mkdir -p /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
+chmod 755 /data /data/suricata /data/zeek /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
+chown -R "$PUID:$PGID" /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc
 
 echo "[*] 2. 准备 elastic 密码并启动 Elasticsearch..."
 # ES 8.x 首次启动（安全索引不存在）时，若设置了 ELASTIC_PASSWORD 环境变量，
@@ -434,16 +435,38 @@ docker compose up -d
 echo "[*] 4.1 强制重启 logstash 以加载最新 API Key..."
 docker compose up -d --force-recreate logstash
 
-# 修改 Suricata 配置：community-id、payload、http-body-inline
+# 更新 Logstash ai-push 超时配置（LLM 分析耗时较长，默认30s会超时断开）
+AI_PUSH_CONF="$BASE_DIR/logstash/ai-push.conf"
+if [ -f "$AI_PUSH_CONF" ]; then
+    sed -i -E 's/request_timeout => 30/request_timeout => 90/' "$AI_PUSH_CONF"
+    sed -i -E 's/socket_timeout => 30/socket_timeout => 90/' "$AI_PUSH_CONF"
+    docker compose restart logstash 2>/dev/null || true
+    echo "[+] Logstash ai-push 超时已更新为 90s"
+fi
+
+# 修改 Suricata 配置：community-id、payload、http-body-inline、local.rules
 # jasonish/suricata 容器启动时会自动复制默认配置到挂载目录
 SURICATA_YAML="/data/suricata/etc/suricata.yaml"
 if [ -f "$SURICATA_YAML" ]; then
+    # 创建 local.rules 文件（AI 自动生成的本地规则）
+    # 规则目录与 suricata.yaml 的 default-rule-path 一致: /var/lib/suricata/rules
+    touch /data/suricata/lib/rules/local.rules
+    chmod 666 /data/suricata/lib/rules/local.rules
+
     sed -i -E \
       -e 's/community-id: false/community-id: true/' \
       -e '/- alert:/,/- frame:/ { s/# *(payload-buffer-size:)/\1/; s/# *(payload-printable:)/\1/ }' \
       -e 's/http-body-inline: auto/http-body-inline: yes/' \
-      "$SURICATA_YAML" && docker restart suricata
-    echo "[+] Suricata 配置已更新并重启"
+      "$SURICATA_YAML"
+
+    # 添加 local.rules 到 rule-files（相对于 default-rule-path，只需写文件名）
+    # suricata 8.x unix-command 默认 enabled: auto，无需额外配置
+    if ! grep -q 'local.rules' "$SURICATA_YAML"; then
+        sed -i '/- suricata\.rules/a\  - local.rules' "$SURICATA_YAML"
+    fi
+
+    docker restart suricata
+    echo "[+] Suricata 配置已更新并重启（含 local.rules 加载，suricatasc 热加载就绪）"
 else
     echo "[-] 警告：Suricata 配置文件 $SURICATA_YAML 未找到，跳过配置修改。"
 fi
@@ -561,6 +584,23 @@ else
             echo "[+] Kibana 数据视图 soc-ai-* 已创建 (id: $AI_DV_ID)"
         else
             echo "[-] 警告：Kibana 数据视图 soc-ai-* 创建失败，响应: $AI_DV_RESPONSE"
+        fi
+    fi
+
+    # 导入 SenseMind AI 研判仪表板
+    DASHBOARD_FILE="$BASE_DIR/kibana/sensemind-ai-dashboard.ndjson"
+    if [ -f "$DASHBOARD_FILE" ]; then
+        echo "[*] 导入 SenseMind AI 研判仪表板..."
+        IMPORT_RESP=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
+            -X POST "http://localhost:5601/api/saved_objects/_import?overwrite=true" \
+            -H "kbn-xsrf: true" \
+            -F "file=@${DASHBOARD_FILE}" 2>/dev/null)
+        IMPORT_SUCCESS=$(echo "$IMPORT_RESP" | jq -r '.success // empty' 2>/dev/null)
+        if [ "$IMPORT_SUCCESS" = "true" ]; then
+            echo "[+] SenseMind AI 研判仪表板已导入"
+            echo "    访问地址: http://<服务器IP>:5601/app/dashboards#/view/sensemind-ai-dashboard"
+        else
+            echo "[-] 警告：仪表板导入失败: $IMPORT_RESP"
         fi
     fi
 fi

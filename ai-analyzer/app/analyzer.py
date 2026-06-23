@@ -1,224 +1,417 @@
-"""AI 分析核心 - 基于 LangChain 确定性链"""
+"""AI 分析核心 - 6 阶段 LangChain 编排
 
-import json
+Stage 1: 告警标准化 (Normalize Chain)   - 字段提取 → AlertContext
+Stage 2: 告警研判 (Triage Chain)        - AI 判断是否需要深入调查
+Stage 3: 动态关联查询 (LangChain Tool)  - 根据 Triage 结果按需查询 ES
+Stage 4: 知识增强 (RAG)                 - 检索安全知识库
+Stage 5: 最终分析 (Analysis Chain)      - 综合输出结构化研判结果
+Stage 6: 规则生成 (Rule Generator)      - 确认攻击但未触发告警时自动生成规则
+"""
+
 import logging
+import time
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
 from .config import Config
-from .prompts import (
-    SYSTEM_PROMPT,
-    ANALYSIS_PROMPT_TEMPLATE,
-    format_alert_summary,
-    format_related_logs,
-)
+from .models import AlertContext, TriageResult
+from .chains.normalize import normalize_chain
+from .chains.triage import create_triage_chain
+from .chains.analysis import create_analysis_chain
+from .chains.rule_generator import create_rule_generator_chain
+from .tools.es_tools import format_logs
+from .knowledge.rag import create_knowledge_retriever
+from .es_client import ESClient
+from .attack_detector import find_unalerted_attacks
 
 logger = logging.getLogger(__name__)
 
 
 class AlertAnalyzer:
-    """告警分析器 - LangChain 确定性链"""
+    """告警分析器 - 5 阶段 Chain 编排"""
 
     def __init__(self):
         cfg = Config()
         llm_cfg = cfg.llm
 
-        # 使用 OpenAI 兼容接口（适配OpenAI兼容接口）
         self.llm = ChatOpenAI(
             api_key=llm_cfg["api_key"],
             base_url=llm_cfg["base_url"],
             model=llm_cfg["model"],
             temperature=llm_cfg.get("temperature", 0.1),
             max_tokens=llm_cfg.get("max_tokens", 2000),
+            max_retries=0,
+            timeout=llm_cfg.get("timeout", 60),
+            # Qwen3 系列默认开启思考模式，会输出 <think> 块消耗 token 导致 JSON 截断
+            model_kwargs={"extra_body": {"enable_thinking": False}},
         )
         self.model_name = llm_cfg["model"]
-        logger.info("AI 分析器已初始化，模型: %s", self.model_name)
 
-    def analyze(self, alert: dict, related_logs: list) -> dict:
-        """
-        分析告警，返回结构化研判结果
+        # 初始化各阶段 Chain
+        self.triage_chain = create_triage_chain(self.llm)
+        self.analysis_chain = create_analysis_chain(self.llm)
+
+        # 初始化知识检索
+        self.knowledge_retriever = create_knowledge_retriever(cfg.knowledge_dir)
+
+        # 初始化规则生成 Chain 和规则写入器
+        suricata_cfg = cfg.suricata
+        self.rule_gen_enabled = suricata_cfg.get("enabled", False)
+        self.rule_generator = None
+        self.rule_writer = None
+        if self.rule_gen_enabled:
+            self.rule_generator = create_rule_generator_chain(self.llm)
+            try:
+                from .suricata.rule_writer import RuleWriter
+                self.rule_writer = RuleWriter(
+                    rules_file=suricata_cfg["rules_file"],
+                    suricata_container=suricata_cfg.get("suricata_container", "suricata"),
+                )
+            except Exception as e:
+                logger.warning("RuleWriter 初始化失败，规则生成功能禁用: %s", e)
+                self.rule_gen_enabled = False
+
+        logger.info("AI 分析器已初始化 (6阶段Chain)，模型: %s，规则生成: %s",
+                     self.model_name, "启用" if self.rule_gen_enabled else "禁用")
+
+    def analyze(self, alert: dict, related_logs: list = None) -> dict:
+        """执行 5 阶段分析流水线
 
         Args:
             alert: 主告警事件（Logstash 推送或 ES 查询）
-            related_logs: 关联日志列表
+            related_logs: 外部预查的关联日志（可选，None 则由 Triage 决定是否查询）
 
         Returns:
             分析结果 dict
         """
-        soc = alert.get("soc", {})
-        alert_summary = format_alert_summary(alert)
-        related_str = format_related_logs(related_logs)
+        t_total = time.time()
 
-        user_prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-            alert_summary=alert_summary,
-            soc_category=soc.get("category", "N/A"),
-            soc_name=soc.get("name", "N/A"),
-            mitre_id=soc.get("mitre_id", "N/A"),
-            attack_stage=soc.get("stage", "N/A"),
-            related_count=len(related_logs),
-            related_logs=related_str,
-        )
+        # === Stage 1: 告警标准化 ===
+        logger.info("=== Stage 1: 告警标准化 ===")
+        ctx = normalize_chain.invoke(alert)
+        logger.info("标准化完成: %s (severity=%d, community_id=%s)",
+                     ctx.signature, ctx.severity, ctx.community_id[:20])
 
-        logger.info("开始调用 LLM 分析，告警签名: %s", alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", ""))
-
+        # === Stage 2: 告警研判 ===
+        logger.info("=== Stage 2: 告警研判 (Triage) ===")
+        triage_input = {
+            "alert_summary": ctx.to_summary(),
+            "soc_category": ctx.soc_category,
+            "soc_name": ctx.soc_name,
+            "mitre_id": ctx.mitre_id,
+            "attack_stage": ctx.attack_stage,
+        }
         try:
-            messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_prompt)]
-            response = self.llm.invoke(messages)
-            result = self._parse_response(response.content, alert, related_logs)
-            return result
+            t0 = time.time()
+            triage = self.triage_chain(triage_input)
+            logger.info("研判完成 (%.1fs): risk=%s, need_session=%s, need_history=%s, need_threat_intel=%s",
+                        time.time() - t0,
+                        triage.risk,
+                        triage.need_session_query,
+                        triage.need_history_query,
+                        triage.need_threat_intel)
         except Exception as e:
-            logger.error("LLM 分析失败: %s", e, exc_info=True)
-            return self._fallback_result(alert, str(e))
+            logger.warning("研判 Chain 失败，使用默认值: %s", e)
+            triage = TriageResult(
+                need_session_query=True,
+                need_history_query=False,
+                need_threat_intel=False,
+                risk="medium",
+                triage_reason=f"研判失败，使用默认策略: {e}",
+            )
 
-    def _parse_response(self, content: str, alert: dict, related_logs: list) -> dict:
-        """解析 LLM 返回的 JSON 结果"""
-        # 尝试提取 JSON（LLM 可能包裹在 markdown 代码块中）
-        text = content.strip()
-        if text.startswith("```"):
-            # 去掉 markdown 代码块标记
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines)
-
-        try:
-            analysis = json.loads(text)
-        except json.JSONDecodeError:
-            # JSON 解析失败，尝试提取花括号内容
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
+        # === Stage 3: 动态关联查询 ===
+        logger.info("=== Stage 3: 动态关联查询 ===")
+        if related_logs is None:
+            # 外部未预查，由 Triage 决定是否查询
+            related_logs = []
+            if triage.need_session_query and ctx.community_id:
                 try:
-                    analysis = json.loads(text[start:end])
-                except json.JSONDecodeError:
-                    logger.warning("LLM 返回内容无法解析为 JSON: %s", text[:200])
-                    return self._fallback_result(alert, "JSON解析失败", raw_response=content)
-            else:
-                logger.warning("LLM 返回内容无 JSON 结构: %s", text[:200])
-                return self._fallback_result(alert, "无JSON结构", raw_response=content)
+                    es = ESClient()
+                    related_logs = es.query_related_logs(
+                        community_id=ctx.community_id,
+                        src_ip=ctx.src_ip,
+                        timestamp=ctx.timestamp,
+                    )
+                    logger.info("关联日志查询: %d 条 (community_id=%s)",
+                                len(related_logs), ctx.community_id[:20])
+                except Exception as e:
+                    logger.warning("关联日志查询失败: %s", e)
+
+            if triage.need_history_query and ctx.src_ip:
+                try:
+                    es = ESClient()
+                    history = es.query_src_ip_history(ctx.src_ip)
+                    logger.info("源IP历史查询: %d 条 (src_ip=%s)", len(history), ctx.src_ip)
+                    # 历史记录追加到关联日志
+                    related_logs.extend(history)
+                except Exception as e:
+                    logger.warning("源IP历史查询失败: %s", e)
+        else:
+            logger.info("使用外部传入的关联日志: %d 条", len(related_logs))
+
+        # === Stage 4: 知识增强 (RAG) ===
+        logger.info("=== Stage 4: 知识增强 (RAG) ===")
+        try:
+            knowledge = self.knowledge_retriever.invoke(ctx)
+            logger.info("知识检索完成: %d 字符", len(knowledge))
+        except Exception as e:
+            logger.warning("知识检索失败: %s", e)
+            knowledge = "无可用知识"
+
+        # === Stage 5: 最终分析 ===
+        logger.info("=== Stage 5: 最终分析 ===")
+        analysis_input = {
+            "alert_summary": ctx.to_summary(),
+            "soc_category": ctx.soc_category,
+            "soc_name": ctx.soc_name,
+            "mitre_id": ctx.mitre_id,
+            "attack_stage": ctx.attack_stage,
+            "risk": triage.risk,
+            "related_count": len(related_logs),
+            "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
+            "knowledge": knowledge,
+        }
+        try:
+            t0 = time.time()
+            result = self.analysis_chain(analysis_input)
+            logger.info("分析完成 (%.1fs): 判定=%s, 置信度=%s",
+                        time.time() - t0,
+                        result.threat_verdict,
+                        result.confidence)
+            analysis = result.model_dump()
+        except Exception as e:
+            logger.error("分析 Chain 失败: %s", e, exc_info=True)
+            analysis = self._fallback_result(ctx, str(e))
 
         # 补充元数据
-        soc = alert.get("soc", {})
-        eve = alert.get("suricata", {}).get("eve", {})
-        alert_info = eve.get("alert", {})
-        src = alert.get("source", {})
-        dst = alert.get("destination", {})
-        http = eve.get("http", {})
-        tls = eve.get("tls", {})
+        self._enrich_metadata(analysis, ctx, alert, related_logs)
 
+        # === Stage 6: 规则生成 ===
+        rule_result = self._try_generate_rule(ctx, analysis, related_logs)
+        if rule_result:
+            analysis["generated_rule"] = rule_result
+
+        logger.info("=== 全流程完成 (%.1fs) ===", time.time() - t_total)
+        return analysis
+
+    def _try_generate_rule(self, ctx: AlertContext, analysis: dict,
+                           related_logs: list) -> dict | None:
+        """Stage 6: 确认攻击时，自动生成 Suricata 规则
+
+        触发条件:
+        1. 规则生成功能已启用
+        2. AI 判定为"确认威胁"
+        3. 置信度 >= 0.7
+        4. 有可用 payload 或关联日志中有未触发 alert 的攻击事件
+
+        两个生成路径:
+        - 主路径: 基于当前告警 payload 生成规则（当前规则可能不够精确）
+        - 反向触发: 检查同 community_id 的非 alert 事件，为漏报的攻击生成规则
+
+        Returns:
+            规则生成结果 dict 或 list，或 None（未触发）
+        """
+        if not self.rule_gen_enabled or not self.rule_writer:
+            return None
+
+        # 仅对确认威胁的告警生成规则
+        if analysis.get("threat_verdict") != "确认威胁":
+            return None
+
+        # 置信度门槛
+        confidence = analysis.get("confidence", 0)
+        if confidence < 0.7:
+            logger.info("Stage 6: 置信度 %.2f < 0.7，跳过规则生成", confidence)
+            return None
+
+        results = []
+
+        # === 主路径: 基于当前告警生成规则 ===
+        if ctx.payload:
+            logger.info("=== Stage 6: 规则生成（主路径）===")
+            result = self._generate_single_rule(
+                ctx, analysis, related_logs,
+                payload=ctx.payload[:2000],
+                current_signature=ctx.signature,
+            )
+            if result:
+                results.append(result)
+
+        # === 反向触发: 检查关联日志中未触发 alert 的攻击事件 ===
+        if related_logs:
+            unalerted = find_unalerted_attacks(related_logs)
+            if unalerted:
+                logger.info("=== Stage 6: 规则生成（反向触发）===")
+                logger.info("发现 %d 个未触发告警的攻击事件", len(unalerted))
+                for item in unalerted:
+                    result = self._generate_single_rule(
+                        ctx, analysis, related_logs,
+                        payload=item["payload"] or item["url"],
+                        current_signature="（无 - 漏报攻击）",
+                        unalerted_info=item,
+                    )
+                    if result:
+                        results.append(result)
+
+        if not results:
+            return None
+        return results[0] if len(results) == 1 else results
+
+    def _generate_single_rule(self, ctx: AlertContext, analysis: dict,
+                              related_logs: list, payload: str,
+                              current_signature: str,
+                              unalerted_info: dict = None) -> dict | None:
+        """生成单条 Suricata 规则
+
+        Args:
+            unalerted_info: 反向触发时的漏报攻击信息（主路径为 None）
+        """
+        try:
+            t0 = time.time()
+            rule_input = {
+                "alert_summary": ctx.to_summary(),
+                "threat_verdict": analysis.get("threat_verdict", ""),
+                "attack_technique": analysis.get("attack_technique", ""),
+                "confidence": analysis.get("confidence", 0),
+                "payload": payload,
+                "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
+                "current_signature": current_signature,
+            }
+
+            if unalerted_info:
+                rule_input["unalerted_attack_types"] = ", ".join(unalerted_info["attack_types"])
+                rule_input["unalerted_url"] = unalerted_info["url"]
+
+            gen_result = self.rule_generator(rule_input)
+            logger.info("规则生成完成 (%.1fs): fp_risk=%s, should_write=%s",
+                        time.time() - t0, gen_result.fp_risk, gen_result.should_write)
+
+            result = {
+                "rule": gen_result.rule,
+                "fp_risk": gen_result.fp_risk,
+                "should_write": gen_result.should_write,
+                "reason": gen_result.reason,
+                "written": False,
+                "reloaded": False,
+                "source": "unalerted" if unalerted_info else "main",
+            }
+            if unalerted_info:
+                result["unalerted_attack_types"] = unalerted_info["attack_types"]
+                result["unalerted_url"] = unalerted_info["url"]
+
+            # 仅低误报规则写入文件
+            if gen_result.should_write and gen_result.fp_risk == "low":
+                write_result = self.rule_writer.write_and_reload(gen_result.rule)
+                result["written"] = write_result["written"]
+                result["reloaded"] = write_result["reloaded"]
+                result["message"] = write_result["message"]
+                logger.info("规则写入: %s", write_result["message"])
+            else:
+                result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
+                logger.info("规则未写入: %s", result["message"])
+
+            return result
+
+        except Exception as e:
+            logger.error("规则生成失败: %s", e, exc_info=True)
+            return {"error": str(e), "written": False}
+
+    def _enrich_metadata(self, analysis: dict, ctx: AlertContext,
+                         alert: dict, related_logs: list):
+        """补充元数据到分析结果"""
         analysis["model"] = self.model_name
-        analysis["soc_category"] = soc.get("category", "")
-        analysis["soc_name"] = soc.get("name", "")
-        analysis["mitre_id"] = soc.get("mitre_id", "")
-        analysis["attack_stage_tag"] = soc.get("stage", "")
+        analysis["soc_category"] = ctx.soc_category
+        analysis["soc_name"] = ctx.soc_name
+        analysis["mitre_id"] = ctx.mitre_id
+        analysis["attack_stage_tag"] = ctx.attack_stage
 
-        # 五元组信息
-        analysis["source_ip"] = src.get("ip", "")
-        analysis["source_port"] = src.get("port", 0)
-        analysis["destination_ip"] = dst.get("ip", "")
-        analysis["destination_port"] = dst.get("port", 0)
-        analysis["protocol"] = alert.get("network", {}).get("transport", "")
-        analysis["community_id"] = alert.get("network", {}).get("community_id", "")
+        # 五元组
+        analysis["source_ip"] = ctx.src_ip
+        analysis["source_port"] = ctx.src_port
+        analysis["destination_ip"] = ctx.dst_ip
+        analysis["destination_port"] = ctx.dst_port
+        analysis["protocol"] = ctx.protocol
+        analysis["community_id"] = ctx.community_id
 
         # 告警信息
-        analysis["alert_signature"] = alert_info.get("signature", "")
-        analysis["alert_signature_id"] = alert_info.get("signature_id", 0)
-        analysis["alert_category"] = alert_info.get("category", "")
-        analysis["alert_severity"] = alert_info.get("severity", 0)
-        analysis["alert_timestamp"] = alert.get("@timestamp", "")
+        analysis["alert_signature"] = ctx.signature
+        analysis["alert_signature_id"] = ctx.signature_id
+        analysis["alert_category"] = ctx.category
+        analysis["alert_severity"] = ctx.severity
+        analysis["alert_timestamp"] = ctx.timestamp
+        analysis["related_log_count"] = len(related_logs)
 
-        # 原始告警 ES 文档 ID（关联原始日志）
-        # Logstash 推送时不带 _id，从关联日志中查找同 signature_id 的原始告警
+        # 原始告警 ES 文档 ID
+        # Logstash 推送的告警不带 _id，需要多级 fallback：
+        # 1. 告警自身带的 _id（手动触发分析时）
+        # 2. 从关联日志中查找同 signature_id + timestamp 的文档
+        # 3. 回查 ES 按 community_id + signature_id + timestamp 精确查找
         source_alert_id = alert.get("_id", "")
         source_alert_index = alert.get("_index", "")
         if not source_alert_id and related_logs:
-            sig_id = alert_info.get("signature_id", 0)
-            alert_ts = alert.get("@timestamp", "")
             for log in related_logs:
                 log_eve = log.get("suricata", {}).get("eve", {})
                 log_alert = log_eve.get("alert", {})
-                if (
-                    log_alert.get("signature_id") == sig_id
-                    and log.get("@timestamp") == alert_ts
-                ):
+                if (log_alert.get("signature_id") == ctx.signature_id
+                        and log.get("@timestamp") == ctx.timestamp):
                     source_alert_id = log.get("_id", "")
                     source_alert_index = log.get("_index", "")
                     break
-            # 如果没精确匹配，取第一条关联日志的 _id
             if not source_alert_id:
                 source_alert_id = related_logs[0].get("_id", "")
                 source_alert_index = related_logs[0].get("_index", "")
+        # 最后 fallback: 回查 ES
+        if not source_alert_id:
+            try:
+                es = ESClient()
+                source_alert_id, source_alert_index = es.find_original_alert(
+                    ctx.community_id, ctx.signature_id, ctx.timestamp
+                )
+            except Exception as e:
+                logger.warning("回查原始告警 _id 失败: %s", e)
         analysis["source_alert_id"] = source_alert_id
         analysis["source_alert_index"] = source_alert_index
 
-        # HTTP/TLS 元数据
-        if http:
-            analysis["http_method"] = http.get("http_method", "")
-            analysis["http_url"] = http.get("url", "")
-            analysis["http_host"] = http.get("hostname", "")
-            analysis["http_user_agent"] = http.get("http_user_agent", "")
-        if tls:
-            analysis["tls_sni"] = tls.get("sni", "")
+        # HTTP/TLS
+        if ctx.http_method:
+            analysis["http_method"] = ctx.http_method
+            analysis["http_url"] = ctx.http_url
+            analysis["http_host"] = ctx.http_host
+            analysis["http_user_agent"] = ctx.http_user_agent
+        if ctx.tls_sni:
+            analysis["tls_sni"] = ctx.tls_sni
+        if ctx.payload:
+            analysis["payload"] = ctx.payload[:4000]
 
-        # 攻击 payload（截断到 4000 字符，供人工研判）
-        payload = eve.get("payload_printable", "")
-        if payload:
-            analysis["payload"] = payload[:4000]
-
-        # 关联日志数
-        analysis["related_log_count"] = len(related_logs)
-
-        logger.info(
-            "分析完成: 判定=%s, 置信度=%s",
-            analysis.get("threat_verdict", "N/A"),
-            analysis.get("confidence", "N/A"),
-        )
-        return analysis
-
-    def _fallback_result(self, alert: dict, error: str, raw_response: str = "") -> dict:
-        """LLM 失败时的降级结果"""
-        soc = alert.get("soc", {})
-        eve = alert.get("suricata", {}).get("eve", {})
-        alert_info = eve.get("alert", {})
-        src = alert.get("source", {})
-        dst = alert.get("destination", {})
-        http = eve.get("http", {})
-        payload = eve.get("payload_printable", "")
-        result = {
+    def _fallback_result(self, ctx: AlertContext, error: str) -> dict:
+        """分析失败降级结果"""
+        return {
             "threat_verdict": "可疑",
             "confidence": 0.3,
             "attack_result": "未知",
             "attack_technique": "N/A（分析失败）",
-            "attack_stage": soc.get("stage", "N/A"),
+            "attack_stage": ctx.attack_stage,
             "impact_scope": "N/A",
             "attack_chain": "N/A",
             "handling_suggestion": "AI 分析失败，建议人工审查此告警",
             "reasoning": f"分析失败: {error}",
             "model": self.model_name,
-            "soc_category": soc.get("category", ""),
-            "soc_name": soc.get("name", ""),
-            "mitre_id": soc.get("mitre_id", ""),
-            "attack_stage_tag": soc.get("stage", ""),
-            "source_ip": src.get("ip", ""),
-            "source_port": src.get("port", 0),
-            "destination_ip": dst.get("ip", ""),
-            "destination_port": dst.get("port", 0),
-            "protocol": alert.get("network", {}).get("transport", ""),
-            "community_id": alert.get("network", {}).get("community_id", ""),
-            "alert_signature": alert_info.get("signature", ""),
-            "alert_signature_id": alert_info.get("signature_id", 0),
-            "alert_category": alert_info.get("category", ""),
-            "alert_severity": alert_info.get("severity", 0),
-            "alert_timestamp": alert.get("@timestamp", ""),
-            "source_alert_id": alert.get("_id", ""),
-            "source_alert_index": alert.get("_index", ""),
+            "soc_category": ctx.soc_category,
+            "soc_name": ctx.soc_name,
+            "mitre_id": ctx.mitre_id,
+            "attack_stage_tag": ctx.attack_stage,
+            "source_ip": ctx.src_ip,
+            "source_port": ctx.src_port,
+            "destination_ip": ctx.dst_ip,
+            "destination_port": ctx.dst_port,
+            "protocol": ctx.protocol,
+            "community_id": ctx.community_id,
+            "alert_signature": ctx.signature,
+            "alert_signature_id": ctx.signature_id,
+            "alert_category": ctx.category,
+            "alert_severity": ctx.severity,
+            "alert_timestamp": ctx.timestamp,
+            "source_alert_id": "",
+            "source_alert_index": "",
             "related_log_count": 0,
             "error": error,
-            "raw_response": raw_response[:500] if raw_response else "",
         }
-        if http:
-            result["http_method"] = http.get("http_method", "")
-            result["http_url"] = http.get("url", "")
-            result["http_host"] = http.get("hostname", "")
-            result["http_user_agent"] = http.get("http_user_agent", "")
-        if payload:
-            result["payload"] = payload[:4000]
-        return result

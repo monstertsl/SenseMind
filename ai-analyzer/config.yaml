@@ -9,11 +9,13 @@ llm:
 
   base_url: "https://llm-fnu33c36r9mt0vzk.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 
-  model: "glm-5.2"
+  model: "qwen3.6-flash"
 
   # 生成参数
   temperature: 0.1
-  max_tokens: 2000
+  max_tokens: 8000
+  # 单次请求超时（秒），需大于 Logstash request_timeout
+  timeout: 60
 
 ########################################
 # Elasticsearch 配置
@@ -46,3 +48,37 @@ elasticsearch:
 webhook:
   host: "0.0.0.0"
   port: 9090
+
+########################################
+# 知识库配置 (RAG 检索源)
+# 目录结构：
+#   knowledge/
+#   ├── mitre-attack/     # MITRE ATT&CK 技术说明 (.md)
+#   ├── soc-playbook/     # SOC 处置手册 (.md)
+#   └── suricata-rules/   # Suricata 规则说明 (.md)
+########################################
+knowledge:
+  dir: "/usr/share/ai-analyzer/knowledge"
+
+########################################
+# Suricata 规则自动生成配置
+# 当 AI 确认攻击但原始告警未触发 soc.matched 时，
+# 自动生成低误报率规则写入 local.rules 并热加载。
+########################################
+suricata:
+  enabled: true
+  # local.rules 文件路径（容器内，对应宿主机 /data/suricata/lib/rules/local.rules）
+  rules_file: "/suricata/rules/local.rules"
+  # suricata 容器名称（用于 docker exec suricatasc 热加载规则）
+  suricata_container: "suricata"
+
+########################################
+# 告警去重配置
+# 同一 community_id + signature_id 在时间窗口内只分析一次
+########################################
+dedup:
+  enabled: true
+  # 去重时间窗口（秒），默认 600 = 10 分钟
+  window_seconds: 600
+  # 内存缓存最大条数（LRU 淘汰）
+  max_entries: 10000

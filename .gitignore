@@ -1,12 +1,6 @@
-# 清理脚本
-remove.sh
-
 # 证书目录
 certs/
 
 # 环境变量文件
 .env
 .env.bak
-
-# 测试调用
-hello_ai.py

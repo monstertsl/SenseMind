@@ -133,6 +133,10 @@ services:
     user: root
     restart: unless-stopped
 
+    depends_on:
+      logstash:
+        condition: service_started
+
     networks:
       - elastic
 
@@ -142,7 +146,17 @@ services:
       - /data/zeek/logs:/var/log/zeek:ro
       - filebeat-data:/usr/share/filebeat/data
 
-    command: ["--strict.perms=false"]
+    # 等待 Logstash 5044 端口就绪后再启动 Filebeat
+    entrypoint: >
+      bash -c "
+      echo '[*] 等待 logstash:5044 就绪...';
+      until bash -c 'echo > /dev/tcp/logstash/5044' 2>/dev/null; do
+        echo '[-] logstash:5044 未就绪，3秒后重试...';
+        sleep 3;
+      done;
+      echo '[+] logstash:5044 已就绪，启动 filebeat';
+      exec /usr/bin/tini -- /usr/local/bin/docker-entrypoint --strict.perms=false;
+      "
 
   logstash:
     image: docker.elastic.co/logstash/logstash:8.19.16
@@ -177,11 +191,14 @@ services:
     restart: unless-stopped
 
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
     volumes:
       - ./ai-analyzer/config.yaml:/usr/share/ai-analyzer/config.yaml:ro
+      - ./ai-analyzer/knowledge:/usr/share/ai-analyzer/knowledge:ro
       - ./certs/ca.crt:/usr/share/ai-analyzer/certs/ca.crt:ro
+      - /data/suricata/lib/rules:/suricata/rules:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
     environment:
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}

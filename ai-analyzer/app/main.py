@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from .analyzer import AlertAnalyzer
 from .es_client import ESClient
 from .config import Config
+from .dedup import AlertDeduplicator
 
 # 日志配置
 logging.basicConfig(
@@ -19,6 +20,7 @@ app = FastAPI(title="SenseMind AI 分析中心", version="1.0.0")
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None
 _es_client: ESClient = None
+_deduper: AlertDeduplicator = None
 
 
 def get_analyzer() -> AlertAnalyzer:
@@ -35,10 +37,33 @@ def get_es_client() -> ESClient:
     return _es_client
 
 
+def get_deduper() -> AlertDeduplicator:
+    global _deduper
+    if _deduper is None:
+        cfg = Config()
+        dedup_cfg = cfg.dedup
+        if not dedup_cfg.get("enabled", True):
+            return None
+        _deduper = AlertDeduplicator(
+            dedup_window=dedup_cfg.get("window_seconds", 600),
+            max_entries=dedup_cfg.get("max_entries", 10000),
+        )
+    return _deduper
+
+
 @app.get("/health")
 async def health():
     """健康检查"""
     return {"status": "ok", "service": "ai-analyzer"}
+
+
+@app.get("/api/dedup/stats")
+async def dedup_stats():
+    """去重缓存统计"""
+    deduper = get_deduper()
+    if not deduper:
+        return {"enabled": False}
+    return {"enabled": True, **deduper.stats()}
 
 
 @app.get("/")
@@ -66,36 +91,37 @@ async def analyze_alert(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"无效的 JSON: {e}")
 
-    logger.info("收到告警: %s", alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", "N/A"))
-
-    # 提取关联信息
+    # 提取去重维度: community_id + signature_id
     community_id = alert.get("network", {}).get("community_id", "")
-    src_ip = alert.get("source", {}).get("ip", "")
-    dst_ip = alert.get("destination", {}).get("ip", "")
-    timestamp = alert.get("@timestamp", "")
+    signature_id = alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature_id", 0)
+    signature = alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", "N/A")
 
-    # 查询关联日志
-    es = get_es_client()
-    try:
-        related_logs = es.query_related_logs(
-            community_id=community_id,
-            src_ip=src_ip,
-            dst_ip=dst_ip,
-            timestamp=timestamp,
-        )
-    except Exception as e:
-        logger.warning("关联日志查询失败，继续分析: %s", e)
-        related_logs = []
+    logger.info("收到告警: %s (community_id=%s, sid=%s)",
+                signature, community_id[:20] if community_id else "N/A", signature_id)
 
-    # AI 分析
+    # 去重检查: 同一 community_id + signature_id 在窗口内不重复分析
+    deduper = get_deduper()
+    if deduper:
+        cached = deduper.check(community_id, signature_id)
+        if cached:
+            logger.info("告警已去重，跳过分析: %s -> %s", signature, cached.get("verdict", "N/A"))
+            return {
+                "status": "deduplicated",
+                "message": f"同一会话同规则告警在 {deduper.dedup_window}s 内已分析过",
+                "previous_verdict": cached.get("verdict"),
+                "previous_es_doc_id": cached.get("es_doc_id"),
+            }
+
+    # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
     try:
         analyzer = get_analyzer()
-        analysis = analyzer.analyze(alert, related_logs)
+        analysis = analyzer.analyze(alert)
     except Exception as e:
         logger.error("AI 分析失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"分析失败: {e}")
 
     # 结果回写 ES
+    es = get_es_client()
     try:
         doc_id = es.write_analysis(analysis)
         analysis["es_doc_id"] = doc_id
@@ -103,9 +129,18 @@ async def analyze_alert(request: Request):
         logger.warning("结果回写 ES 失败: %s", e)
         analysis["es_write_error"] = str(e)
 
+    # 记录到去重缓存
+    if deduper:
+        deduper.record(
+            community_id=community_id,
+            signature_id=signature_id,
+            es_doc_id=analysis.get("es_doc_id", ""),
+            verdict=analysis.get("threat_verdict", ""),
+        )
+
     logger.info(
         "告警分析完成: %s -> %s",
-        alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", ""),
+        signature,
         analysis.get("threat_verdict", "N/A"),
     )
 
@@ -121,24 +156,23 @@ async def analyze_es_alert(doc_id: str):
     try:
         es = get_es_client()
         cfg = Config()
-        resp = es.client.get(index=cfg.elasticsearch["alert_index"], id=doc_id)
-        alert = resp["_source"]
+        # ES get API 不支持通配符，用 search 按 _id 查询
+        resp = es.client.search(
+            index=cfg.elasticsearch["alert_index"],
+            body={"query": {"term": {"_id": doc_id}}, "size": 1},
+        )
+        hits = resp["hits"]["hits"]
+        if not hits:
+            raise HTTPException(status_code=404, detail=f"告警不存在: {doc_id}")
+        alert = hits[0]["_source"]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"告警不存在: {e}")
+        raise HTTPException(status_code=404, detail=f"告警查询失败: {e}")
 
-    # 提取关联信息
-    community_id = alert.get("network", {}).get("community_id", "")
-    src_ip = alert.get("source", {}).get("ip", "")
-    timestamp = alert.get("@timestamp", "")
-
-    related_logs = es.query_related_logs(
-        community_id=community_id,
-        src_ip=src_ip,
-        timestamp=timestamp,
-    )
-
+    # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
     analyzer = get_analyzer()
-    analysis = analyzer.analyze(alert, related_logs)
+    analysis = analyzer.analyze(alert)
 
     doc_id_new = es.write_analysis(analysis)
     analysis["es_doc_id"] = doc_id_new

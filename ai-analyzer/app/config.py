@@ -39,6 +39,31 @@ class Config:
         return self._config["webhook"]
 
     @property
+    def knowledge_dir(self) -> str:
+        """知识库目录路径（RAG 检索源）"""
+        return self._config.get("knowledge", {}).get(
+            "dir", "/usr/share/ai-analyzer/knowledge"
+        )
+
+    @property
+    def suricata(self) -> dict:
+        """Suricata 规则自动生成配置"""
+        return self._config.get("suricata", {
+            "enabled": False,
+            "rules_file": "/suricata/rules/local.rules",
+            "suricata_container": "suricata",
+        })
+
+    @property
+    def dedup(self) -> dict:
+        """告警去重配置"""
+        return self._config.get("dedup", {
+            "enabled": True,
+            "window_seconds": 600,
+            "max_entries": 10000,
+        })
+
+    @property
     def es_password(self) -> str:
         """从环境变量获取 ES 密码"""
         env_key = self.elasticsearch.get("password_env", "ELASTIC_PASSWORD")
