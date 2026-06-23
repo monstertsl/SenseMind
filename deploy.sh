@@ -566,28 +566,9 @@ else
         fi
     fi
 
-    # 创建 soc-ai-* 数据视图（AI 分析结果）
-    AI_DV_SEARCH=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-        "http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=soc-ai-%2A" 2>/dev/null)
-    AI_DV_COUNT=$(echo "$AI_DV_SEARCH" | jq -r '.total // 0' 2>/dev/null)
+    # soc-ai-* 数据视图由 ndjson 仪表板导入时自带，无需单独创建
 
-    if [ "${AI_DV_COUNT:-0}" != "0" ]; then
-        echo "[+] Kibana 数据视图 soc-ai-* 已存在，跳过创建。"
-    else
-        AI_DV_RESPONSE=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-            -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
-            -H "Content-Type: application/json" \
-            -H "kbn-xsrf: true" \
-            -d '{"attributes":{"title":"soc-ai-*","timeFieldName":"@timestamp"}}' 2>/dev/null)
-        AI_DV_ID=$(echo "$AI_DV_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
-        if [ -n "$AI_DV_ID" ]; then
-            echo "[+] Kibana 数据视图 soc-ai-* 已创建 (id: $AI_DV_ID)"
-        else
-            echo "[-] 警告：Kibana 数据视图 soc-ai-* 创建失败，响应: $AI_DV_RESPONSE"
-        fi
-    fi
-
-    # 导入 SenseMind AI 研判仪表板
+    # 导入 SenseMind AI 研判仪表板（含 soc-ai-* 数据视图）
     DASHBOARD_FILE="$BASE_DIR/kibana/sensemind-ai-dashboard.ndjson"
     if [ -f "$DASHBOARD_FILE" ]; then
         echo "[*] 导入 SenseMind AI 研判仪表板..."
@@ -602,6 +583,22 @@ else
         else
             echo "[-] 警告：仪表板导入失败: $IMPORT_RESP"
         fi
+    fi
+
+    # 兜底检查：仪表板导入后确认 soc-ai-* 数据视图存在（导入失败时补建）
+    AI_DV_SEARCH=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
+        "http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=soc-ai-%2A" 2>/dev/null)
+    AI_DV_COUNT=$(echo "$AI_DV_SEARCH" | jq -r '.total // 0' 2>/dev/null)
+    if [ "${AI_DV_COUNT:-0}" = "0" ]; then
+        echo "[*] soc-ai-* 数据视图不存在，补建..."
+        curl -s -u "elastic:${ELASTIC_PASSWORD}" \
+            -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
+            -H "Content-Type: application/json" \
+            -H "kbn-xsrf: true" \
+            -d '{"attributes":{"title":"soc-ai-*","timeFieldName":"@timestamp"}}' >/dev/null 2>&1
+        echo "[+] soc-ai-* 数据视图已补建"
+    else
+        echo "[+] Kibana 数据视图 soc-ai-* 已存在"
     fi
 fi
 
