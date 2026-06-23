@@ -149,5 +149,6 @@ class AnalysisResult(BaseModel):
         description="处置建议"
     )
     reasoning: str = Field(
+        default="N/A",
         description="分析推理过程"
     )

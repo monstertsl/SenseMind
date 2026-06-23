@@ -90,6 +90,15 @@ def create_analysis_chain(llm: ChatOpenAI):
             logger.warning("Analysis 返回无法解析: %s", content[:200])
             raise ValueError(f"JSON解析失败: {content[:200]}")
 
+        # 补全模型可能缺失的字段
+        for field in ["threat_verdict", "attack_result", "attack_technique",
+                      "attack_stage", "impact_scope", "attack_chain",
+                      "handling_suggestion", "reasoning"]:
+            if field not in data:
+                data[field] = "N/A" if field != "confidence" else 0.3
+        if "confidence" not in data or not isinstance(data.get("confidence"), (int, float)):
+            data["confidence"] = 0.3
+
         return AnalysisResult(**data)
 
     return parse_response
