@@ -35,7 +35,8 @@ def extract_json(text: str) -> dict | None:
 
     text = text.strip()
 
-    # 0. 去除 Qwen3 等模型的思考模式输出块  text = _strip_thinking_blocks(text)
+    # 0. 去除 Qwen3 等模型的思考模式输出块
+    text = _strip_thinking_blocks(text)
 
     # 1. 去除 markdown 代码块后直接解析
     cleaned = _strip_markdown(text)

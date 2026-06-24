@@ -9,7 +9,7 @@ llm:
 
   base_url: "https://llm-fnu33c36r9mt0vzk.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 
-  model: "qwen3.6-flash"
+  model: "qwen3.5-flash"
 
   # 生成参数
   temperature: 0.1

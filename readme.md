@@ -64,6 +64,22 @@ SenseMind/
 
 ### 部署
 
+## LLM 配置
+
+编辑 `ai-analyzer/config.yaml`：
+
+```yaml
+llm:
+  api_key: "sk-xxx"
+  base_url: "https://..."   # OpenAI 兼容接口
+  model: "glm-5.2"          # 如果部署后需要修改模型执行: docker restart ai-analyzer
+  temperature: 0.1
+  max_tokens: 4000
+  timeout: 60
+```
+
+支持 OpenAI、Ollama、vLLM 等 OpenAI 兼容后端。
+
 ```bash
 sudo bash deploy.sh <interface>   # 如 ens192、eth0
 ```
@@ -91,22 +107,6 @@ SenseMind AI 研判仪表板包含：
 ![AI 研判仪表板](demo-00.png)
 
 ![AI 研判仪表板](demo-01.png)
-
-## LLM 配置
-
-编辑 `ai-analyzer/config.yaml`：
-
-```yaml
-llm:
-  api_key: "sk-xxx"
-  base_url: "https://..."   # OpenAI 兼容接口
-  model: "glm-5.2"          # 修改模型后执行: docker restart ai-analyzer
-  temperature: 0.1
-  max_tokens: 4000
-  timeout: 60
-```
-
-支持 OpenAI、Ollama、vLLM 等 OpenAI 兼容后端。
 
 ## SOC 分类
 
