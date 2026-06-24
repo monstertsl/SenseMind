@@ -64,9 +64,9 @@ SenseMind/
 
 ### 部署
 
-## LLM 配置
+#### LLM 配置
 
-编辑 `ai-analyzer/config.yaml`：
+编辑 `ai-analyzer/config.yaml`：支持 OpenAI、Ollama、vLLM 等 OpenAI 兼容后端。
 
 ```yaml
 llm:
@@ -78,7 +78,6 @@ llm:
   timeout: 60
 ```
 
-支持 OpenAI、Ollama、vLLM 等 OpenAI 兼容后端。
 
 ```bash
 sudo bash deploy.sh <interface>   # 如 ens192、eth0
