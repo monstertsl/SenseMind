@@ -343,20 +343,43 @@ class AlertAnalyzer:
         # 原始告警 ES 文档 ID
         # Logstash 推送的告警不带 _id，需要多级 fallback：
         # 1. 告警自身带的 _id（手动触发分析时）
-        # 2. 从关联日志中查找同 signature_id + timestamp 的文档
+        # 2. 从关联日志中查找同 signature_id 的文档（按时间最接近排序）
         # 3. 回查 ES 按 community_id + signature_id + timestamp 精确查找
+        # 4. ES 宽松回查 community_id + signature_id（不限时间）
         source_alert_id = alert.get("_id", "")
         source_alert_index = alert.get("_index", "")
+
+        # 2. 从关联日志中按 signature_id 匹配（时间最接近的优先）
         if not source_alert_id and related_logs:
+            candidates = []
             for log in related_logs:
                 log_eve = log.get("suricata", {}).get("eve", {})
                 log_alert = log_eve.get("alert", {})
-                if (log_alert.get("signature_id") == ctx.signature_id
-                        and log.get("@timestamp") == ctx.timestamp):
-                    source_alert_id = log.get("_id", "")
-                    source_alert_index = log.get("_index", "")
-                    break
-        # 最后 fallback: 回查 ES（不用 related_logs[0] 的 _id，因为那可能是同会话的其他告警）
+                if log_alert.get("signature_id") == ctx.signature_id:
+                    candidates.append(log)
+            if candidates:
+                # 按时间戳与当前告警的差值排序，取最接近的
+                from datetime import datetime
+                try:
+                    target_ts = datetime.fromisoformat(ctx.timestamp.replace("Z", "+00:00"))
+                except Exception:
+                    target_ts = None
+
+                def time_diff(log):
+                    if not target_ts:
+                        return 0
+                    try:
+                        log_ts = datetime.fromisoformat(log.get("@timestamp", "").replace("Z", "+00:00"))
+                        return abs((log_ts - target_ts).total_seconds())
+                    except Exception:
+                        return float('inf')
+
+                candidates.sort(key=time_diff)
+                source_alert_id = candidates[0].get("_id", "")
+                source_alert_index = candidates[0].get("_index", "")
+                logger.info("从关联日志匹配到原始告警: _id=%s (候选 %d 条)", source_alert_id, len(candidates))
+
+        # 3. ES 回查
         if not source_alert_id:
             try:
                 es = ESClient()
@@ -365,16 +388,6 @@ class AlertAnalyzer:
                 )
             except Exception as e:
                 logger.warning("回查原始告警 _id 失败: %s", e)
-        # 最终兜底：从关联日志中找同 signature_id 的文档（不限 timestamp）
-        if not source_alert_id and related_logs:
-            for log in related_logs:
-                log_eve = log.get("suricata", {}).get("eve", {})
-                log_alert = log_eve.get("alert", {})
-                if log_alert.get("signature_id") == ctx.signature_id:
-                    source_alert_id = log.get("_id", "")
-                    source_alert_index = log.get("_index", "")
-                    logger.info("从关联日志中找到同 signature_id 的原始告警: %s", source_alert_id)
-                    break
         analysis["source_alert_id"] = source_alert_id
         analysis["source_alert_index"] = source_alert_index
 
