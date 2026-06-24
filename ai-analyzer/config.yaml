@@ -5,11 +5,11 @@
 ########################################
 llm:
 
-  api_key: "sk-ws-H.RPEXXLX.b2fK.MEUCIQCEpxCEOCcOVvhkDtOCrCgRg42HlxpAtddxI6vY_p4segIgDmr3sWBgWpSMsoO0V9jWpi6n54w2L_4eQkBqCA7vBcA"
+  api_key: "sk-xxx"
 
-  base_url: "https://llm-fnu33c36r9mt0vzk.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  base_url: "https://..."
 
-  model: "qwen3.5-flash"
+  model: "glm-5.2"
 
   # 生成参数
   temperature: 0.1
