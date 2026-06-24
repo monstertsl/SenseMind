@@ -57,6 +57,8 @@ class AlertAnalyzer:
         self.rule_gen_enabled = suricata_cfg.get("enabled", False)
         self.rule_generator = None
         self.rule_writer = None
+        # 记录已生成过规则的 signature_id，避免同一签名重复生成
+        self._rule_generated_sids = set()
         if self.rule_gen_enabled:
             self.rule_generator = create_rule_generator_chain(self.llm)
             try:
@@ -217,6 +219,11 @@ class AlertAnalyzer:
         if analysis.get("threat_verdict") != "确认威胁":
             return None
 
+        # 按 signature_id 去重：同一告警签名已生成过规则就不再生成
+        if ctx.signature_id and ctx.signature_id in self._rule_generated_sids:
+            logger.info("Stage 6: signature_id=%d 已生成过规则，跳过", ctx.signature_id)
+            return None
+
         # 置信度门槛
         confidence = analysis.get("confidence", 0)
         if confidence < 0.7:
@@ -305,6 +312,9 @@ class AlertAnalyzer:
                 result["reloaded"] = write_result["reloaded"]
                 result["message"] = write_result["message"]
                 logger.info("规则写入: %s", write_result["message"])
+                # 记录已生成规则的 signature_id（仅主路径，非反向触发）
+                if not unalerted_info and ctx.signature_id:
+                    self._rule_generated_sids.add(ctx.signature_id)
             else:
                 result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
                 logger.info("规则未写入: %s", result["message"])

@@ -18,8 +18,12 @@ import re
 import json
 import shlex
 import httpx
+import threading
 
 logger = logging.getLogger(__name__)
+
+# 全局写锁，防止并发写入导致 SID 重复
+_write_lock = threading.Lock()
 
 
 class RuleWriter:
@@ -114,6 +118,43 @@ class RuleWriter:
         contents = re.findall(r'content:"([^"]*)"', rule)
         return [c for c in contents if c]
 
+    # 已知的通用宽泛字符串，单独使用时极易误报
+    BROAD_PATTERNS = {
+        "<?php", "<script", "eval", "exec", "system",
+        "GET", "POST", "union", "select", "from",
+    }
+
+    def _is_too_broad(self, rule: str) -> bool:
+        """检查规则是否过于宽泛（单个短 content 或通用字符串）"""
+        contents = self._extract_contents(rule)
+        has_pcre = "pcre:" in rule
+
+        # 只有 1 个 content 且没有 pcre 时，检查是否过于宽泛
+        if len(contents) == 1 and not has_pcre:
+            c = contents[0]
+            # 十六进制编码的 content 解码后检查
+            decoded = self._decode_hex_content(c)
+            # content 原文或解码后少于 10 字节
+            if len(decoded) < 10:
+                logger.warning("单个 content 过短 (%d bytes): %s", len(decoded), c[:40])
+                return True
+            # 解码后是通用宽泛字符串
+            if decoded.lower() in self.BROAD_PATTERNS:
+                logger.warning("单个 content 是通用宽泛字符串: %s", decoded)
+                return True
+
+        return False
+
+    @staticmethod
+    def _decode_hex_content(content: str) -> str:
+        """解码 Suricata 管道符十六进制 content"""
+        # |3c 3f 70 68 70| → <?php
+        def replace_hex(match):
+            hex_str = match.group(1)
+            return bytes.fromhex(hex_str.replace(" ", "")).decode("utf-8", errors="replace")
+
+        return re.sub(r'\|([0-9a-fA-F ]+)\|', replace_hex, content)
+
     def write_rule(self, rule: str) -> bool:
         """写入一条规则到 local.rules
 
@@ -127,36 +168,42 @@ class RuleWriter:
         if not rule:
             return False
 
-        # 去重检查
-        if self._is_duplicate(rule):
-            logger.info("规则已存在，跳过: %s", rule[:80])
-            return False
+        with _write_lock:
+            # 去重检查（在锁内执行，防止并发漏检）
+            if self._is_duplicate(rule):
+                logger.info("规则已存在，跳过: %s", rule[:80])
+                return False
 
-        # 始终用唯一 SID 覆盖 AI 提供的 SID（AI 常照抄示例中的 9000001）
-        new_sid = self._next_sid()
-        if "sid:" in rule:
-            rule = re.sub(r'sid:\d+', f'sid:{new_sid}', rule)
-        else:
-            # 无 SID 时在 rev 前或行尾插入
-            if "rev:" in rule:
-                rule = rule.replace("rev:", f"sid:{new_sid}; rev:")
+            # 宽泛规则拦截：单个短 content 容易误报
+            if self._is_too_broad(rule):
+                logger.warning("规则过于宽泛，跳过写入: %s", rule[:80])
+                return False
+
+            # 始终用唯一 SID 覆盖 AI 提供的 SID（AI 常照抄示例中的 9000001）
+            new_sid = self._next_sid()
+            if "sid:" in rule:
+                rule = re.sub(r'sid:\d+', f'sid:{new_sid}', rule)
             else:
-                rule = rule.rstrip(");") + f"; sid:{new_sid};)"
+                # 无 SID 时在 rev 前或行尾插入
+                if "rev:" in rule:
+                    rule = rule.replace("rev:", f"sid:{new_sid}; rev:")
+                else:
+                    rule = rule.rstrip(");") + f"; sid:{new_sid};)"
 
-        logger.info("分配 SID=%d: %s", new_sid, rule[:80])
+            logger.info("分配 SID=%d: %s", new_sid, rule[:80])
 
-        # 写入文件
-        try:
-            with open(self.rules_file, "a") as f:
-                f.write(rule + "\n")
-            self._existing_rules.add(rule)
-            self._existing_sids.add(new_sid)
+            # 写入文件
+            try:
+                with open(self.rules_file, "a") as f:
+                    f.write(rule + "\n")
+                self._existing_rules.add(rule)
+                self._existing_sids.add(new_sid)
 
-            logger.info("规则已写入 local.rules: %s", rule[:80])
-            return True
-        except Exception as e:
-            logger.error("写入规则失败: %s", e)
-            return False
+                logger.info("规则已写入 local.rules: %s", rule[:80])
+                return True
+            except Exception as e:
+                logger.error("写入规则失败: %s", e)
+                return False
 
     def reload_suricata(self) -> bool:
         """通过 Docker Engine API 热加载规则
