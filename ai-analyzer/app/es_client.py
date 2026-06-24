@@ -203,6 +203,36 @@ class ESClient:
                 return hits[0]["_id"], hits[0]["_index"]
         except Exception as e:
             logger.warning("查找原始告警失败: %s", e)
+
+        # 宽松回查：去掉时间精确匹配，用 community_id + signature_id 查最近一条
+        loose_query = {
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"event.kind": "alert"}},
+                        {"term": {"suricata.eve.alert.signature_id": signature_id}},
+                    ],
+                    "should": [
+                        {"term": {"network.community_id.keyword": community_id}},
+                        {"term": {"suricata.eve.community_id.keyword": community_id}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            },
+            "size": 1,
+            "sort": [{"@timestamp": "desc"}],
+            "_source": False,
+        }
+        try:
+            resp = self.client.search(index=self.alert_index, body=loose_query)
+            hits = resp["hits"]["hits"]
+            if hits:
+                logger.info("宽松回查找到原始告警: _id=%s, _index=%s",
+                            hits[0]["_id"], hits[0]["_index"])
+                return hits[0]["_id"], hits[0]["_index"]
+        except Exception as e:
+            logger.warning("宽松回查原始告警失败: %s", e)
+
         return "", ""
 
     def query_src_ip_history(self, src_ip: str, hours: int = 24) -> list:

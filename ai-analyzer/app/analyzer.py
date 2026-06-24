@@ -356,10 +356,7 @@ class AlertAnalyzer:
                     source_alert_id = log.get("_id", "")
                     source_alert_index = log.get("_index", "")
                     break
-            if not source_alert_id:
-                source_alert_id = related_logs[0].get("_id", "")
-                source_alert_index = related_logs[0].get("_index", "")
-        # 最后 fallback: 回查 ES
+        # 最后 fallback: 回查 ES（不用 related_logs[0] 的 _id，因为那可能是同会话的其他告警）
         if not source_alert_id:
             try:
                 es = ESClient()
@@ -368,6 +365,16 @@ class AlertAnalyzer:
                 )
             except Exception as e:
                 logger.warning("回查原始告警 _id 失败: %s", e)
+        # 最终兜底：从关联日志中找同 signature_id 的文档（不限 timestamp）
+        if not source_alert_id and related_logs:
+            for log in related_logs:
+                log_eve = log.get("suricata", {}).get("eve", {})
+                log_alert = log_eve.get("alert", {})
+                if log_alert.get("signature_id") == ctx.signature_id:
+                    source_alert_id = log.get("_id", "")
+                    source_alert_index = log.get("_index", "")
+                    logger.info("从关联日志中找到同 signature_id 的原始告警: %s", source_alert_id)
+                    break
         analysis["source_alert_id"] = source_alert_id
         analysis["source_alert_index"] = source_alert_index
 
