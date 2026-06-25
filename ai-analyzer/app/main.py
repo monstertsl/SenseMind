@@ -91,23 +91,24 @@ async def analyze_alert(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"无效的 JSON: {e}")
 
-    # 提取去重维度: community_id + signature_id
+    # 提取去重维度: community_id + signature_id + source_ip
     community_id = alert.get("network", {}).get("community_id", "")
     signature_id = alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature_id", 0)
     signature = alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", "N/A")
+    source_ip = alert.get("source", {}).get("ip", "")
 
-    logger.info("收到告警: %s (community_id=%s, sid=%s)",
-                signature, community_id[:20] if community_id else "N/A", signature_id)
+    logger.info("收到告警: %s (community_id=%s, sid=%s, src_ip=%s)",
+                signature, community_id[:20] if community_id else "N/A", signature_id, source_ip)
 
-    # 去重检查: 同一 community_id + signature_id 在窗口内不重复分析
+    # 去重检查: 同一 community_id + signature_id 或同一 source_ip + signature_id 在窗口内不重复分析
     deduper = get_deduper()
     if deduper:
-        cached = deduper.check(community_id, signature_id)
+        cached = deduper.check(community_id, signature_id, source_ip)
         if cached:
             logger.info("告警已去重，跳过分析: %s -> %s", signature, cached.get("verdict", "N/A"))
             return {
                 "status": "deduplicated",
-                "message": f"同一会话同规则告警在 {deduper.dedup_window}s 内已分析过",
+                "message": f"同规则告警在 {deduper.dedup_window}s 内已分析过",
                 "previous_verdict": cached.get("verdict"),
                 "previous_es_doc_id": cached.get("es_doc_id"),
             }
@@ -136,6 +137,7 @@ async def analyze_alert(request: Request):
             signature_id=signature_id,
             es_doc_id=analysis.get("es_doc_id", ""),
             verdict=analysis.get("threat_verdict", ""),
+            source_ip=source_ip,
         )
 
     logger.info(

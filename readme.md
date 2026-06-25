@@ -54,6 +54,7 @@ SenseMind/
     ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
     └── app/                     # FastAPI + LangChain 6阶段 Chain
 ```
+使用`ai-analyzer/app/attack_detector.py`静态检查关联日志是否有未触发告警日志、`ai-analyzer/knowledge`仅有基础RAG知识，需对二者进行维护提高检测准确性
 
 ## 快速开始
 
