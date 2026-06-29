@@ -493,7 +493,7 @@ else
     
     echo "[-] Suricata 引擎日志（最后 200 行）：" >&2
     docker exec suricata sh -c 'tail -n 200 /var/log/suricata/suricata.log 2>/dev/null || true' >&2
-    echo "[-] 注意：部分 Suricata 规则更新失败，脚本将继续执行后续步骤。" >&2
+    echo "[-] 注意：部分 Suricata 规则更新失败请使用 "docker exec --user suricata suricata suricata-update -f" 手动更新规则，脚本将继续执行后续步骤。" >&2
 fi
 
 # 6. 等待 Kibana 就绪并自动创建数据视图（Data View）

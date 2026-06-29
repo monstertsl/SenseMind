@@ -121,7 +121,10 @@ async def analyze_alert(request: Request):
         logger.error("AI 分析失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"分析失败: {e}")
 
-    # 结果回写 ES
+    # 提取后台上下文（规则生成 + 漏报处理），不写入 ES
+    bg_context = analysis.pop("_bg_context", None)
+
+    # 结果回写 ES（主告警）— 先写主记录，让 soc-ai-* 尽快可见
     es = get_es_client()
     try:
         doc_id = es.write_analysis(analysis)
@@ -129,6 +132,39 @@ async def analyze_alert(request: Request):
     except Exception as e:
         logger.warning("结果回写 ES 失败: %s", e)
         analysis["es_write_error"] = str(e)
+
+    # 后台执行规则生成 + 漏报处理（不阻塞 HTTP 响应）
+    if bg_context:
+        import threading
+        def _bg_task():
+            try:
+                ctx = bg_context["ctx"]
+                related_logs = bg_context["related_logs"]
+
+                # Stage 6: 规则生成（主路径）
+                rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
+                if rule_result:
+                    analysis["generated_rule"] = rule_result
+
+                # 漏报攻击处理
+                unalerted_records = analyzer._process_unalerted_attacks(
+                    ctx, analysis, related_logs
+                )
+                if unalerted_records:
+                    for rec in unalerted_records:
+                        rec["triggered_by_alert"] = doc_id
+                        # source_alert_id 已在 _build_unalerted_analysis 中
+                        # 指向漏报攻击自身的原始日志 _id，不覆盖
+                        try:
+                            es.write_analysis(rec)
+                        except Exception as e:
+                            logger.warning("漏报记录写入 ES 失败: %s", e)
+                    logger.info("漏报攻击记录写入 %d 条", len(unalerted_records))
+
+            except Exception as e:
+                logger.error("后台规则生成/漏报处理失败: %s", e, exc_info=True)
+
+        threading.Thread(target=_bg_task, daemon=True, name="bg-rule-unalerted").start()
 
     # 记录到去重缓存
     if deduper:
@@ -176,7 +212,37 @@ async def analyze_es_alert(doc_id: str):
     analyzer = get_analyzer()
     analysis = analyzer.analyze(alert)
 
+    # 提取后台上下文（规则生成 + 漏报处理），不写入 ES
+    bg_context = analysis.pop("_bg_context", None)
+
     doc_id_new = es.write_analysis(analysis)
     analysis["es_doc_id"] = doc_id_new
+
+    # 后台执行规则生成 + 漏报处理
+    if bg_context:
+        import threading
+        def _bg_task_manual():
+            try:
+                ctx = bg_context["ctx"]
+                related_logs = bg_context["related_logs"]
+                rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
+                if rule_result:
+                    analysis["generated_rule"] = rule_result
+                unalerted_records = analyzer._process_unalerted_attacks(
+                    ctx, analysis, related_logs
+                )
+                if unalerted_records:
+                    for rec in unalerted_records:
+                        rec["triggered_by_alert"] = doc_id_new
+                        # source_alert_id 已在 _build_unalerted_analysis 中设置
+                        try:
+                            es.write_analysis(rec)
+                        except Exception as e:
+                            logger.warning("漏报记录写入 ES 失败: %s", e)
+            except Exception as e:
+                logger.error("后台规则生成/漏报处理失败: %s", e, exc_info=True)
+
+        threading.Thread(target=_bg_task_manual, daemon=True,
+                         name="bg-rule-unalerted-manual").start()
 
     return {"status": "analyzed", "analysis": analysis}

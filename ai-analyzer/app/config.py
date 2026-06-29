@@ -64,6 +64,18 @@ class Config:
         })
 
     @property
+    def threat_intel(self) -> dict:
+        """威胁情报查询配置"""
+        return self._config.get("threat_intel", {
+            "enabled": False,
+        })
+
+    @property
+    def threat_intel_api_key(self) -> str:
+        """获取威胁情报 API Key（直接从配置读取）"""
+        return self.threat_intel.get("api_key", "")
+
+    @property
     def es_password(self) -> str:
         """从环境变量获取 ES 密码"""
         env_key = self.elasticsearch.get("password_env", "ELASTIC_PASSWORD")

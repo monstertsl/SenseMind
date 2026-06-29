@@ -13,13 +13,14 @@ from ..json_utils import extract_json
 logger = logging.getLogger(__name__)
 
 
-ANALYSIS_SYSTEM_PROMPT = """你是一个专业的 SOC（安全运营中心）安全分析专家。基于告警信息、关联日志和安全知识库，输出威胁研判结果。
+ANALYSIS_SYSTEM_PROMPT = """你是一个专业的 SOC（安全运营中心）安全分析专家。基于告警信息、关联日志、安全知识库和威胁情报，输出威胁研判结果。
 
 你需要基于以下信息进行分析：
 1. 告警的 SOC 分类、MITRE ATT&CK 技术编号、攻击阶段
 2. 关联的同会话日志（通过 community_id 或 IP+时间窗口关联）
 3. 告警签名、五元组、HTTP/TLS/DNS 等协议元数据
 4. 安全知识库中的参考信息（MITRE 技术说明、处置手册等）
+5. 威胁情报（如已配置，包含 IP/域名的信誉查询结果）
 
 输出要求：
 - threat_verdict: "误报" | "可疑" | "确认威胁" 三选一
@@ -60,6 +61,9 @@ ANALYSIS_USER_TEMPLATE = """请分析以下安全告警：
 
 ## 安全知识库参考
 {knowledge}
+
+## 威胁情报
+{threat_intel}
 
 请综合以上信息进行威胁研判，严格按 JSON 格式输出分析结果。"""
 

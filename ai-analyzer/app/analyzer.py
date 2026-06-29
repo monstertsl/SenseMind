@@ -10,6 +10,9 @@ Stage 6: 规则生成 (Rule Generator)      - 确认攻击但未触发告警时�
 
 import logging
 import time
+import re
+import os
+import threading
 from langchain_openai import ChatOpenAI
 from .config import Config
 from .models import AlertContext, TriageResult
@@ -17,12 +20,36 @@ from .chains.normalize import normalize_chain
 from .chains.triage import create_triage_chain
 from .chains.analysis import create_analysis_chain
 from .chains.rule_generator import create_rule_generator_chain
+from .chains.unalerted_analysis import create_unalerted_analysis_chain
 from .tools.es_tools import format_logs
 from .knowledge.rag import create_knowledge_retriever
 from .es_client import ESClient
 from .attack_detector import find_unalerted_attacks
+from .threat_intel import ThreatIntelClient
 
 logger = logging.getLogger(__name__)
+
+
+# 语义检测攻击类型 → SOC 分类 / MITRE / 技术名 映射
+ATTACK_TYPE_SOC_MAPPING = {
+    "sql_injection":         {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "SQL注入"},
+    "ognl_injection":        {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "OGNL注入"},
+    "ssti":                  {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "SSTI模板注入"},
+    "ssrf":                  {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "SSRF服务端请求伪造"},
+    "xxe":                   {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "XXE外部实体注入"},
+    "spring_spel":           {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "Spring SpEL注入"},
+    "xss":                   {"soc_category": "01", "soc_name": "Web应用攻击", "mitre_id": "T1190", "technique": "XSS跨站脚本"},
+    "log4shell":             {"soc_category": "04", "soc_name": "漏洞利用",   "mitre_id": "T1068", "technique": "Log4Shell远程代码执行"},
+    "deserialization":       {"soc_category": "04", "soc_name": "漏洞利用",   "mitre_id": "T1068", "technique": "反序列化漏洞"},
+    "confluence_ognl":       {"soc_category": "04", "soc_name": "漏洞利用",   "mitre_id": "T1068", "technique": "Confluence OGNL注入"},
+    "druid":                 {"soc_category": "04", "soc_name": "漏洞利用",   "mitre_id": "T1068", "technique": "Druid漏洞利用"},
+    "rce_command_injection": {"soc_category": "11", "soc_name": "命令执行",   "mitre_id": "T1059", "technique": "命令注入"},
+    "webshell_upload":       {"soc_category": "11", "soc_name": "命令执行",   "mitre_id": "T1059", "technique": "Webshell上传"},
+    "file_read_traversal":   {"soc_category": "13", "soc_name": "信息泄露",   "mitre_id": "T1552", "technique": "路径遍历/文件读取"},
+    "dns_tunneling":         {"soc_category": "08", "soc_name": "隧道通信",   "mitre_id": "T1572", "technique": "DNS隧道"},
+    "c2_callback":           {"soc_category": "05", "soc_name": "恶意通信C2", "mitre_id": "T1071", "technique": "C2回调通信"},
+    "suspicious_tls_sni":    {"soc_category": "05", "soc_name": "恶意通信C2", "mitre_id": "T1071", "technique": "可疑TLS SNI"},
+}
 
 
 class AlertAnalyzer:
@@ -48,6 +75,7 @@ class AlertAnalyzer:
         # 初始化各阶段 Chain
         self.triage_chain = create_triage_chain(self.llm)
         self.analysis_chain = create_analysis_chain(self.llm)
+        self.unalerted_chain = create_unalerted_analysis_chain(self.llm)
 
         # 初始化知识检索
         self.knowledge_retriever = create_knowledge_retriever(cfg.knowledge_dir)
@@ -59,6 +87,8 @@ class AlertAnalyzer:
         self.rule_writer = None
         # 记录已生成过规则的 signature_id，避免同一签名重复生成
         self._rule_generated_sids = set()
+        # 记录已处理的漏报攻击（community_id + url + attack_types），避免同会话多告警重复写入
+        self._processed_unalerted = set()
         if self.rule_gen_enabled:
             self.rule_generator = create_rule_generator_chain(self.llm)
             try:
@@ -71,8 +101,38 @@ class AlertAnalyzer:
                 logger.warning("RuleWriter 初始化失败，规则生成功能禁用: %s", e)
                 self.rule_gen_enabled = False
 
+        # 后台热加载线程：定时检查 local.rules 修改时间，有变化则热加载
+        self._rules_dirty = False
+        self._reload_thread = None
+        if self.rule_gen_enabled:
+            self._start_reload_thread()
+
         logger.info("AI 分析器已初始化 (6阶段Chain)，模型: %s，规则生成: %s",
                      self.model_name, "启用" if self.rule_gen_enabled else "禁用")
+
+    def _start_reload_thread(self):
+        """启动后台热加载线程，每 30 秒检查一次"""
+        def reload_loop():
+            last_mtime = 0
+            try:
+                last_mtime = os.path.getmtime(self.rule_writer.rules_file)
+            except Exception:
+                pass
+            while True:
+                time.sleep(30)
+                try:
+                    current_mtime = os.path.getmtime(self.rule_writer.rules_file)
+                    if current_mtime > last_mtime:
+                        last_mtime = current_mtime
+                        logger.info("检测到 local.rules 变更，后台热加载")
+                        self.rule_writer.reload_suricata()
+                except Exception as e:
+                    logger.debug("后台热加载检查失败: %s", e)
+
+        t = threading.Thread(target=reload_loop, daemon=True, name="rule-reloader")
+        t.start()
+        self._reload_thread = t
+        logger.info("后台规则热加载线程已启动 (30s 检查间隔)")
 
     def analyze(self, alert: dict, related_logs: list = None) -> dict:
         """执行 5 阶段分析流水线
@@ -93,35 +153,47 @@ class AlertAnalyzer:
                      ctx.signature, ctx.severity, ctx.community_id[:20])
 
         # === Stage 2: 告警研判 ===
-        logger.info("=== Stage 2: 告警研判 (Triage) ===")
-        triage_input = {
-            "alert_summary": ctx.to_summary(),
-            "soc_category": ctx.soc_category,
-            "soc_name": ctx.soc_name,
-            "mitre_id": ctx.mitre_id,
-            "attack_stage": ctx.attack_stage,
-        }
-        try:
-            t0 = time.time()
-            triage = self.triage_chain(triage_input)
-            logger.info("研判完成 (%.1fs): risk=%s, need_session=%s, need_history=%s, need_threat_intel=%s",
-                        time.time() - t0,
-                        triage.risk,
-                        triage.need_session_query,
-                        triage.need_history_query,
-                        triage.need_threat_intel)
-        except Exception as e:
-            logger.warning("研判 Chain 失败，使用默认值: %s", e)
+        # severity >= 2 的告警直接查关联日志，跳过 Triage LLM 调用，节省 token
+        if ctx.severity >= 2:
+            logger.info("=== Stage 2: 跳过 Triage (severity=%d >= 2) ===", ctx.severity)
             triage = TriageResult(
                 need_session_query=True,
-                need_history_query=False,
+                need_history_query=(ctx.severity >= 3),
                 need_threat_intel=False,
-                risk="medium",
-                triage_reason=f"研判失败，使用默认策略: {e}",
+                risk="high" if ctx.severity >= 2 else "medium",
+                triage_reason=f"severity={ctx.severity}，跳过 Triage 直接查询关联日志",
             )
+        else:
+            logger.info("=== Stage 2: 告警研判 (Triage) ===")
+            triage_input = {
+                "alert_summary": ctx.to_summary(),
+                "soc_category": ctx.soc_category,
+                "soc_name": ctx.soc_name,
+                "mitre_id": ctx.mitre_id,
+                "attack_stage": ctx.attack_stage,
+            }
+            try:
+                t0 = time.time()
+                triage = self.triage_chain(triage_input)
+                logger.info("研判完成 (%.1fs): risk=%s, need_session=%s, need_history=%s, need_threat_intel=%s",
+                            time.time() - t0,
+                            triage.risk,
+                            triage.need_session_query,
+                            triage.need_history_query,
+                            triage.need_threat_intel)
+            except Exception as e:
+                logger.warning("研判 Chain 失败，使用默认值: %s", e)
+                triage = TriageResult(
+                    need_session_query=True,
+                    need_history_query=False,
+                    need_threat_intel=False,
+                    risk="medium",
+                    triage_reason=f"研判失败，使用默认策略: {e}",
+                )
 
         # === Stage 3: 动态关联查询 ===
         logger.info("=== Stage 3: 动态关联查询 ===")
+        threat_intel_text = "无威胁情报"
         if related_logs is None:
             # 外部未预查，由 Triage 决定是否查询
             related_logs = []
@@ -131,6 +203,7 @@ class AlertAnalyzer:
                     related_logs = es.query_related_logs(
                         community_id=ctx.community_id,
                         src_ip=ctx.src_ip,
+                        dst_ip=ctx.dst_ip,
                         timestamp=ctx.timestamp,
                     )
                     logger.info("关联日志查询: %d 条 (community_id=%s)",
@@ -141,14 +214,35 @@ class AlertAnalyzer:
             if triage.need_history_query and ctx.src_ip:
                 try:
                     es = ESClient()
-                    history = es.query_src_ip_history(ctx.src_ip)
+                    history = es.query_src_ip_history(
+                        ctx.src_ip, dst_ip=ctx.dst_ip
+                    )
                     logger.info("源IP历史查询: %d 条 (src_ip=%s)", len(history), ctx.src_ip)
                     # 历史记录追加到关联日志
                     related_logs.extend(history)
                 except Exception as e:
                     logger.warning("源IP历史查询失败: %s", e)
+
+            # 威胁情报查询
+            if triage.need_threat_intel:
+                try:
+                    ti = ThreatIntelClient()
+                    threat_intel_text = ti.query_for_alert(
+                        src_ip=ctx.src_ip,
+                        dst_ip=ctx.dst_ip,
+                        tls_sni=ctx.tls_sni,
+                        http_host=ctx.http_host,
+                    )
+                    logger.info("威胁情报查询完成: %d 字符", len(threat_intel_text))
+                except Exception as e:
+                    logger.warning("威胁情报查询失败: %s", e)
         else:
             logger.info("使用外部传入的关联日志: %d 条", len(related_logs))
+
+        # 补充 HTTP 上下文：当 alert 事件缺少 http 字段时（HTTP keep-alive 多事务场景），
+        # 从关联日志的 http 事件中查找实际触发告警的 URL
+        if related_logs and not ctx.http_url:
+            ctx = self._enrich_http_context(ctx, related_logs)
 
         # === Stage 4: 知识增强 (RAG) ===
         logger.info("=== Stage 4: 知识增强 (RAG) ===")
@@ -171,6 +265,7 @@ class AlertAnalyzer:
             "related_count": len(related_logs),
             "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
             "knowledge": knowledge,
+            "threat_intel": threat_intel_text,
         }
         try:
             t0 = time.time()
@@ -187,81 +282,278 @@ class AlertAnalyzer:
         # 补充元数据
         self._enrich_metadata(analysis, ctx, alert, related_logs)
 
-        # === Stage 6: 规则生成 ===
-        rule_result = self._try_generate_rule(ctx, analysis, related_logs)
-        if rule_result:
-            analysis["generated_rule"] = rule_result
+        # 标记分析来源
+        analysis["analysis_source"] = "alert_triage"
 
-        logger.info("=== 全流程完成 (%.1fs) ===", time.time() - t_total)
+        # Stage 6 规则生成 + 漏报处理 放到后台线程，不阻塞主记录写入 ES
+        analysis["_bg_context"] = {
+            "ctx": ctx,
+            "related_logs": related_logs,
+        }
+
+        logger.info("=== 主分析完成 (%.1fs)，规则生成和漏报处理转后台 ===", time.time() - t_total)
         return analysis
 
-    def _try_generate_rule(self, ctx: AlertContext, analysis: dict,
-                           related_logs: list) -> dict | None:
-        """Stage 6: 确认攻击时，自动生成 Suricata 规则
+    def _generate_main_rule(self, ctx: AlertContext, analysis: dict,
+                            related_logs: list) -> dict | None:
+        """Stage 6 主路径: 基于当前告警 payload 生成 Suricata 规则
 
         触发条件:
         1. 规则生成功能已启用
         2. AI 判定为"确认威胁"
         3. 置信度 >= 0.7
-        4. 有可用 payload 或关联日志中有未触发 alert 的攻击事件
+        4. 有可用 payload
 
-        两个生成路径:
-        - 主路径: 基于当前告警 payload 生成规则（当前规则可能不够精确）
-        - 反向触发: 检查同 community_id 的非 alert 事件，为漏报的攻击生成规则
+        漏报攻击的规则生成在 _process_unalerted_attacks 中独立处理。
 
         Returns:
-            规则生成结果 dict 或 list，或 None（未触发）
+            规则生成结果 dict 或 None（未触发）
         """
         if not self.rule_gen_enabled or not self.rule_writer:
             return None
 
-        # 仅对确认威胁的告警生成规则
         if analysis.get("threat_verdict") != "确认威胁":
             return None
 
-        # 按 signature_id 去重：同一告警签名已生成过规则就不再生成
         if ctx.signature_id and ctx.signature_id in self._rule_generated_sids:
             logger.info("Stage 6: signature_id=%d 已生成过规则，跳过", ctx.signature_id)
             return None
 
-        # 置信度门槛
         confidence = analysis.get("confidence", 0)
         if confidence < 0.7:
             logger.info("Stage 6: 置信度 %.2f < 0.7，跳过规则生成", confidence)
             return None
 
-        results = []
-
-        # === 主路径: 基于当前告警生成规则 ===
-        if ctx.payload:
-            logger.info("=== Stage 6: 规则生成（主路径）===")
-            result = self._generate_single_rule(
-                ctx, analysis, related_logs,
-                payload=ctx.payload[:2000],
-                current_signature=ctx.signature,
-            )
-            if result:
-                results.append(result)
-
-        # === 反向触发: 检查关联日志中未触发 alert 的攻击事件 ===
-        if related_logs:
-            unalerted = find_unalerted_attacks(related_logs)
-            if unalerted:
-                logger.info("=== Stage 6: 规则生成（反向触发）===")
-                logger.info("发现 %d 个未触发告警的攻击事件", len(unalerted))
-                for item in unalerted:
-                    result = self._generate_single_rule(
-                        ctx, analysis, related_logs,
-                        payload=item["payload"] or item["url"],
-                        current_signature="（无 - 漏报攻击）",
-                        unalerted_info=item,
-                    )
-                    if result:
-                        results.append(result)
-
-        if not results:
+        if not ctx.payload:
             return None
-        return results[0] if len(results) == 1 else results
+
+        logger.info("=== Stage 6: 规则生成（主路径）===")
+        result = self._generate_single_rule(
+            ctx, analysis, related_logs,
+            payload=ctx.payload[:2000],
+            current_signature=ctx.signature,
+        )
+        if result:
+            # 记录已生成规则的 signature_id
+            if ctx.signature_id:
+                self._rule_generated_sids.add(ctx.signature_id)
+        return result
+
+    def _process_unalerted_attacks(self, ctx: AlertContext, analysis: dict,
+                                    related_logs: list) -> list[dict]:
+        """处理漏报攻击：语义检测 + 轻量 LLM 研判 + 批量规则生成
+
+        对关联日志中未触发 alert 的攻击事件，批量调用轻量 LLM 补全研判字段，
+        为每个漏报事件构建独立的分析记录（写入 soc-ai-*）。
+
+        规则生成策略：
+        - 漏报攻击的规则生成批量处理，单次 LLM 调用生成所有规则
+        - 规则写入后只热加载一次，避免 N 次热加载超时阻塞主流程
+
+        Returns:
+            漏报攻击分析记录列表，空列表表示无漏报
+        """
+        if not related_logs:
+            return []
+
+        unalerted = find_unalerted_attacks(related_logs)
+        if not unalerted:
+            return []
+
+        # 去重：同一 community_id + url + attack_types 的漏报事件只处理一次
+        # 避免同会话多告警重复发现同一批漏报攻击
+        new_unalerted = []
+        for item in unalerted:
+            dedup_key = (
+                ctx.community_id,
+                item["url"],
+                tuple(sorted(item["attack_types"])),
+            )
+            if dedup_key in self._processed_unalerted:
+                continue
+            self._processed_unalerted.add(dedup_key)
+            new_unalerted.append(item)
+
+        if not new_unalerted:
+            logger.info("漏报攻击 %d 条均已处理过，跳过", len(unalerted))
+            return []
+
+        if len(new_unalerted) < len(unalerted):
+            logger.info("漏报攻击去重: %d → %d 条", len(unalerted), len(new_unalerted))
+        unalerted = new_unalerted
+
+        logger.info("发现 %d 个漏报攻击事件，启动轻量分析", len(unalerted))
+
+        # 批量轻量 LLM 研判（单次调用处理所有漏报事件）
+        llm_results = []
+        try:
+            t0 = time.time()
+            unalerted_list_text = "\n".join(
+                f"{i + 1}. 攻击类型: {', '.join(item['attack_types'])} | "
+                f"事件: {item['event_type']} | URL: {item['url']} | "
+                f"Payload: {item['payload'][:200]}"
+                for i, item in enumerate(unalerted)
+            )
+            llm_results = self.unalerted_chain({
+                "main_alert_summary": ctx.to_summary(),
+                "count": len(unalerted),
+                "unalerted_list": unalerted_list_text,
+            })
+            logger.info("漏报轻量分析完成 (%.1fs): %d 条结果",
+                        time.time() - t0, len(llm_results))
+        except Exception as e:
+            logger.warning("漏报轻量分析失败，使用默认值: %s", e)
+
+        # 为每个漏报事件构建独立分析记录（不含规则生成，避免阻塞）
+        records = []
+        rules_to_write = []
+        for i, item in enumerate(unalerted):
+            llm_data = llm_results[i] if i < len(llm_results) else {}
+            record = self._build_unalerted_analysis(ctx, item, llm_data, related_logs)
+            if record:
+                records.append(record)
+                # 收集需要生成规则的漏报事件
+                if self.rule_gen_enabled and self.rule_writer:
+                    rules_to_write.append((i, item, record))
+
+        # 批量规则生成：每个漏报事件生成规则，但规则写入后只热加载一次
+        if rules_to_write:
+            self._batch_generate_unalerted_rules(ctx, analysis, related_logs, rules_to_write, records)
+
+        return records
+
+    def _batch_generate_unalerted_rules(self, ctx: AlertContext, analysis: dict,
+                                         related_logs: list,
+                                         rules_to_write: list,
+                                         records: list[dict]):
+        """批量生成漏报攻击规则
+
+        为每个漏报事件生成规则（串行 LLM 调用），但规则写入文件后
+        只执行一次热加载，避免 N 次 30s 超时阻塞主流程。
+
+        Args:
+            rules_to_write: [(index, item, record), ...] 需要生成规则的漏报事件
+            records: 漏报记录列表，生成的规则会挂到对应记录上
+        """
+        rules_written = []
+        for idx, item, record in rules_to_write:
+            try:
+                t0 = time.time()
+                rule_input = {
+                    "alert_summary": ctx.to_summary(),
+                    "threat_verdict": "确认威胁",
+                    "attack_technique": record.get("attack_technique", ""),
+                    "confidence": record.get("confidence", 0.7),
+                    "payload": (item["payload"] or item["url"])[:2000],
+                    "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
+                    "current_signature": "（无 - 漏报攻击）",
+                    "unalerted_attack_types": ", ".join(item["attack_types"]),
+                    "unalerted_url": item["url"],
+                }
+
+                gen_result = self.rule_generator(rule_input)
+                logger.info("漏报规则生成 (%d/%d, %.1fs): fp_risk=%s",
+                            idx + 1, len(rules_to_write),
+                            time.time() - t0, gen_result.fp_risk)
+
+                result = {
+                    "rule": gen_result.rule,
+                    "fp_risk": gen_result.fp_risk,
+                    "should_write": gen_result.should_write,
+                    "reason": gen_result.reason,
+                    "written": False,
+                    "reloaded": False,
+                    "source": "unalerted",
+                    "unalerted_attack_types": item["attack_types"],
+                    "unalerted_url": item["url"],
+                }
+
+                # 仅低误报规则写入文件（不立即热加载）
+                if gen_result.should_write and gen_result.fp_risk == "low":
+                    write_result = self.rule_writer.write_only(gen_result.rule)
+                    result["written"] = write_result["written"]
+                    result["message"] = write_result["message"]
+                    if write_result["written"]:
+                        rules_written.append(gen_result.rule)
+                else:
+                    result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
+
+                record["generated_rule"] = result
+
+            except Exception as e:
+                logger.error("漏报规则生成失败: %s", e, exc_info=True)
+
+        # 规则已写入文件，热加载由后台线程统一处理，不阻塞主流程
+        if rules_written:
+            logger.info("漏报规则批量写入 %d 条（热加载由后台线程处理）", len(rules_written))
+
+    def _build_unalerted_analysis(self, ctx: AlertContext, item: dict,
+                                   llm_data: dict, related_logs: list) -> dict | None:
+        """构建单条漏报攻击的分析记录
+
+        语义检测填充固定字段，轻量 LLM 填充研判字段，字段结构与主告警记录一致。
+
+        Args:
+            ctx: 主告警上下文（复用网络五元组等信息）
+            item: find_unalerted_attacks 返回的单个漏报事件
+            llm_data: 轻量 LLM 输出的研判字段
+            related_logs: 关联日志（用于规则生成上下文）
+        """
+        attack_type = item["attack_types"][0] if item["attack_types"] else "unknown"
+        mapping = ATTACK_TYPE_SOC_MAPPING.get(attack_type, {
+            "soc_category": "", "soc_name": "未知攻击",
+            "mitre_id": "", "technique": attack_type,
+        })
+
+        record = {
+            "analysis_source": "semantic_unalerted",
+            "threat_verdict": "确认威胁",
+            "attack_technique": mapping["technique"],
+            "attack_stage": ctx.attack_stage,
+            "impact_scope": llm_data.get("impact_scope", "N/A"),
+            "confidence": llm_data.get("confidence", 0.7),
+            "attack_chain": llm_data.get("attack_chain", "N/A"),
+            "handling_suggestion": llm_data.get("handling_suggestion", "N/A"),
+            "attack_result": llm_data.get("attack_result", "未知"),
+            "reasoning": llm_data.get(
+                "reasoning", f"语义检测命中: {', '.join(item['attack_types'])}"
+            ),
+            # 元数据
+            "model": self.model_name,
+            "soc_category": mapping["soc_category"],
+            "soc_name": mapping["soc_name"],
+            "mitre_id": mapping["mitre_id"],
+            "attack_stage_tag": ctx.attack_stage,
+            # 复用主告警的五元组（同一会话）
+            "source_ip": ctx.src_ip,
+            "source_port": ctx.src_port,
+            "destination_ip": ctx.dst_ip,
+            "destination_port": ctx.dst_port,
+            "protocol": ctx.protocol,
+            "community_id": ctx.community_id,
+            # 漏报事件无原始告警签名
+            "alert_signature": f"语义检测:{mapping['technique']}",
+            "alert_signature_id": 0,
+            "alert_category": "语义检测",
+            "alert_severity": 2,
+            "alert_timestamp": item["timestamp"],
+            "related_log_count": len(related_logs),
+            # source_alert_id 指向漏报攻击自身的原始日志文档（soc-*），
+            # 而非触发分析的主告警（triggered_by_alert 已记录主AI记录）
+            "source_alert_id": item.get("log_id", ""),
+            "source_alert_index": item.get("log_index", ""),
+            "payload": (item["payload"] or item["url"] or "")[:4000],
+        }
+
+        # 协议特定字段
+        if item["event_type"] == "http":
+            record["http_url"] = item["url"]
+        elif item["event_type"] == "tls":
+            record["tls_sni"] = item["payload"]
+
+        # 规则生成在 _batch_generate_unalerted_rules 中批量处理
+
+        return record
 
     def _generate_single_rule(self, ctx: AlertContext, analysis: dict,
                               related_logs: list, payload: str,
@@ -305,16 +597,13 @@ class AlertAnalyzer:
                 result["unalerted_attack_types"] = unalerted_info["attack_types"]
                 result["unalerted_url"] = unalerted_info["url"]
 
-            # 仅低误报规则写入文件
+            # 仅低误报规则写入文件（不立即热加载，由后台线程统一处理）
             if gen_result.should_write and gen_result.fp_risk == "low":
-                write_result = self.rule_writer.write_and_reload(gen_result.rule)
+                write_result = self.rule_writer.write_only(gen_result.rule)
                 result["written"] = write_result["written"]
-                result["reloaded"] = write_result["reloaded"]
+                result["reloaded"] = False  # 由后台线程异步热加载
                 result["message"] = write_result["message"]
                 logger.info("规则写入: %s", write_result["message"])
-                # 记录已生成规则的 signature_id（仅主路径，非反向触发）
-                if not unalerted_info and ctx.signature_id:
-                    self._rule_generated_sids.add(ctx.signature_id)
             else:
                 result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
                 logger.info("规则未写入: %s", result["message"])
@@ -324,6 +613,102 @@ class AlertAnalyzer:
         except Exception as e:
             logger.error("规则生成失败: %s", e, exc_info=True)
             return {"error": str(e), "written": False}
+
+    def _enrich_http_context(self, ctx: AlertContext,
+                             related_logs: list) -> AlertContext:
+        """从关联日志中补充 HTTP 上下文
+
+        Suricata alert 事件在 HTTP keep-alive 多事务场景下，
+        payload_printable 可能只包含流的第一个 HTTP 事务，
+        而实际触发告警的是后续事务（不同 tx_id）。
+        此方法从关联的 http 事件中查找实际触发告警的 URL。
+
+        策略：优先匹配 signature 关键词到 http 事件的 URL，
+        找不到则用最后一个 http 事件的 URL（最新事务）。
+        """
+        # 收集同会话的 http 事件 URL
+        http_events = []
+        for log in related_logs:
+            eve = log.get("suricata", {}).get("eve", {})
+            if eve.get("event_type") != "http":
+                continue
+            http = eve.get("http", {})
+            url = http.get("url", "")
+            method = http.get("http_method", "")
+            host = http.get("hostname", "")
+            if url:
+                http_events.append({
+                    "url": url,
+                    "method": method,
+                    "host": host,
+                    "timestamp": log.get("@timestamp", ""),
+                })
+
+            # Zeek http 日志
+            if not url and log.get("event", {}).get("dataset") == "zeek.http":
+                url = log.get("url", {}).get("original", "")
+                host = log.get("url", {}).get("domain", "")
+                if url:
+                    http_events.append({
+                        "url": url,
+                        "method": log.get("http", {}).get("request", {}).get("method", ""),
+                        "host": host,
+                        "timestamp": log.get("@timestamp", ""),
+                    })
+
+        if not http_events:
+            return ctx
+
+        # 从 signature 中提取关键词，尝试匹配到 http 事件的 URL
+        sig_lower = ctx.signature.lower()
+        matched_url = ""
+        matched_host = ""
+        matched_method = ""
+
+        for event in http_events:
+            url_lower = event["url"].lower()
+            # 取 signature 中的关键词片段（如 "cat /etc/passwd" → "cat" + "passwd"）
+            # 用 URL 解码后的 URL 匹配
+            try:
+                from urllib.parse import unquote
+                url_decoded = unquote(url_lower)
+            except Exception:
+                url_decoded = url_lower
+
+            # 检查 signature 中的关键内容是否出现在 URL 中
+            # 提取 signature 中长度 > 3 的词
+            sig_words = [w for w in re.findall(r'[a-zA-Z_/.]+', sig_lower) if len(w) > 3]
+            match_count = sum(1 for w in sig_words if w in url_decoded)
+            if match_count >= 2:  # 至少匹配 2 个关键词
+                matched_url = event["url"]
+                matched_host = event["host"]
+                matched_method = event["method"]
+                logger.info("HTTP 上下文补充: signature 匹配到 URL %s", matched_url[:80])
+                break
+
+        # 未匹配到 signature 关键词，使用最后一个 http 事件（最新事务）
+        if not matched_url and http_events:
+            last = http_events[-1]
+            matched_url = last["url"]
+            matched_host = last["host"]
+            matched_method = last["method"]
+            logger.info("HTTP 上下文补充: 使用最新 http 事件 URL %s", matched_url[:80])
+
+        if matched_url:
+            ctx.http_url = matched_url
+            if matched_host:
+                ctx.http_host = matched_host
+            if matched_method:
+                ctx.http_method = matched_method
+            # 重建 payload，包含实际触发告警的请求行
+            request_line = f"{matched_method} {matched_host}{matched_url} HTTP/1.1"
+            if ctx.payload:
+                # 追加到现有 payload 前面
+                ctx.payload = f"[实际触发告警的请求]\n{request_line}\n\n[alert payload（可能为流首事务）]\n{ctx.payload}"
+            else:
+                ctx.payload = request_line
+
+        return ctx
 
     def _enrich_metadata(self, analysis: dict, ctx: AlertContext,
                          alert: dict, related_logs: list):
