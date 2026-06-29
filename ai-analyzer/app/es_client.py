@@ -25,6 +25,48 @@ class ESClient:
             headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"},
         )
 
+    # 关联日志查询统一使用的 _source 字段列表（覆盖 Suricata + Zeek）
+    _RELATED_SOURCE_FIELDS = [
+        "@timestamp",
+        "event.module",
+        "event.kind",
+        "event.dataset",
+        "event.original",
+        "suricata.eve.event_type",
+        "suricata.eve.alert.signature",
+        "suricata.eve.alert.signature_id",
+        "suricata.eve.alert.category",
+        "suricata.eve.alert.severity",
+        "suricata.eve.tx_id",
+        "suricata.eve.http.http_method",
+        "suricata.eve.http.url",
+        "suricata.eve.http.hostname",
+        "suricata.eve.http.http_user_agent",
+        "suricata.eve.tls.sni",
+        "suricata.eve.dns",
+        "suricata.eve.payload_printable",
+        "network.transport",
+        "network.community_id",
+        "source.ip",
+        "source.port",
+        "destination.ip",
+        "destination.port",
+        # Zeek 字段
+        "zeek.session_id",
+        "zeek.http",
+        "zeek.dns",
+        "zeek.ssl",
+        "zeek.connection",
+        "url.original",
+        "url.domain",
+        "http.request.method",
+        "http.response.status_code",
+        "dns.question.name",
+        "dns.answers",
+        "dns.response_code",
+        "soc",
+    ]
+
     def query_related_logs(
         self,
         community_id: str = None,
@@ -32,15 +74,24 @@ class ESClient:
         dst_ip: str = None,
         timestamp: str = None,
     ) -> list:
-        """
-        查询关联日志：
-        1. 优先用 community_id 精确关联
-        2. 回退到 src_ip/dst_ip + 时间窗口模糊关联
+        """查询关联日志：community_id 精确关联 + IP 时间窗口关联，合并去重
+
+        策略：
+        1. community_id 精确关联（同 TCP/UDP 流的所有日志，含 Suricata + Zeek）
+        2. IP + 时间窗口关联（src_ip 和 dst_ip 都查，覆盖多连接/多源攻击）
+        3. 两者结果合并去重（按 ES _id），按时间排序
+
+        与旧逻辑的区别：
+        - 旧: community_id 查到结果就直接返回，不再查 IP 关联 → 漏掉同 IP 不同流量的攻击
+        - 新: 两种查询都执行，合并去重，同时覆盖同会话和同 IP 的关联场景
         """
         max_logs = self.correlation.get("max_related_logs", 20)
         time_window = self.correlation.get("time_window_seconds", 300)
 
-        # 方式1: community_id 精确关联
+        results = []
+        seen_ids = set()
+
+        # === 方式1: community_id 精确关联 ===
         if community_id:
             query = {
                 "query": {
@@ -54,54 +105,39 @@ class ESClient:
                 },
                 "size": max_logs,
                 "sort": [{"@timestamp": "asc"}],
-                "_source": [
-                    "@timestamp",
-                    "event.module",
-                    "event.kind",
-                    "suricata.eve.event_type",
-                    "suricata.eve.alert.signature",
-                    "suricata.eve.alert.category",
-                    "suricata.eve.alert.severity",
-                    "network.transport",
-                    "network.community_id",
-                    "source.ip",
-                    "source.port",
-                    "destination.ip",
-                    "destination.port",
-                    "suricata.eve.http.http_method",
-                    "suricata.eve.http.url",
-                    "suricata.eve.http.hostname",
-                    "suricata.eve.http.http_user_agent",
-                    "suricata.eve.tls.sni",
-                    "suricata.eve.dns",
-                    "soc",
-                ],
+                "_source": self._RELATED_SOURCE_FIELDS,
             }
             try:
                 resp = self.client.search(index=self.alert_index, body=query)
                 hits = resp["hits"]["hits"]
-                if hits:
-                    logger.info(
-                        "community_id=%s 关联到 %d 条日志", community_id, len(hits)
-                    )
-                    results = []
-                    for h in hits:
+                for h in hits:
+                    if h["_id"] not in seen_ids:
                         src = h["_source"]
                         src["_id"] = h["_id"]
                         src["_index"] = h["_index"]
                         results.append(src)
-                    return results
+                        seen_ids.add(h["_id"])
+                logger.info("community_id=%s 关联到 %d 条日志", community_id, len(hits))
             except Exception as e:
                 logger.warning("community_id 查询失败: %s", e)
 
-        # 方式2: IP + 时间窗口模糊关联
-        if src_ip and timestamp:
+        # === 方式2: IP + 时间窗口关联（src_ip 和 dst_ip 都查） ===
+        ips_to_query = []
+        if src_ip:
+            ips_to_query.append(src_ip)
+        if dst_ip and dst_ip != src_ip:
+            ips_to_query.append(dst_ip)
+
+        if ips_to_query and timestamp:
             try:
-                ts = datetime.fromisoformat(
-                    timestamp.replace("Z", "+00:00")
-                )
+                ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 time_from = (ts - timedelta(seconds=time_window)).isoformat()
                 time_to = (ts + timedelta(seconds=time_window)).isoformat()
+
+                ip_should = []
+                for ip in ips_to_query:
+                    ip_should.append({"term": {"source.ip": ip}})
+                    ip_should.append({"term": {"destination.ip": ip}})
 
                 query = {
                     "query": {
@@ -109,10 +145,7 @@ class ESClient:
                             "must": [
                                 {
                                     "bool": {
-                                        "should": [
-                                            {"term": {"source.ip": src_ip}},
-                                            {"term": {"destination.ip": src_ip}},
-                                        ],
+                                        "should": ip_should,
                                         "minimum_should_match": 1,
                                     }
                                 },
@@ -122,39 +155,27 @@ class ESClient:
                     },
                     "size": max_logs,
                     "sort": [{"@timestamp": "asc"}],
-                    "_source": [
-                        "@timestamp",
-                        "event.module",
-                        "event.kind",
-                        "suricata.eve.event_type",
-                        "suricata.eve.alert.signature",
-                        "suricata.eve.alert.severity",
-                        "network.transport",
-                        "source.ip",
-                        "source.port",
-                        "destination.ip",
-                        "destination.port",
-                        "suricata.eve.http.http_method",
-                        "suricata.eve.http.url",
-                        "suricata.eve.http.hostname",
-                        "suricata.eve.tls.sni",
-                        "soc",
-                    ],
+                    "_source": self._RELATED_SOURCE_FIELDS,
                 }
                 resp = self.client.search(index=self.alert_index, body=query)
                 hits = resp["hits"]["hits"]
-                logger.info("IP=%s 时间窗口关联到 %d 条日志", src_ip, len(hits))
-                results = []
+                added = 0
                 for h in hits:
-                    src = h["_source"]
-                    src["_id"] = h["_id"]
-                    src["_index"] = h["_index"]
-                    results.append(src)
-                return results
+                    if h["_id"] not in seen_ids:
+                        src = h["_source"]
+                        src["_id"] = h["_id"]
+                        src["_index"] = h["_index"]
+                        results.append(src)
+                        seen_ids.add(h["_id"])
+                        added += 1
+                logger.info("IP=%s 时间窗口关联到 %d 条日志（去重后新增 %d 条）",
+                            ips_to_query, len(hits), added)
             except Exception as e:
                 logger.warning("IP+时间窗口查询失败: %s", e)
 
-        return []
+        # 按时间排序
+        results.sort(key=lambda x: x.get("@timestamp", ""))
+        return results[:max_logs]
 
     def find_original_alert(self, community_id: str, signature_id: int,
                             timestamp: str) -> tuple:
@@ -235,21 +256,29 @@ class ESClient:
 
         return "", ""
 
-    def query_src_ip_history(self, src_ip: str, hours: int = 24) -> list:
-        """查询源IP的历史告警记录
+    def query_src_ip_history(self, src_ip: str, hours: int = 24,
+                             dst_ip: str = None) -> list:
+        """查询源IP（和目的IP）的历史告警记录
 
         Args:
             src_ip: 源IP地址
             hours: 查询时间窗口（小时），默认最近24小时
+            dst_ip: 目的IP地址（可选，同时查该 IP 的历史告警）
 
         Returns:
             历史告警列表
         """
-        if not src_ip:
+        ips_to_query = [ip for ip in [src_ip, dst_ip] if ip]
+        if not ips_to_query:
             return []
 
         time_to = datetime.utcnow().isoformat() + "Z"
         time_from = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
+
+        ip_should = []
+        for ip in ips_to_query:
+            ip_should.append({"term": {"source.ip": ip}})
+            ip_should.append({"term": {"destination.ip": ip}})
 
         query = {
             "query": {
@@ -257,10 +286,7 @@ class ESClient:
                     "must": [
                         {
                             "bool": {
-                                "should": [
-                                    {"term": {"source.ip": src_ip}},
-                                    {"term": {"destination.ip": src_ip}},
-                                ],
+                                "should": ip_should,
                                 "minimum_should_match": 1,
                             }
                         },
@@ -275,6 +301,7 @@ class ESClient:
                 "@timestamp",
                 "event.module",
                 "suricata.eve.alert.signature",
+                "suricata.eve.alert.signature_id",
                 "suricata.eve.alert.category",
                 "suricata.eve.alert.severity",
                 "network.transport",
@@ -288,7 +315,7 @@ class ESClient:
         try:
             resp = self.client.search(index=self.alert_index, body=query)
             hits = resp["hits"]["hits"]
-            logger.info("src_ip=%s 历史告警 %d 条 (近%d小时)", src_ip, len(hits), hours)
+            logger.info("IP=%s 历史告警 %d 条 (近%d小时)", ips_to_query, len(hits), hours)
             results = []
             for h in hits:
                 src = h["_source"]

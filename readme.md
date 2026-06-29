@@ -8,7 +8,9 @@
 - **Elastic 全栈一体化**：Filebeat → Logstash（字段裁剪 + ECS 转换 + SOC 分类）→ Elasticsearch → Kibana。
 - **SOC 14 大类分类**：Logstash 实时匹配 Suricata 告警，映射 MITRE ATT&CK 战术阶段，命中重点告警自动推送 AI。
 - **6 阶段 AI 研判**：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 最终分析 → 规则生成，AI 自主决策，结构化输出。
-- **AI 自学习闭环**：AI 确认攻击但原始告警未触发 `soc.matched` 标签时，自动生成低误报率 Suricata 规则写入 `local.rules` 并热加载。系统在运行过程中持续积累检测规则，逐步提升对未知攻击的发现与拦截能力。
+- **三层联合查询**：Community ID 精确关联（同会话全量日志，跨 Suricata + Zeek 探针）+ 源/目的 IP 时间窗口关联（覆盖多连接、横向移动）+ IP 历史告警查询（24h），结果去重合并。
+- **类语义检测引擎**：关键词匹配（13 类攻击特征）+ 递归解码（5 层 URL/HTML/Base64/Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），零 LLM 调用捕获编码绕过和变形攻击。
+- **AI 自学习闭环**：确认攻击后自动生成 Suricata 规则写入 `local.rules` 并热加载，采用 HTTP sticky buffer 精确匹配 + 动态地址组，持续积累检测能力。
 - **告警去重**：同一 `community_id` + `signature_id` 在时间窗口内只分析一次。
 - **一键部署**：证书生成、密码引导、规则更新、数据视图创建、仪表板导入全流程自动化。
 
@@ -54,7 +56,7 @@ SenseMind/
     ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
     └── app/                     # FastAPI + LangChain 6阶段 Chain
 ```
-使用`ai-analyzer/app/attack_detector.py`静态检查关联日志是否有未触发告警日志、`ai-analyzer/knowledge`仅有基础RAG知识，需对二者进行维护提高检测准确性
+`ai-analyzer/knowledge`仅有基础RAG知识，需对其进行维护提高检测准确性
 
 ## 快速开始
 
@@ -78,6 +80,23 @@ llm:
   max_tokens: 4000
   timeout: 60
 ```
+
+#### 威胁情报配置（可选）
+
+默认关闭，不影响部署。如需启用 IP/域名威胁情报查询，编辑 `ai-analyzer/config.yaml`：
+
+```yaml
+threat_intel:
+  enabled: true                                        # 开启查询
+  api_url: "http://10.0.0.1:8080/api/query?type={type}&value={value}"  # 接口地址，{type} 为 ip/domain，{value} 为查询值
+  api_key: "your-api-key"                              # API Key，留空则不传
+  api_key_in: "header"                                 # Key 传递方式: header 或 query
+  api_key_name: "x-apikey"                             # Key 的 header/参数名
+  timeout: 10                                          # 请求超时（秒）
+  jq_filter: ""                                        # 响应字段提取（jq 语法），留空返回原始 JSON
+```
+
+> 必须显式设置 `enabled: true` 且 `api_url` 非空才会启用查询，默认关闭不产生任何请求。修改后执行 `docker restart ai-analyzer` 生效。
 
 
 ```bash

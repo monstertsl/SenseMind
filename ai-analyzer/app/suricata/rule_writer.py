@@ -155,6 +155,21 @@ class RuleWriter:
 
         return re.sub(r'\|([0-9a-fA-F ]+)\|', replace_hex, content)
 
+    @staticmethod
+    def _has_invalid_hex(rule: str) -> bool:
+        """检查规则中是否有无效的十六进制编码
+
+        Suricata 要求 |...| 内的每个字节必须是 2 位十六进制，
+        不能混用 ASCII 字符（如 |3c 3f php|）或单 digit（如 |a|）。
+        """
+        hex_segments = re.findall(r'\|([^|]+)\|', rule)
+        for seg in hex_segments:
+            parts = seg.split()
+            for part in parts:
+                if len(part) != 2 or not all(c in '0123456789abcdefABCDEF' for c in part):
+                    return True
+        return False
+
     def write_rule(self, rule: str) -> bool:
         """写入一条规则到 local.rules
 
@@ -177,6 +192,11 @@ class RuleWriter:
             # 宽泛规则拦截：单个短 content 容易误报
             if self._is_too_broad(rule):
                 logger.warning("规则过于宽泛，跳过写入: %s", rule[:80])
+                return False
+
+            # 无效十六进制编码拦截：如 |3c 3f php| 或 |a|
+            if self._has_invalid_hex(rule):
+                logger.warning("规则包含无效的十六进制编码，跳过写入: %s", rule[:80])
                 return False
 
             # 始终用唯一 SID 覆盖 AI 提供的 SID（AI 常照抄示例中的 9000001）

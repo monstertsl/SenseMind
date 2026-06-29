@@ -21,6 +21,7 @@ from .tools.es_tools import format_logs
 from .knowledge.rag import create_knowledge_retriever
 from .es_client import ESClient
 from .attack_detector import find_unalerted_attacks
+from .threat_intel import ThreatIntelClient
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class AlertAnalyzer:
 
         # === Stage 3: 动态关联查询 ===
         logger.info("=== Stage 3: 动态关联查询 ===")
+        threat_intel_text = "无威胁情报"
         if related_logs is None:
             # 外部未预查，由 Triage 决定是否查询
             related_logs = []
@@ -131,6 +133,7 @@ class AlertAnalyzer:
                     related_logs = es.query_related_logs(
                         community_id=ctx.community_id,
                         src_ip=ctx.src_ip,
+                        dst_ip=ctx.dst_ip,
                         timestamp=ctx.timestamp,
                     )
                     logger.info("关联日志查询: %d 条 (community_id=%s)",
@@ -141,12 +144,28 @@ class AlertAnalyzer:
             if triage.need_history_query and ctx.src_ip:
                 try:
                     es = ESClient()
-                    history = es.query_src_ip_history(ctx.src_ip)
+                    history = es.query_src_ip_history(
+                        ctx.src_ip, dst_ip=ctx.dst_ip
+                    )
                     logger.info("源IP历史查询: %d 条 (src_ip=%s)", len(history), ctx.src_ip)
                     # 历史记录追加到关联日志
                     related_logs.extend(history)
                 except Exception as e:
                     logger.warning("源IP历史查询失败: %s", e)
+
+            # 威胁情报查询
+            if triage.need_threat_intel:
+                try:
+                    ti = ThreatIntelClient()
+                    threat_intel_text = ti.query_for_alert(
+                        src_ip=ctx.src_ip,
+                        dst_ip=ctx.dst_ip,
+                        tls_sni=ctx.tls_sni,
+                        http_host=ctx.http_host,
+                    )
+                    logger.info("威胁情报查询完成: %d 字符", len(threat_intel_text))
+                except Exception as e:
+                    logger.warning("威胁情报查询失败: %s", e)
         else:
             logger.info("使用外部传入的关联日志: %d 条", len(related_logs))
 
@@ -171,6 +190,7 @@ class AlertAnalyzer:
             "related_count": len(related_logs),
             "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
             "knowledge": knowledge,
+            "threat_intel": threat_intel_text,
         }
         try:
             t0 = time.time()

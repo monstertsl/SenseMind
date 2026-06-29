@@ -60,7 +60,10 @@ def create_es_tools(es_client):
 
 
 def format_logs(logs: list) -> str:
-    """格式化日志列表为文本（供 Chain 和 Tool 共用）"""
+    """格式化日志列表为文本（供 Chain 和 Tool 共用）
+
+    支持 Suricata 和 Zeek 两种数据源。
+    """
     if not logs:
         return "无关联日志"
 
@@ -69,6 +72,7 @@ def format_logs(logs: list) -> str:
         ts = log.get("@timestamp", "")[:19]
         module = log.get("event", {}).get("module", "")
         kind = log.get("event", {}).get("kind", "")
+        dataset = log.get("event", {}).get("dataset", "")
         event_type = log.get("suricata", {}).get("eve", {}).get("event_type", "")
 
         sig = ""
@@ -80,10 +84,54 @@ def format_logs(logs: list) -> str:
         src_str = f"{src.get('ip', '')}:{src.get('port', '')}"
         dst_str = f"{dst.get('ip', '')}:{dst.get('port', '')}"
 
-        line = f"  [{i}] {ts} | {module}/{kind}/{event_type}"
+        # 提取协议/应用层信息（Suricata 或 Zeek）
+        detail = ""
+        if event_type == "http" or dataset == "zeek.http":
+            # Suricata HTTP
+            sc_http = log.get("suricata", {}).get("eve", {}).get("http", {})
+            method = sc_http.get("http_method", "")
+            url = sc_http.get("url", "")
+            host = sc_http.get("hostname", "")
+            ua = sc_http.get("http_user_agent", "")
+            # Zeek HTTP 回退
+            if not method:
+                method = log.get("http", {}).get("request", {}).get("method", "")
+            if not url:
+                url = log.get("url", {}).get("original", "")
+            if not host:
+                host = log.get("url", {}).get("domain", "")
+            detail = f" | {method} {host}{url}"
+            if ua:
+                detail += f" UA={ua[:50]}"
+        elif event_type == "dns" or dataset == "zeek.dns":
+            # Suricata DNS
+            sc_dns = log.get("suricata", {}).get("eve", {}).get("dns", {})
+            query = sc_dns.get("query", "") if isinstance(sc_dns, dict) else ""
+            rcode = sc_dns.get("rcode", "") if isinstance(sc_dns, dict) else ""
+            # Zeek DNS 回退
+            if not query:
+                query = log.get("dns", {}).get("question", {}).get("name", "")
+            if not rcode:
+                rcode = log.get("dns", {}).get("response_code", "")
+            detail = f" | DNS {query} rcode={rcode}"
+        elif event_type == "tls" or dataset == "zeek.ssl":
+            sni = log.get("suricata", {}).get("eve", {}).get("tls", {}).get("sni", "")
+            if not sni:
+                # Zeek SSL 日志的 SNI 可能在 zeek.ssl.server_name
+                sni = log.get("zeek", {}).get("ssl", {}).get("server_name", "")
+            detail = f" | TLS SNI={sni}" if sni else ""
+        elif event_type == "fileinfo":
+            filename = log.get("suricata", {}).get("eve", {}).get("fileinfo", {}).get("filename", "")
+            detail = f" | FILE {filename}" if filename else ""
+
+        # 标签：模块/类型
+        type_label = f"{module}/{event_type}" if event_type else f"{module}/{dataset}"
+
+        line = f"  [{i}] {ts} | {type_label}"
         if sig:
             line += f" | {sig[:60]}"
         line += f" | {src_str} -> {dst_str}"
+        line += detail
         lines.append(line)
 
     return "\n".join(lines)
