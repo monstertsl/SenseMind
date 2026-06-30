@@ -19,21 +19,22 @@
 ## 架构
 
 ```
-Suricata eve.json / Zeek logs
-        │
-    Filebeat (等待 Logstash 就绪)
-        │
-   Logstash 主管道
-   字段裁剪 / ECS 转换 / SOC 分类
-        │
-   ┌────┴────┐
-   │         │
- 全量→ES   matched→AI推送管道
- soc-*       │
-       AI 分析中心 (6阶段 Chain)
-       结果回写 ES (soc-ai-*)
-        │
-    Kibana 可视化
+   ┌───>Suricata eve.json / Zeek logs
+   │               │
+   │               │
+   │    Filebeat (等待 Logstash 就绪)
+   │               │
+   │         Logstash 主管道
+   规   字段裁剪 / ECS 转换 / SOC 分类
+   则              │
+   生         ┌────┴────┐
+   成         │         │
+   │       全量→ES   matched→AI推送管道
+   │       soc-*       │
+   │             AI 分析中心 (6阶段 Chain)
+   └──────────────结果回写 ES (soc-ai-*)
+                       │
+                  Kibana 可视化
 ```
 
 ## 目录结构
