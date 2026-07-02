@@ -67,6 +67,18 @@ class ESClient:
         "soc",
     ]
 
+    def _refresh_index(self):
+        """显式刷新告警索引，确保刚写入的文档对后续 search 可见
+
+        Logstash 写 ES 和推送 AI 几乎同时发生，ES 默认 1s refresh 周期
+        可能导致查询时原始告警还没可见。refresh 只刷新有新数据的分片，
+        开销较小。
+        """
+        try:
+            self.client.indices.refresh(index=self.alert_index)
+        except Exception as e:
+            logger.debug("刷新索引失败（可忽略，等待自动 refresh）: %s", e)
+
     def query_related_logs(
         self,
         community_id: str = None,
@@ -88,10 +100,14 @@ class ESClient:
         max_logs = self.correlation.get("max_related_logs", 20)
         time_window = self.correlation.get("time_window_seconds", 300)
 
+        # 显式刷新索引，确保 Logstash 刚写入的告警可见
+        self._refresh_index()
+
         results = []
         seen_ids = set()
 
-        # === 方式1: community_id 精确关联 ===
+        # === 方式1: community_id 精确关联（同会话全量日志，不截断） ===
+        # 同会话的所有日志都应纳入关联，避免漏报检测遗漏 HTTP 事件
         if community_id:
             query = {
                 "query": {
@@ -103,7 +119,7 @@ class ESClient:
                         "minimum_should_match": 1,
                     }
                 },
-                "size": max_logs,
+                "size": 1000,
                 "sort": [{"@timestamp": "asc"}],
                 "_source": self._RELATED_SOURCE_FIELDS,
             }
@@ -153,7 +169,7 @@ class ESClient:
                             ]
                         }
                     },
-                    "size": max_logs,
+                    "size": max_logs * 2,
                     "sort": [{"@timestamp": "asc"}],
                     "_source": self._RELATED_SOURCE_FIELDS,
                 }
@@ -173,15 +189,17 @@ class ESClient:
             except Exception as e:
                 logger.warning("IP+时间窗口查询失败: %s", e)
 
-        # 按时间排序
+        # 按时间排序，不截断（community_id 全量日志对漏报检测至关重要）
         results.sort(key=lambda x: x.get("@timestamp", ""))
-        return results[:max_logs]
+        return results
 
     def find_original_alert(self, community_id: str, signature_id: int,
                             timestamp: str) -> tuple:
         """查找原始告警的 ES _id 和 _index
 
         Logstash 推送的告警不带 _id，需要回查 ES 找到原始文档。
+        查询前显式 refresh 索引，确保 Logstash 刚写入的告警文档可见
+        （ES 默认 1s refresh，Logstash 写 ES 和推送 AI 几乎同时发生）。
 
         Args:
             community_id: 网络会话 ID
@@ -193,6 +211,9 @@ class ESClient:
         """
         if not community_id or not signature_id:
             return "", ""
+
+        # 显式刷新索引，确保刚写入的告警可见
+        self._refresh_index()
 
         query = {
             "query": {

@@ -648,6 +648,9 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
                 "payload": payload,
                 "timestamp": log.get("@timestamp", ""),
                 "event_type": "http" if is_http else ("dns" if is_dns else "tls"),
+                # 漏报攻击对应的原始日志 ES 文档引用（用于 source_alert_id）
+                "log_id": log.get("_id", ""),
+                "log_index": log.get("_index", ""),
             })
             logger.info(
                 "发现未触发告警的攻击事件: types=%s, url=%s",

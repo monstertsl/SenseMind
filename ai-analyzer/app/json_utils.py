@@ -231,6 +231,74 @@ def _extract_code_block(text: str) -> str | None:
     return None
 
 
+def extract_json_list(text: str) -> list | None:
+    """从 LLM 响应文本中提取 JSON 数组
+
+    与 extract_json 类似，但处理 [...] 数组格式。
+    用于批量漏报分析的 LLM 响应解析。
+
+    Returns:
+        解析后的 list，失败返回 None
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+    text = _strip_thinking_blocks(text)
+
+    # 去除 markdown 代码块后直接解析
+    cleaned = _strip_markdown(text)
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 提取最外层 [ 到匹配的 ]
+    start = cleaned.find("[")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    end = -1
+
+    for i in range(start, len(cleaned)):
+        c = cleaned[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end < 0:
+        return None
+
+    try:
+        data = json.loads(cleaned[start:end + 1])
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return None
+
+
 def safe_parse_llm_response(text: str, fallback: dict = None) -> dict:
     """安全的 LLM 响应解析，带 fallback
 
