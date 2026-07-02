@@ -51,6 +51,9 @@ class RuleWriter:
         # 加载已有 SID 集合（去重用）
         self._existing_sids = set()
         self._existing_rules = set()
+        # 预计算每条已有规则的核心特征（归一化后的最长 content），
+        # 避免每次去重都重新提取
+        self._existing_core_features = set()
         self._load_existing()
 
         logger.info(
@@ -80,6 +83,10 @@ class RuleWriter:
                                 break
                         if sid_str:
                             self._existing_sids.add(int(sid_str))
+                    # 预计算 content 指纹用于去重
+                    fp = self._extract_content_fingerprint(line)
+                    if fp:
+                        self._existing_core_features.add(fp)
         except Exception as e:
             logger.warning("加载已有规则失败: %s", e)
 
@@ -92,25 +99,54 @@ class RuleWriter:
     def _is_duplicate(self, rule: str) -> bool:
         """检查规则是否与已有规则检测同一攻击特征
 
-        去重策略：提取所有 content 字段值并排序，完全相同才判重复。
-        不做子串推断——content 的精度差异由 AI 在生成时控制，
-        用子串包含会误判（如 "GET" 吞噬 "GET /attack"）。
+        去重策略：提取所有 content 字段值，递归解码（URL/HTML/Base64/Hex）
+        + 小写归一化后组成排序集合作为指纹。指纹完全相同才判重复。
+        
+        这种方式能识别 LLM 生成的编码变体（..%2f vs ../）和大小写变体
+        （UNION vs union），同时不会误删检测不同攻击手法的规则
+        （如路径遍历 vs PHP伪协议LFI，虽然都含 /etc/passwd 但 content
+        组合不同）。
         """
-        new_contents = self._extract_contents(rule)
-        if not new_contents:
-            return False
+        new_fingerprint = self._extract_content_fingerprint(rule)
+        if not new_fingerprint:
+            # 无 content 的规则回退到完全匹配
+            return rule in self._existing_rules
 
-        new_key = tuple(sorted(new_contents))
-
-        for existing in self._existing_rules:
-            existing_contents = self._extract_contents(existing)
-            if not existing_contents:
-                continue
-            if new_key == tuple(sorted(existing_contents)):
-                logger.info("规则 content 特征重复，跳过")
-                return True
+        if new_fingerprint in self._existing_core_features:
+            logger.info("规则 content 指纹重复，跳过: %s", new_fingerprint[:60])
+            return True
 
         return False
+
+    @staticmethod
+    def _normalize_content(content: str) -> str:
+        """归一化 content：递归解码（URL/HTML/Base64/Hex）+ 小写
+
+        复用 attack_detector.recursive_decode 的解码能力，将 LLM 生成的
+        各种编码变体统一到原始攻击载荷：
+        - ..%2f / ..%252f / ..%25252f → ../（多层 URL 编码）
+        - &#99;&#97;&#116; → cat（HTML 实体编码）
+        - UNION / Union → union（大小写归一化）
+        - 0x636174 → cat（Hex 编码）
+        """
+        from ..attack_detector import recursive_decode
+        decoded = recursive_decode(content, max_depth=5)
+        return decoded.lower().strip()
+
+    def _extract_content_fingerprint(self, rule: str) -> str:
+        """提取规则的 content 指纹（归一化后所有 content 的排序集合）
+
+        用所有 content 组成指纹而非只取最长 content，避免误判：
+        - 规则A: content="/etc/passwd" + content="../../../"  → 路径遍历
+        - 规则B: content="/etc/passwd" + content="php://filter" → PHP伪协议LFI
+        两者最长 content 相同（/etc/passwd）但 content 集合不同，指纹不同，
+        不会被误判为重复。
+        """
+        contents = self._extract_contents(rule)
+        if not contents:
+            return ""
+        normalized = sorted(self._normalize_content(c) for c in contents)
+        return "|".join(normalized)
 
     @staticmethod
     def _extract_contents(rule: str) -> list:
@@ -218,6 +254,10 @@ class RuleWriter:
                     f.write(rule + "\n")
                 self._existing_rules.add(rule)
                 self._existing_sids.add(new_sid)
+                # 同步更新 content 指纹集合
+                fp = self._extract_content_fingerprint(rule)
+                if fp:
+                    self._existing_core_features.add(fp)
 
                 logger.info("规则已写入 local.rules: %s", rule[:80])
                 return True
@@ -256,7 +296,7 @@ class RuleWriter:
             "Cmd": ["suricatasc", "-c", "reload-rules"],
         }
 
-        with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=30) as client:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=15) as client:
             resp = client.post(
                 f"http://docker/containers/{self.suricata_container}/exec",
                 json=exec_payload,
@@ -338,3 +378,25 @@ class RuleWriter:
             return {"written": True, "reloaded": True, "message": "规则已写入并热加载"}
         else:
             return {"written": True, "reloaded": False, "message": "规则已写入，但热加载失败（需手动重启 suricata）"}
+
+    def write_only(self, rule: str) -> dict:
+        """仅写入规则，不热加载（用于批量写入后统一热加载）
+
+        Returns:
+            {"written": bool, "message": str}
+        """
+        written = self.write_rule(rule)
+        if written:
+            return {"written": True, "message": "规则已写入（未热加载）"}
+        return {"written": False, "message": "规则已存在或无效，跳过"}
+
+    def reload_rules(self) -> dict:
+        """热加载规则（批量写入后调用一次）
+
+        Returns:
+            {"reloaded": bool, "message": str}
+        """
+        reloaded = self.reload_suricata()
+        if reloaded:
+            return {"reloaded": True, "message": "规则热加载成功"}
+        return {"reloaded": False, "message": "热加载失败（需手动重启 suricata）"}
