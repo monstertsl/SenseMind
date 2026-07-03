@@ -1,6 +1,6 @@
 # SenseMind
 
-> 基于 Suricata + Zeek + Elastic Stack + AI 的轻量级 SOC 安全运营平台，一键 Docker 化部署。
+> 一个以 AI 为核心的轻量级 SOC 平台。自动从未命中攻击日志中挖掘低误报检测规则，通过持续积累检测规则实现自我进化，生生不息
 
 ## 特性
 
