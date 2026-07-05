@@ -7,6 +7,7 @@ networks:
 volumes:
   esdata:
   filebeat-data:
+  pgdata:
 
 services:
 
@@ -50,35 +51,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.19.16
-    container_name: kibana
-    restart: unless-stopped
-
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-
-    environment:
-      - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
-      - ELASTICSEARCH_SERVICEACCOUNTTOKEN=${KIBANA_TOKEN}
-      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca.crt
-      - ELASTICSEARCH_SSL_VERIFICATIONMODE=certificate
-      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_KEY_1}
-      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_KEY_2}
-      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_KEY_3}
-      - XPACK_TELEMETRY_ENABLED=false
-      - XPACK_SECURITYSOLUTION_TELEMETRY_ENABLED=false
-
-    ports:
-      - "5601:5601"
-
-    volumes:
-      - ./certs/ca.crt:/usr/share/kibana/config/certs/ca.crt:ro
-
-    networks:
-      - elastic
 
   suricata:
     image: jasonish/suricata:latest
@@ -182,6 +154,41 @@ services:
     networks:
       - elastic
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly no
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - elastic
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sensemind-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${ELASTIC_PASSWORD}
+      - POSTGRES_DB=sensemind
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sensemind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - elastic
+
   ai-analyzer:
     build:
       context: ./ai-analyzer
@@ -198,14 +205,46 @@ services:
       - ./ai-analyzer/knowledge:/usr/share/ai-analyzer/knowledge:ro
       - ./certs/ca.crt:/usr/share/ai-analyzer/certs/ca.crt:ro
       - /data/suricata/lib/rules:/suricata/rules:rw
+      - /data/suricata/logs:/data/suricata/logs:rw
+      - /data/zeek/logs:/data/zeek/logs:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
     environment:
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      # 专用 API Key（只读，仅授权 soc-* / soc-ai-* 索引），查询 API 优先使用
+      - ES_READER_API_KEY=${ES_READER_API_KEY}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # PostgreSQL 连接（复用 ELASTIC_PASSWORD 作为 postgres 密码）
+      - DATABASE_URL=postgresql+psycopg2://postgres:${ELASTIC_PASSWORD}@postgres:5432/sensemind
+      # JWT 签名密钥（deploy.sh 生成，不可变更）
+      - SECRET_KEY=${SECRET_KEY}
+      # TOTP secret 加密密钥（deploy.sh 生成，不可变更）
+      - ENCRYPT_KEY=${ENCRYPT_KEY}
 
     depends_on:
       elasticsearch:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - elastic
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: sensemind/web:latest
+    container_name: sensemind-web
+    restart: unless-stopped
+
+    ports:
+      - "8080:80"
+
+    depends_on:
+      - ai-analyzer
 
     networks:
       - elastic

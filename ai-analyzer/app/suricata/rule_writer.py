@@ -206,6 +206,56 @@ class RuleWriter:
                     return True
         return False
 
+    @staticmethod
+    def _sanitize_content_quotes(rule: str) -> str:
+        """转义 content 字段内的裸双引号为 hex |22|
+
+        Suricata 规则语法 content:"value" 的 value 内不允许裸双引号，
+        必须用 |22| (hex) 转义。AI 生成的规则常忘记转义，导致 Suricata
+        解析时 content 提前结束，规则加载失败。
+
+        策略：找到 content:" 开始后，把值中所有非 hex 段内的双引号转义为 |22|，
+        直到遇到 "; 或 ", 或 ") 或行尾作为 content 结束标志。
+        对于 content 值内本身包含 "; 的情况（Suricata 无法正确解析），
+        该规则将被截断但 Suricata 不会报错——截断后的 content 仍能子串匹配。
+        """
+        result = []
+        i = 0
+        n = len(rule)
+        while i < n:
+            # 检测 content:" 开始
+            if rule[i:i+9] == 'content:"':
+                result.append('content:"')
+                i += 9
+                in_hex = False
+                while i < n:
+                    c = rule[i]
+                    if c == '|':
+                        in_hex = not in_hex
+                        result.append(c)
+                        i += 1
+                    elif c == '"' and not in_hex:
+                        # 判断是否为 content 结束（后面跟 ; , ) 或行尾）
+                        next_c = rule[i + 1] if i + 1 < n else ''
+                        if next_c in ';,)' or i + 1 >= n:
+                            result.append('"')
+                            i += 1
+                            break
+                        else:
+                            # 裸双引号，转义为 hex
+                            result.append('|22|')
+                            i += 1
+                    else:
+                        result.append(c)
+                        i += 1
+            else:
+                result.append(rule[i])
+                i += 1
+        sanitized = ''.join(result)
+        if sanitized != rule:
+            logger.info("规则 content 双引号已转义: %s", rule[:80])
+        return sanitized
+
     def write_rule(self, rule: str) -> bool:
         """写入一条规则到 local.rules
 
@@ -218,6 +268,9 @@ class RuleWriter:
         rule = rule.strip()
         if not rule:
             return False
+
+        # 转义 content 字段内的裸双引号，防止 Suricata 解析失败
+        rule = self._sanitize_content_quotes(rule)
 
         with _write_lock:
             # 去重检查（在锁内执行，防止并发漏检）
@@ -296,7 +349,7 @@ class RuleWriter:
             "Cmd": ["suricatasc", "-c", "reload-rules"],
         }
 
-        with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=15) as client:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=180) as client:
             resp = client.post(
                 f"http://docker/containers/{self.suricata_container}/exec",
                 json=exec_payload,

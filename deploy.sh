@@ -115,7 +115,7 @@ if [ ! -f "$CERTS_DIR/elastic-certificates.p12" ] || [ ! -f "$CERTS_DIR/ca.crt" 
     # 创建且默认 755，uid 1000 无法写入会抛 AccessDeniedException。临时放开写权限。
     chmod 777 "$CERTS_DIR"
 
-    # 1. 生成 CA（PEM 格式，便于 Kibana/Logstash 使用）
+    # 1. 生成 CA（PEM 格式，便于 Logstash 使用）
     #    -s/--silent 抑制 certutil 默认输出的大段帮助说明
     docker run --rm \
         -v "$CERTS_DIR:/certs" \
@@ -149,7 +149,7 @@ if [ ! -f "$CERTS_DIR/elastic-certificates.p12" ] || [ ! -f "$CERTS_DIR/ca.crt" 
     chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/elastic-certificates.p12"
 
     echo "[+] SSL 证书已生成: $CERTS_DIR/"
-    echo "    - ca.crt                    (CA 证书，Kibana/Logstash 用)"
+    echo "    - ca.crt                    (CA 证书，Logstash 用)"
     echo "    - elastic-certificates.p12   (节点证书，ES 用)"
 else
     echo "[+] SSL 证书已存在，跳过生成"
@@ -165,57 +165,20 @@ docker compose config --services 2>/dev/null | xargs -r docker rm -f >/dev/null 
 
 echo "[*] =============================================="
 
-echo "[*] 1. 正在准备 Kibana 凭据..."
-KEYS_RAW=$(docker run --rm docker.elastic.co/kibana/kibana:8.19.16 /usr/share/kibana/bin/kibana-encryption-keys generate -q 2>/dev/null)
-
-export KIBANA_KEY_1=$(echo "$KEYS_RAW" | grep "encryptedSavedObjects" | awk '{print $2}' | tr -d '"\r\n')
-export KIBANA_KEY_2=$(echo "$KEYS_RAW" | grep "reporting" | awk '{print $2}' | tr -d '"\r\n')
-export KIBANA_KEY_3=$(echo "$KEYS_RAW" | grep "security" | awk '{print $2}' | tr -d '"\r\n')
-
-if [ -z "$KIBANA_KEY_1" ] || [ -z "$KIBANA_KEY_2" ] || [ -z "$KIBANA_KEY_3" ]; then
-    echo "[-] 错误：无法生成完整的 Kibana 加密密钥。"
-    exit 1
-fi
-
-echo "[+] Kibana 加密密钥已生成，保持在当前 shell 环境中。"
-
-# 持久化 Kibana 加密密钥到 .env，便于重启后继续使用
+echo "[*] 1. 初始化环境变量文件..."
 ENV_FILE="$BASE_DIR/.env"
-EXISTING_ELASTIC_PASSWORD=""
-EXISTING_LOGSTASH_API_KEY=""
-EXISTING_KIBANA_TOKEN=""
 if [ -f "$ENV_FILE" ]; then
     cp -f "$ENV_FILE" "${ENV_FILE}.bak" >/dev/null 2>&1 || true
-    EXISTING_ELASTIC_PASSWORD=$(grep '^ELASTIC_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
-    EXISTING_LOGSTASH_API_KEY=$(grep '^LOGSTASH_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
-    EXISTING_KIBANA_TOKEN=$(grep '^KIBANA_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    # 清理已移除的 Kibana 相关变量
+    grep -v '^KIBANA_KEY_[123]=' "$ENV_FILE" 2>/dev/null | grep -v '^KIBANA_TOKEN=' > "${ENV_FILE}.tmp" || true
+    mv "${ENV_FILE}.tmp" "$ENV_FILE"
 fi
-# 保留已有 .env 中的其他变量，仅更新 KIBANA_KEY_*
-TMP_ENV_FILE="${ENV_FILE}.tmp"
-grep -v '^KIBANA_KEY_[123]=' "$ENV_FILE" 2>/dev/null > "$TMP_ENV_FILE" || true
-cat >> "$TMP_ENV_FILE" <<EOF
-KIBANA_KEY_1=${KIBANA_KEY_1}
-KIBANA_KEY_2=${KIBANA_KEY_2}
-KIBANA_KEY_3=${KIBANA_KEY_3}
-EOF
-mv "$TMP_ENV_FILE" "$ENV_FILE"
-if [ -n "$EXISTING_ELASTIC_PASSWORD" ] && ! grep -q '^ELASTIC_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
-    echo "ELASTIC_PASSWORD=${EXISTING_ELASTIC_PASSWORD}" >> "$ENV_FILE"
-fi
-if [ -n "$EXISTING_LOGSTASH_API_KEY" ] && ! grep -q '^LOGSTASH_API_KEY=' "$ENV_FILE" 2>/dev/null; then
-    echo "LOGSTASH_API_KEY=${EXISTING_LOGSTASH_API_KEY}" >> "$ENV_FILE"
-fi
-if [ -n "$EXISTING_KIBANA_TOKEN" ] && ! grep -q '^KIBANA_TOKEN=' "$ENV_FILE" 2>/dev/null; then
-    echo "KIBANA_TOKEN=${EXISTING_KIBANA_TOKEN}" >> "$ENV_FILE"
-fi
+touch "$ENV_FILE"
 chmod 600 "$ENV_FILE"
-echo "[+] 已将 Kibana 加密密钥持久化到 $ENV_FILE（权限 600）。"
+echo "[+] 环境变量文件已就绪: $ENV_FILE（权限 600）"
 
 # Ensure LOGSTASH_API_KEY exists to avoid docker-compose warnings when referenced
 grep -q '^LOGSTASH_API_KEY=' "$ENV_FILE" 2>/dev/null || echo 'LOGSTASH_API_KEY=' >> "$ENV_FILE"
-
-# 先导出空 Token，避免 docker compose 在只启动 elasticsearch 时解析 KIBANA_TOKEN 时报错。
-export KIBANA_TOKEN=""
 
 # 确保 filebeat.yml 的权限和所有者符合 Filebeat 要求
 if [ -f "$BASE_DIR/filebeat/filebeat.yml" ]; then
@@ -292,35 +255,7 @@ if [ "$PWD_OK" != "true" ]; then
     exit 1
 fi
 
-echo "[*] 3.2 正在申请 Kibana 接入 Token..."
-# 通过 REST API 创建 service token，避免 elasticsearch-service-tokens CLI 的 SSL 信任问题。
-# 先删除可能存在的旧 token（幂等），再创建新 token。
-curl -sk -u "elastic:${ELASTIC_PASSWORD}" -X DELETE \
-    "https://localhost:9200/_security/service/elastic/kibana/credential/token/kibana-token" >/dev/null 2>&1 || true
-
-TOKEN_RESP=$(curl -sk -u "elastic:${ELASTIC_PASSWORD}" -X POST \
-    "https://localhost:9200/_security/service/elastic/kibana/credential/token/kibana-token" \
-    -H "Content-Type: application/json" 2>/dev/null)
-export KIBANA_TOKEN=$(echo "$TOKEN_RESP" | jq -r '.token.value // empty' | tr -d '\r\n')
-
-if [ -z "$KIBANA_TOKEN" ]; then
-    echo "[-] 错误：无法创建 Kibana Service Token！ES 响应: $TOKEN_RESP"
-    exit 1
-fi
-
-echo "[+] Kibana Token 已生成，保持在当前 shell 环境中。"
-
-# 持久化 KIBANA_TOKEN 到 .env（更新或追加）
-if [ -n "$KIBANA_TOKEN" ]; then
-    ENV_FILE=${ENV_FILE:-$ENV_FILE}
-    grep -v '^KIBANA_TOKEN=' "$ENV_FILE" 2>/dev/null > "${ENV_FILE}.tmp" || true
-    echo "KIBANA_TOKEN=${KIBANA_TOKEN}" >> "${ENV_FILE}.tmp"
-    mv "${ENV_FILE}.tmp" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-    echo "[+] 已将 Kibana Token 持久化到 $ENV_FILE（权限 600）。"
-fi
-
-echo "[*] 3.3 正在等待 Elasticsearch 安全模块完全就绪..."
+echo "[*] 3.2 正在等待 Elasticsearch 安全模块完全就绪..."
 
 # 使用脚本开头定义的 BASE_DIR 绝对路径加载环境变量
 if [ ! -f "$BASE_DIR/.env" ]; then
@@ -428,12 +363,92 @@ chmod 600 "$ENV_FILE"
 
 echo "[+] logstash API Key 已生成并写入 .env"
 
-# 4. 一键拉起整套 SOC 堆栈（Kibana, Suricata, Zeek）
+echo "[*] 3.5 正在生成 ES Reader API Key (sensemind-reader)..."
+
+# 先清理可能存在的同名旧 API Key，避免累积（幂等）
+OLD_ES_READER_IDS=$(curl -sk -u "elastic:${ELASTIC_PASSWORD}" \
+    "https://localhost:9200/_security/api_key?name=sensemind-reader" 2>/dev/null \
+    | jq -r '.api_keys[]? | select(.invalidated==false) | .id' 2>/dev/null) || true
+for kid in $OLD_ES_READER_IDS; do
+    curl -sk -u "elastic:${ELASTIC_PASSWORD}" -X DELETE \
+        "https://localhost:9200/_security/api_key" \
+        -H "Content-Type: application/json" \
+        -d "{\"ids\":[\"$kid\"]}" >/dev/null 2>&1 || true
+done
+
+# 创建专用只读 API Key：仅授予 soc-*/soc-ai-* 索引读权限
+# ai-analyzer 使用此 Key 替代 elastic 密码访问 ES（最小权限原则）
+ES_READER_RESP=$(curl -sk -u "elastic:${ELASTIC_PASSWORD}" \
+    -X POST "https://localhost:9200/_security/api_key" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "sensemind-reader",
+      "role_descriptors": {
+        "sensemind_reader": {
+          "cluster": ["monitor"],
+          "index": [
+            {
+              "names": ["soc-*", "soc-ai-*"],
+              "privileges": ["read", "view_index_metadata"]
+            }
+          ]
+        }
+      }
+    }')
+
+# 取 encoded 字段（已为 id:api_key 的 Base64 编码，可直接用于 Authorization: ApiKey 头）
+ES_READER_API_KEY=$(echo "$ES_READER_RESP" | jq -r '.encoded // empty' 2>/dev/null)
+
+if [ -z "$ES_READER_API_KEY" ]; then
+    echo "[-] 错误：sensemind-reader API Key 生成失败！ES 响应: $ES_READER_RESP"
+    exit 1
+fi
+
+echo "[+] ES Reader API Key 已生成"
+export ES_READER_API_KEY
+
+# 写入 .env（更新或追加）
+grep -v '^ES_READER_API_KEY=' "$ENV_FILE" 2>/dev/null > "${ENV_FILE}.tmp" || true
+echo "ES_READER_API_KEY=${ES_READER_API_KEY}" >> "${ENV_FILE}.tmp"
+mv "${ENV_FILE}.tmp" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+echo "[+] ES Reader API Key 已写入 .env"
+
+echo "[*] 3.5 正在生成 JWT 与加密密钥..."
+# SECRET_KEY: JWT 签名密钥（32 字节 hex），用于认证 token 签发与校验
+# ENCRYPT_KEY: TOTP secret 加密密钥，用于 Fernet/PBKDF2 派生
+# 仅首次生成，后续部署复用 .env 中已有值（密钥不可变更，否则已有 JWT 失效、TOTP 无法解密）
+EXISTING_SECRET_KEY=$(grep '^SECRET_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+EXISTING_ENCRYPT_KEY=$(grep '^ENCRYPT_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+
+if [ -z "$EXISTING_SECRET_KEY" ]; then
+    SECRET_KEY=$(openssl rand -hex 32)
+    echo "SECRET_KEY=${SECRET_KEY}" >> "$ENV_FILE"
+    echo "[+] SECRET_KEY 已生成并写入 .env"
+else
+    echo "[+] 使用已有 SECRET_KEY"
+fi
+
+if [ -z "$EXISTING_ENCRYPT_KEY" ]; then
+    # core/security.py 用 PBKDF2 从 ENCRYPT_KEY 派生 Fernet 密钥，对格式不敏感，任意字符串即可
+    ENCRYPT_KEY=$(openssl rand -base64 32)
+    echo "ENCRYPT_KEY=${ENCRYPT_KEY}" >> "$ENV_FILE"
+    echo "[+] ENCRYPT_KEY 已生成并写入 .env"
+else
+    echo "[+] 使用已有 ENCRYPT_KEY"
+fi
+chmod 600 "$ENV_FILE"
+
+# 4. 一键拉起整套 SOC 堆栈（Suricata, Zeek）
 echo "[*] 4. 正在拉起探针与展示层..."
 docker compose up -d
 
 echo "[*] 4.1 强制重启 logstash 以加载最新 API Key..."
 docker compose up -d --force-recreate logstash
+
+echo "[*] 4.2 强制重启 ai-analyzer 以加载 ES Reader API Key..."
+docker compose up -d --force-recreate ai-analyzer
 
 # 修改 Suricata 配置：community-id、payload、http-body-inline、local.rules
 # jasonish/suricata 容器启动时会自动复制默认配置到挂载目录
@@ -496,104 +511,27 @@ else
     echo "[-] 注意：部分 Suricata 规则更新失败请使用 "docker exec --user suricata suricata suricata-update -f" 手动更新规则，脚本将继续执行后续步骤。" >&2
 fi
 
-# 6. 等待 Kibana 就绪并自动创建数据视图（Data View）
-echo "[*] 6. 正在等待 Kibana 就绪并创建数据视图..."
-
-KIBANA_READY=false
-for i in $(seq 1 30); do
-    KIBANA_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
-        -u "elastic:${ELASTIC_PASSWORD}" \
-        "http://localhost:5601/api/status" 2>/dev/null) || true
-    if [ "$KIBANA_CODE" = "200" ]; then
-        KIBANA_READY=true
-        echo "[+] Kibana 已就绪 (尝试 $i/30)"
-        break
-    fi
-    printf "."
-    sleep 3
-done
-
-if [ "$KIBANA_READY" != "true" ]; then
-    echo ""
-    echo "[-] 警告：Kibana 在 90 秒内未就绪，跳过数据视图创建。"
-    echo "[-] 可稍后手动在 Kibana → Stack Management → Data Views 中创建 soc-*。"
-else
-    # 检查是否已存在 soc-* 数据视图（幂等）
-    DV_SEARCH=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-        "http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=soc-%2A" 2>/dev/null)
-    DV_COUNT=$(echo "$DV_SEARCH" | jq -r '.total // 0' 2>/dev/null)
-
-    if [ "${DV_COUNT:-0}" != "0" ]; then
-        echo "[+] Kibana 数据视图 soc-* 已存在，跳过创建。"
-    else
-        # 创建 soc-* 数据视图
-        DV_RESPONSE=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-            -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
-            -H "Content-Type: application/json" \
-            -H "kbn-xsrf: true" \
-            -d '{"attributes":{"title":"soc-*","timeFieldName":"@timestamp"}}' 2>/dev/null)
-
-        DV_ID=$(echo "$DV_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
-
-        if [ -n "$DV_ID" ]; then
-            echo "[+] Kibana 数据视图 soc-* 已创建 (id: $DV_ID)"
-
-            # 查找 config 对象 ID 并设为默认数据视图
-            CONFIG_ID=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-                "http://localhost:5601/api/saved_objects/_find?type=config" 2>/dev/null \
-                | jq -r '.saved_objects[0].id // empty' 2>/dev/null)
-
-            if [ -n "$CONFIG_ID" ]; then
-                curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-                    -X PUT "http://localhost:5601/api/saved_objects/config/${CONFIG_ID}" \
-                    -H "Content-Type: application/json" \
-                    -H "kbn-xsrf: true" \
-                    -d "{\"attributes\":{\"defaultIndex\":\"${DV_ID}\"}}" >/dev/null 2>&1 || true
-                echo "[+] 已将 soc-* 设为默认数据视图。"
-            fi
-        else
-            echo "[-] 警告：Kibana 数据视图创建失败，响应: $DV_RESPONSE"
-            echo "[-] 可稍后手动在 Kibana → Stack Management → Data Views 中创建 soc-*。"
-        fi
-    fi
-
-    # soc-ai-* 数据视图由 ndjson 仪表板导入时自带，无需单独创建
-
-    # 导入 SenseMind AI 研判仪表板（含 soc-ai-* 数据视图）
-    DASHBOARD_FILE="$BASE_DIR/kibana/sensemind-ai-dashboard.ndjson"
-    if [ -f "$DASHBOARD_FILE" ]; then
-        echo "[*] 导入 SenseMind AI 研判仪表板..."
-        IMPORT_RESP=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-            -X POST "http://localhost:5601/api/saved_objects/_import?overwrite=true" \
-            -H "kbn-xsrf: true" \
-            -F "file=@${DASHBOARD_FILE}" 2>/dev/null)
-        IMPORT_SUCCESS=$(echo "$IMPORT_RESP" | jq -r '.success // empty' 2>/dev/null)
-        if [ "$IMPORT_SUCCESS" = "true" ]; then
-            echo "[+] SenseMind AI 研判仪表板已导入"
-            echo "    访问地址: http://<服务器IP>:5601/app/dashboards#/view/sensemind-ai-dashboard"
-        else
-            echo "[-] 警告：仪表板导入失败: $IMPORT_RESP"
-        fi
-    fi
-
-    # 兜底检查：仪表板导入后确认 soc-ai-* 数据视图存在（导入失败时补建）
-    AI_DV_SEARCH=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-        "http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=soc-ai-%2A" 2>/dev/null)
-    AI_DV_COUNT=$(echo "$AI_DV_SEARCH" | jq -r '.total // 0' 2>/dev/null)
-    if [ "${AI_DV_COUNT:-0}" = "0" ]; then
-        echo "[*] soc-ai-* 数据视图不存在，补建..."
-        curl -s -u "elastic:${ELASTIC_PASSWORD}" \
-            -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
-            -H "Content-Type: application/json" \
-            -H "kbn-xsrf: true" \
-            -d '{"attributes":{"title":"soc-ai-*","timeFieldName":"@timestamp"}}' >/dev/null 2>&1
-        echo "[+] soc-ai-* 数据视图已补建"
-    else
-        echo "[+] Kibana 数据视图 soc-ai-* 已存在"
-    fi
-fi
-
-# 7. 阅后即焚：擦除 Shell 进程中的环境变量
-unset KIBANA_KEY_1 KIBANA_KEY_2 KIBANA_KEY_3 KIBANA_TOKEN PUID PGID
+# 6. 阅后即焚：擦除 Shell 进程中的环境变量
+unset PUID PGID
 echo "[+] =============================================="
 echo "[+] SOC 堆栈已安全启动。当前 Shell 敏感凭据已全数清空！"
+
+# 7. 打印提示信息
+ENV_FILE=".env"
+if [ -f "$ENV_FILE" ]; then
+    ELASTIC_PASSWORD=$(grep '^ELASTIC_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)
+else
+    echo "❌ 未找到 $ENV_FILE 文件"
+    exit 1
+fi
+
+if [ -z "$ELASTIC_PASSWORD" ]; then
+    echo "❌ ELASTIC_PASSWORD 为空，请检查 $ENV_FILE"
+    exit 1
+fi
+
+# 打印提示信息（<IP> 为固定占位符，无需动态获取）
+echo "=========================================="
+echo " 默认用户名/密码：admin/${ELASTIC_PASSWORD}"
+echo " 访问地址：http://<IP>:8080"
+echo "=========================================="

@@ -436,6 +436,7 @@ class AlertAnalyzer:
             records: 漏报记录列表，生成的规则会挂到对应记录上
         """
         rules_written = []
+        records_to_update = []  # (record, result) 待回写 reloaded 状态
         for idx, item, record in rules_to_write:
             try:
                 t0 = time.time()
@@ -468,13 +469,14 @@ class AlertAnalyzer:
                     "unalerted_url": item["url"],
                 }
 
-                # 仅低误报规则写入文件（不立即热加载）
+                # 仅低误报规则写入文件（批量写入后统一热加载一次）
                 if gen_result.should_write and gen_result.fp_risk == "low":
                     write_result = self.rule_writer.write_only(gen_result.rule)
                     result["written"] = write_result["written"]
                     result["message"] = write_result["message"]
                     if write_result["written"]:
                         rules_written.append(gen_result.rule)
+                        records_to_update.append((record, result))
                 else:
                     result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
 
@@ -483,9 +485,16 @@ class AlertAnalyzer:
             except Exception as e:
                 logger.error("漏报规则生成失败: %s", e, exc_info=True)
 
-        # 规则已写入文件，热加载由后台线程统一处理，不阻塞主流程
+        # 批量写入完成后统一热加载一次，并回写 reloaded 状态
         if rules_written:
-            logger.info("漏报规则批量写入 %d 条（热加载由后台线程处理）", len(rules_written))
+            reload_result = self.rule_writer.reload_rules()
+            reloaded = reload_result["reloaded"]
+            logger.info("漏报规则批量写入 %d 条，热加载: %s", len(rules_written), reload_result["message"])
+            # 回写 reloaded 状态到每条记录
+            for record, result in records_to_update:
+                result["reloaded"] = reloaded
+                result["message"] = f"规则已写入，热加载{'成功' if reloaded else '失败'}"
+                record["generated_rule"] = result
 
     def _build_unalerted_analysis(self, ctx: AlertContext, item: dict,
                                    llm_data: dict, related_logs: list) -> dict | None:
@@ -597,13 +606,13 @@ class AlertAnalyzer:
                 result["unalerted_attack_types"] = unalerted_info["attack_types"]
                 result["unalerted_url"] = unalerted_info["url"]
 
-            # 仅低误报规则写入文件（不立即热加载，由后台线程统一处理）
+            # 仅低误报规则写入文件并同步热加载
             if gen_result.should_write and gen_result.fp_risk == "low":
-                write_result = self.rule_writer.write_only(gen_result.rule)
+                write_result = self.rule_writer.write_and_reload(gen_result.rule)
                 result["written"] = write_result["written"]
-                result["reloaded"] = False  # 由后台线程异步热加载
+                result["reloaded"] = write_result["reloaded"]
                 result["message"] = write_result["message"]
-                logger.info("规则写入: %s", write_result["message"])
+                logger.info("规则写入+热加载: %s", write_result["message"])
             else:
                 result["message"] = f"误报风险为 {gen_result.fp_risk}，未写入"
                 logger.info("规则未写入: %s", result["message"])

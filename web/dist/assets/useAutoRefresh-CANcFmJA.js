@@ -1,0 +1,1 @@
+import{N as l,M as a,z as u,J as f}from"./index-MO8ucLhK.js";const i={none:null,"5s":5e3,"10s":1e4,"30s":3e4,"1m":6e4,"2m":12e4};function m(o){const{refreshInterval:t}=l(a());let e=null;function n(){e&&(clearInterval(e),e=null)}function r(){n();const s=i[t.value];s&&(e=setInterval(o,s))}u(t,r,{immediate:!0}),f(n)}export{m as u};

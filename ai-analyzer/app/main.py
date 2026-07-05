@@ -1,12 +1,24 @@
 """FastAPI Webhook 服务 - 接收 Logstash 推送的告警"""
 
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .analyzer import AlertAnalyzer
 from .es_client import ESClient
 from .config import Config
 from .dedup import AlertDeduplicator
+from .routers import metrics as metrics_router
+from .routers import query as query_router
+from .routers import logs as logs_router
+from .routers import system as system_router
+from .routers import auth as auth_router
+from .routers import user as user_router
+from .routers import system_config as system_config_router
+from .routers import audit_log as audit_log_router
+from .scheduler import start_scheduler, shutdown_scheduler
+from .core.database import init_db
 
 # 日志配置
 logging.basicConfig(
@@ -15,7 +27,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SenseMind AI 分析中心", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动：初始化数据库 + 启动定时任务
+    try:
+        init_db()
+        logger.info("数据库初始化完成")
+    except Exception as e:
+        logger.error("数据库初始化失败: %s", e, exc_info=True)
+    try:
+        start_scheduler()
+    except Exception as e:
+        logger.error("定时任务启动失败: %s", e, exc_info=True)
+    yield
+    # 关闭：停止定时任务
+    shutdown_scheduler()
+
+
+app = FastAPI(title="SenseMind AI 分析中心", version="1.0.0", lifespan=lifespan)
+
+# CORS：允许前端跨域访问（容器化部署中前端经 nginx 反代，仍保留以备开发模式）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 注册查询 API 路由
+app.include_router(metrics_router.router)
+app.include_router(query_router.router)
+app.include_router(logs_router.router)
+app.include_router(system_router.router)
+# 认证与系统管理路由
+app.include_router(auth_router.router)
+app.include_router(user_router.router)
+app.include_router(system_config_router.router)
+app.include_router(audit_log_router.router)
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None
@@ -141,10 +191,15 @@ async def analyze_alert(request: Request):
                 ctx = bg_context["ctx"]
                 related_logs = bg_context["related_logs"]
 
-                # Stage 6: 规则生成（主路径）
+                # Stage 6: 规则生成（主路径，含同步热加载）
                 rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
                 if rule_result:
                     analysis["generated_rule"] = rule_result
+                    # 更新 ES 文档，补写 generated_rule 字段（首次写入时无此字段）
+                    try:
+                        es.update_analysis(doc_id, {"generated_rule": rule_result})
+                    except Exception as e:
+                        logger.warning("更新 ES generated_rule 失败: %s", e)
 
                 # 漏报攻击处理
                 unalerted_records = analyzer._process_unalerted_attacks(
