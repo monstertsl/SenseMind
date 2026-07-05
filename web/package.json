@@ -1,0 +1,36 @@
+{
+  "name": "sensemind-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "check": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@types/qrcode": "^1.5.6",
+    "axios": "^1.6.8",
+    "dayjs": "^1.11.10",
+    "echarts": "^5.5.0",
+    "element-plus": "^2.7.0",
+    "highlight.js": "^11.9.0",
+    "markdown-it": "^14.1.0",
+    "pinia": "^2.1.7",
+    "qrcode": "^1.5.4",
+    "vue": "^3.4.21",
+    "vue-echarts": "^7.0.3",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.0.1",
+    "@types/node": "^20.12.7",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "sass": "^1.75.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.10",
+    "vue-tsc": "^2.0.13"
+  }
+}

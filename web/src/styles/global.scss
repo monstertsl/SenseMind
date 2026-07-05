@@ -1,0 +1,160 @@
+// 全局样式重置与基础样式
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: $font-sans;
+  background-color: $color-bg;
+  color: $color-text-primary;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  // 极淡网格纹理增强控制台氛围
+  background-image:
+    linear-gradient(rgba(0, 92, 173, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 92, 173, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+// 滚动条
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 4px;
+  &:hover {
+    background: rgba(148, 163, 184, 0.6);
+  }
+}
+
+// 数字字体类
+.font-mono {
+  font-family: $font-mono;
+  font-feature-settings: 'tnum';
+}
+
+// 文本省略
+.text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// 空值占位
+.empty-placeholder {
+  color: $color-text-placeholder;
+}
+
+// 卡片基础
+.app-card {
+  background: $color-bg-elevated;
+  border-radius: $radius-lg;
+  box-shadow: $shadow-card;
+  border: 1px solid $color-border-light;
+}
+
+// 风险色条带（卡片左缘）
+.risk-stripe {
+  position: relative;
+  overflow: hidden;
+  &::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: currentColor;
+  }
+}
+
+// Element Plus 主题覆盖
+:root {
+  --el-color-primary: #{$color-primary};
+  --el-color-primary-light-3: #{$color-primary-light};
+  --el-color-primary-light-5: #{$color-primary-light};
+  --el-color-primary-light-7: #{$color-primary-light};
+  --el-color-primary-light-8: #{$color-primary-light};
+  --el-color-primary-light-9: rgba(0, 92, 173, 0.1);
+  --el-color-primary-dark-2: #{$color-primary-dark};
+}
+
+.el-button {
+  --el-button-font-weight: 500;
+}
+
+.el-table {
+  --el-table-border-color: #{$color-border-light};
+  --el-table-header-bg-color: #{$color-bg-soft};
+  --el-table-row-hover-bg-color: rgba(0, 92, 173, 0.04);
+  --el-table-header-text-color: #{$color-text-regular};
+  font-size: 13px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+
+// 标签样式按 SOC 分类着色
+.el-tag {
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+// 抽屉
+.el-drawer__header {
+  margin-bottom: 0;
+  padding: 20px 24px;
+  border-bottom: 1px solid $color-border;
+  font-weight: 600;
+}
+
+// 数字滚动动画
+@keyframes count-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.count-animate {
+  animation: count-fade-in 0.4s ease-out;
+}
+
+// 骨架屏 shimmer
+@keyframes shimmer {
+  0% {
+    background-position: -468px 0;
+  }
+  100% {
+    background-position: 468px 0;
+  }
+}
+
+.skeleton-block {
+  background: linear-gradient(90deg, #eef1f6 25%, #e2e8f0 37%, #eef1f6 63%);
+  background-size: 936px 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: $radius-sm;
+}

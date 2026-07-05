@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# SOC (Elastic + Suricata + Zeek) 清理脚本
+# SenseMind SOC 平台清理脚本
 # 彻底清理容器、网络、数据卷及本地数据目录
+# 包括：Elasticsearch、Suricata、Zeek、PostgreSQL、Redis、ai-analyzer、web
 
 set -euo pipefail
 
@@ -15,6 +16,7 @@ fi
 echo "==> Compose 项目前缀: ${COMPOSE_PREFIX}"
 
 # 2. 停止并删除容器、compose 文件中声明的命名卷及孤立容器
+#    声明的卷包括: esdata, filebeat-data, pgdata
 echo "==> 停止并删除 compose 服务及声明的数据卷..."
 docker compose down -v --remove-orphans
 
@@ -33,7 +35,22 @@ echo "==> 清理悬空匿名卷..."
 docker volume prune -f
 
 # 5. 删除本地数据目录与配置文件
+#    /data/suricata: Suricata 日志和规则
+#    /data/zeek: Zeek 日志
+#    .env: 环境变量（含密码和密钥）
+#    ./certs: ES 证书
 echo "==> 删除本地数据目录与配置文件..."
 sudo rm -rf /data/suricata /data/zeek .env .env.bak ./certs
 
+# 6. 确认 PostgreSQL 数据卷已清理
+PG_VOLUME="${COMPOSE_PREFIX}_pgdata"
+if docker volume inspect "$PG_VOLUME" >/dev/null 2>&1; then
+    echo "==> 清理残留 PostgreSQL 数据卷: $PG_VOLUME"
+    docker volume rm "$PG_VOLUME" || true
+fi
+
 echo "==> 清理完成。"
+echo ""
+echo "注意: .env 中的 SECRET_KEY 和 ENCRYPT_KEY 如果已用于签名 JWT 或加密 TOTP 密钥，"
+echo "      重新部署后会生成新密钥，之前签发的 token 和 TOTP 配置将失效。"
+

@@ -362,4 +362,31 @@ class ESClient:
         resp = self.client.index(index=index_name, document=doc, refresh=True)
         doc_id = resp["_id"]
         logger.info("分析结果已写入 %s, id=%s", index_name, doc_id)
+        # 失效查询 API 缓存，确保监测中心/分析中心看到最新数据
+        try:
+            from .services import get_cache
+            get_cache().invalidate_metrics()
+        except Exception as e:
+            logger.debug("缓存失效失败（可忽略）: %s", e)
         return doc_id
+
+    def update_analysis(self, doc_id: str, ai_fields: dict) -> bool:
+        """部分更新已存在的 AI 分析文档（merge 到 ai.* 字段）
+
+        Args:
+            doc_id: ES 文档 ID
+            ai_fields: 要合并到 ai 对象中的字段，如 {"generated_rule": {...}}
+
+        Returns:
+            True=更新成功, False=更新失败
+        """
+        cfg = Config()
+        index_name = cfg.get_result_index()
+        try:
+            self.client.update(index=index_name, id=doc_id,
+                               body={"doc": {"ai": ai_fields}}, refresh=True)
+            logger.info("文档已更新 %s, id=%s, fields=%s", index_name, doc_id, list(ai_fields.keys()))
+            return True
+        except Exception as e:
+            logger.warning("更新文档失败: %s, id=%s", e, doc_id)
+            return False

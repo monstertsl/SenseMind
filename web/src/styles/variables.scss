@@ -1,0 +1,73 @@
+// SenseMind 指挥控制台主题变量
+// 美学方向：浅色专业工作区 + 深色驾驶舱导航
+
+// ---- 基础色板 ----
+$color-bg: #f4f6fa;                // 主背景 冷调浅灰
+$color-bg-elevated: #ffffff;        // 卡片白底
+$color-bg-soft: #eef1f6;            // 次级浅灰（AI概览区）
+$color-bg-inset: #f8fafc;           // 内陷区（代码块）
+
+// ---- 导航深色（网络安全主题深蓝）----
+$color-nav-bg: #002a4f;             // 顶栏 深海蓝
+$color-nav-bg-hover: #003a6c;
+$color-nav-text: #8ba8c4;           // 未选中灰蓝
+$color-nav-text-active: #ffffff;    // 选中纯白
+$color-nav-border: #003a6c;
+
+// ---- 主色（网络安全深蓝 #005cad）----
+$color-primary: #005cad;            // 网络安全蓝
+$color-primary-light: #0a7ed4;
+$color-primary-dark: #004a8a;
+$color-accent: #0090d4;             // 青蓝点缀
+
+// ---- 风险等级色映射（严格按规格）----
+$color-risk-low: #3b82f6;           // 低-蓝
+$color-risk-medium: #eab308;        // 中-黄
+$color-risk-high: #f97316;          // 高-橙
+$color-risk-critical: #ef4444;      // 危急-红
+
+// ---- 文本 ----
+$color-text-primary: #1e293b;
+$color-text-regular: #475569;
+$color-text-secondary: #64748b;
+$color-text-placeholder: #94a3b8;
+$color-text-inverse: #f8fafc;
+
+// ---- 边框/分割 ----
+$color-border: #e2e8f0;
+$color-border-light: #eef2f7;
+$color-divider: #edf0f5;
+
+// ---- 功能色 ----
+$color-success: #10b981;
+$color-warning: #f59e0b;
+$color-danger: #ef4444;
+$color-info: #6366f1;
+
+// ---- 阴影 ----
+$shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.04);
+$shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 4px -1px rgba(15, 23, 42, 0.04);
+$shadow-lg: 0 12px 24px -4px rgba(15, 23, 42, 0.1), 0 4px 8px -2px rgba(15, 23, 42, 0.05);
+$shadow-card: 0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03);
+
+// ---- 圆角 ----
+$radius-sm: 4px;
+$radius-md: 6px;
+$radius-lg: 8px;
+
+// ---- 字体 ----
+$font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei', monospace;
+$font-sans: 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+// ---- 间距 ----
+$space-xs: 4px;
+$space-sm: 8px;
+$space-md: 12px;
+$space-lg: 16px;
+$space-xl: 24px;
+$space-2xl: 32px;
+
+// ---- 布局 ----
+$layout-sidebar-width: 220px;
+$layout-sidebar-collapsed: 64px;
+$layout-topbar-height: 56px;

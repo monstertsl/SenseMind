@@ -7,3 +7,12 @@ uvicorn
 pydantic
 pyyaml
 httpx
+redis>=5.0,<6.0
+psutil
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+bcrypt>=4.0
+python-jose[cryptography]>=3.3
+pyotp>=2.9
+cryptography>=42.0
+apscheduler>=3.10

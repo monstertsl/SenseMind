@@ -81,6 +81,17 @@ class Config:
         env_key = self.elasticsearch.get("password_env", "ELASTIC_PASSWORD")
         return os.environ.get(env_key, "")
 
+    @property
+    def redis(self) -> dict:
+        """Redis 缓存配置"""
+        return self._config.get("redis", {
+            "host": "redis",
+            "port": 6379,
+            "db": 0,
+            "password_env": "",
+            "default_ttl": 30,
+        })
+
     def get_result_index(self) -> str:
         """获取当天的结果索引名"""
         template = self.elasticsearch.get("result_index", "soc-ai-%{date}")

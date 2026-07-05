@@ -60,8 +60,20 @@ elasticsearch:
   correlation:
     # 按 community_id 关联的日志条数上限
     max_related_logs: 20
-    # 回退到 IP+时间窗口关联时的窗口（秒）
-    time_window_seconds: 300
+  # 回退到 IP+时间窗口关联时的窗口（秒）
+  time_window_seconds: 300
+
+########################################
+# Redis 缓存配置（查询 API 加速层）
+########################################
+redis:
+  host: "redis"
+  port: 6379
+  db: 0
+  # 密码从环境变量读取，留空则无密码
+  password_env: "REDIS_PASSWORD"
+  # 默认 TTL（秒），具体键可单独覆盖
+  default_ttl: 30
 
 ########################################
 # Webhook 配置

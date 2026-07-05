@@ -1,0 +1,25 @@
+# SenseMind 原始日志轮转配置
+# 由 ai-analyzer 容器内的 scheduler.py 每日 02:00 调用 logrotate 执行
+# - copytruncate: 复制后截断原文件，无需重启 Suricata/Zeek
+# - dateext: 归档文件以日期为后缀（如 eve.json-20260705），mtime 固定
+# - find -mtime +N -delete 清理超过保留期的归档（在 scheduler.py 中执行）
+# - rotate 90 设置一个足够大的上限，实际保留天数由 raw_log_retention_days 控制
+
+/data/suricata/logs/eve.json
+/data/suricata/logs/fast.log
+/data/suricata/logs/stats.log
+/data/suricata/logs/suricata.log
+/data/zeek/logs/*.log
+{
+    daily
+    rotate 90
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+    nocreate
+    dateext
+    dateformat -%Y%m%d
+    su root root
+}
