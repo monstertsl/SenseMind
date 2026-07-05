@@ -1,4 +1,4 @@
-<p align="center"><img src="logo.png" alt="SenseMind"></p>
+<p align="center"><img src="logo.png" alt="SenseMind" width="250"></p>
 
 <h1 align="center">SenseMind</h1>
 
