@@ -75,6 +75,7 @@ class LogCondition(BaseModel):
 class LogSearchBody(BaseModel):
     conditions: list[LogCondition] = Field(default_factory=list)
     kql: Optional[str] = None
+    keyword: Optional[str] = None
     indices: Optional[list[str]] = None
     time_range: Optional[str] = None
     time_from: Optional[str] = None

@@ -8,7 +8,7 @@ import type { LogItem, LogSearchRequest } from '@/types'
 
 export function useLogSearch() {
   const store = useLogExplorerStore()
-  const { conditions, kqlMode, kqlText, fieldMappings } = storeToRefs(store)
+  const { conditions, kqlMode, kqlText, keyword, fieldMappings } = storeToRefs(store)
   const globalStore = useGlobalFilterStore()
 
   const list = ref<LogItem[]>([])
@@ -42,6 +42,7 @@ export function useLogSearch() {
     syncTimeRange()
     req.conditions = conditions.value as any
     req.kql = kqlMode.value ? kqlText.value : undefined
+    req.keyword = keyword.value.trim() || undefined
     const res = await searchLogs(req)
     list.value = res.items
     total.value = res.total
@@ -78,6 +79,7 @@ export function useLogSearch() {
     conditions,
     kqlMode,
     kqlText,
+    keyword,
     fieldMappings,
     fetch,
     loadMapping,

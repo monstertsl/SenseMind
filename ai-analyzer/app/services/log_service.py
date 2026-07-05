@@ -59,13 +59,14 @@ class LogService:
         self.es = get_es_reader()
         self.cache = get_cache()
 
-    # ai.* 下的 text 字段集合：text 类型在 ES 中被分词器处理，
+    # text 类型字段集合：text 类型在 ES 中被分词器处理，
     # term/terms/wildcard 精确匹配必须走 .keyword 子字段才能命中
     _TEXT_FIELDS_WITH_KEYWORD = {
         "ai.soc_name", "ai.alert_signature", "ai.attack_chain",
         "ai.handling_suggestion", "ai.payload", "ai.source_alert_id",
         "ai.threat_verdict", "ai.attack_result", "ai.attack_technique",
         "ai.mitre_id", "ai.protocol",
+        "network.community_id",
     }
 
     def _resolve_field(self, field: str, op: str) -> str:
@@ -132,6 +133,17 @@ class LogService:
         time_clause = self._build_time_filter(body)
         if time_clause:
             must.append(time_clause)
+
+        # 关键字模糊匹配（multi_match，不能单独使用，必须配合其他条件）
+        keyword = getattr(body, "keyword", None)
+        if keyword and keyword.strip() and must:
+            must.append({
+                "multi_match": {
+                    "query": keyword.strip(),
+                    "fields": ["*"],
+                    "type": "best_fields",
+                }
+            })
 
         query = {"bool": {"must": must}} if must else {"match_all": {}}
 

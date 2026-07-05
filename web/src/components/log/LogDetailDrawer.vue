@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { CopyDocument, Link } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { CopyDocument, Link, MagicStick } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { LogItem } from '@/types'
 import { formatDateTime, copyToClipboard } from '@/utils/format'
 import { maskSensitive } from '@/utils/desensitize'
+import { triggerAiAnalysis } from '@/api/logs'
 
 const props = defineProps<{
   modelValue: boolean
@@ -15,7 +16,35 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [val: boolean]
   viewAi: []
+  analyzed: []
 }>()
+
+const aiAnalyzing = ref(false)
+
+// 判断是否为 soc-* 原始日志（非 soc-ai-*）
+const isRawLog = computed(() => {
+  if (!props.log) return false
+  return !props.log.has_ai_analysis && props.log._index && !props.log._index.includes('soc-ai')
+})
+
+async function handleTriggerAi() {
+  if (!props.log) return
+  try {
+    await ElMessageBox.confirm('确认对这条日志触发 AI 研判分析吗？', 'AI 研判', { type: 'info' })
+  } catch {
+    return
+  }
+  aiAnalyzing.value = true
+  try {
+    await triggerAiAnalysis(props.log._id)
+    ElMessage.success('AI 研判完成，结果已写入 soc-ai-* 索引')
+    emit('analyzed')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || 'AI 研判失败')
+  } finally {
+    aiAnalyzing.value = false
+  }
+}
 
 // 敏感字段集合（脱敏展示值）
 const SENSITIVE_KEYS = ['password', 'passwd', 'pwd', 'token', 'secret', 'authorization']
@@ -143,7 +172,7 @@ function onContextField(n: TreeNode) {
           </div>
         </div>
 
-        <!-- AI 研判跳转 -->
+        <!-- AI 研判跳转（soc-ai-* 日志） -->
         <el-button
           v-if="log.has_ai_analysis"
           type="primary"
@@ -151,6 +180,17 @@ function onContextField(n: TreeNode) {
           @click="emit('viewAi')"
         >
           <el-icon><Link /></el-icon>查看 AI 研判
+        </el-button>
+
+        <!-- AI 研判触发（soc-* 原始日志） -->
+        <el-button
+          v-if="isRawLog"
+          type="primary"
+          class="ai-jump-btn"
+          :loading="aiAnalyzing"
+          @click="handleTriggerAi"
+        >
+          <el-icon v-if="!aiAnalyzing"><MagicStick /></el-icon>AI 研判
         </el-button>
 
         <!-- JSON 树形视图 -->

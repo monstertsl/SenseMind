@@ -1,6 +1,7 @@
 """FastAPI Webhook 服务 - 接收 Logstash 推送的告警"""
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from .analyzer import AlertAnalyzer
 from .es_client import ESClient
 from .config import Config
+from .schemas import ApiResponse
 from .dedup import AlertDeduplicator
 from .routers import metrics as metrics_router
 from .routers import query as query_router
@@ -240,7 +242,7 @@ async def analyze_alert(request: Request):
     return {"status": "analyzed", "analysis": analysis}
 
 
-@app.post("/api/analyze/{doc_id}")
+@app.post("/api/v1/analyze/{doc_id}")
 async def analyze_es_alert(doc_id: str):
     """
     手动触发分析 ES 中的某条告警（按 _id）
@@ -258,6 +260,9 @@ async def analyze_es_alert(doc_id: str):
         if not hits:
             raise HTTPException(status_code=404, detail=f"告警不存在: {doc_id}")
         alert = hits[0]["_source"]
+        # 补充 _id 和 _index，_enrich_metadata 需要 alert._id 设置 source_alert_id
+        alert["_id"] = hits[0]["_id"]
+        alert["_index"] = hits[0]["_index"]
     except HTTPException:
         raise
     except Exception as e:
@@ -283,6 +288,10 @@ async def analyze_es_alert(doc_id: str):
                 rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
                 if rule_result:
                     analysis["generated_rule"] = rule_result
+                    try:
+                        es.update_analysis(doc_id_new, {"generated_rule": rule_result})
+                    except Exception as e:
+                        logger.warning("更新 ES generated_rule 失败: %s", e)
                 unalerted_records = analyzer._process_unalerted_attacks(
                     ctx, analysis, related_logs
                 )
@@ -300,4 +309,4 @@ async def analyze_es_alert(doc_id: str):
         threading.Thread(target=_bg_task_manual, daemon=True,
                          name="bg-rule-unalerted-manual").start()
 
-    return {"status": "analyzed", "analysis": analysis}
+    return ApiResponse(code=0, message="ok", data={"status": "analyzed", "analysis": analysis}, request_id=str(uuid.uuid4()))

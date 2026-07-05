@@ -35,7 +35,6 @@ async function handleCopy(text: string, e: Event) {
 function handleIpClick(ip: string, e: Event) {
   e.stopPropagation()
   if (ip) {
-    emit('ipClick', ip)
     handleCopy(ip, e)
   }
 }
@@ -98,13 +97,14 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       <el-table-column prop="ai.source_ip" label="源IP" width="110">
         <template #default="{ row }">
           <span
+            v-if="row.ai?.source_ip"
             class="ip-cell"
-            :title="`点击回填: ${row.ai?.source_ip}`"
+            title="点击复制"
             @click="handleIpClick(row.ai?.source_ip, $event)"
           >
             {{ formatEmpty(row.ai?.source_ip) }}
-            <el-icon class="copy-icon"><CopyDocument /></el-icon>
           </span>
+          <span v-else class="font-mono">{{ formatEmpty(row.ai?.source_ip) }}</span>
         </template>
       </el-table-column>
 
@@ -119,13 +119,14 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       <el-table-column prop="ai.destination_ip" label="目的IP" width="110">
         <template #default="{ row }">
           <span
+            v-if="row.ai?.destination_ip"
             class="ip-cell"
-            :title="`点击回填: ${row.ai?.destination_ip}`"
+            title="点击复制"
             @click="handleIpClick(row.ai?.destination_ip, $event)"
           >
             {{ formatEmpty(row.ai?.destination_ip) }}
-            <el-icon class="copy-icon"><CopyDocument /></el-icon>
           </span>
+          <span v-else class="font-mono">{{ formatEmpty(row.ai?.destination_ip) }}</span>
         </template>
       </el-table-column>
 
@@ -251,7 +252,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   }
   .copy-icon {
     font-size: 12px;
-    opacity: 0.5;
+    opacity: 0.8;
   }
 }
 

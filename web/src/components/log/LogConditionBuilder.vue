@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Plus, Delete, Search, RefreshLeft } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLogExplorerStore } from '@/stores/logExplorer'
 import type { LogFieldMapping } from '@/types'
 import { ES_FIELD_MAPPING } from '@/constants/esFieldMapping'
 
 const store = useLogExplorerStore()
-const { conditions, kqlMode, kqlText, fieldMappings } = storeToRefs(store)
+const { conditions, kqlMode, kqlText, keyword, fieldMappings } = storeToRefs(store)
 
 // 字段类型对应可用操作符
 const OPERATOR_BY_TYPE: Record<string, { value: string; label: string }[]> = {
@@ -159,6 +160,14 @@ function onPasteBatch(id: string, e: ClipboardEvent) {
 const emit = defineEmits<{ search: []; reset: [] }>()
 
 function search() {
+  // 关键字模糊匹配不能单独使用，必须配合其他条件
+  const hasKeyword = keyword.value.trim()
+  const hasConditions = conditions.value.some((c) => c.field && c.value !== '' && c.value !== undefined && c.value !== null)
+  const hasKql = kqlMode.value && kqlText.value.trim()
+  if (hasKeyword && !hasConditions && !hasKql) {
+    ElMessage.warning('关键字模糊匹配需配合其他检索条件使用')
+    return
+  }
   emit('search')
 }
 
@@ -262,9 +271,19 @@ function reset() {
         </el-button>
       </div>
 
-      <el-button class="add-btn" plain @click="store.addCondition()">
-        <el-icon><Plus /></el-icon>添加条件
-      </el-button>
+      <div class="conditions-footer">
+        <el-button class="add-btn" plain @click="store.addCondition()">
+          <el-icon><Plus /></el-icon>添加条件
+        </el-button>
+        <el-input
+          v-model="keyword"
+          class="keyword-input"
+          placeholder="关键字模糊匹配（需配合条件使用）"
+          clearable
+          :prefix-icon="Search"
+          @keyup.enter="search"
+        />
+      </div>
     </div>
 
     <div class="builder-footer">
@@ -357,6 +376,17 @@ function reset() {
 
 .kql-area {
   margin-bottom: $space-md;
+}
+
+.conditions-footer {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  margin-top: $space-sm;
+}
+
+.keyword-input {
+  flex: 1;
 }
 
 .builder-footer {

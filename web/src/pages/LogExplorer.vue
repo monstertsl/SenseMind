@@ -122,6 +122,7 @@ onMounted(() => {
       :log="selectedLog"
       :loading="detailLoading"
       @view-ai="handleViewAi"
+      @analyzed="fetch"
     />
   </div>
 </template>

@@ -7,6 +7,7 @@ export const useLogExplorerStore = defineStore('logExplorer', () => {
   const conditions = ref<LogCondition[]>([])
   const kqlMode = ref(false)
   const kqlText = ref('')
+  const keyword = ref('')
   const fieldMappings = ref<LogFieldMapping[]>([])
   const visibleFields = ref<string[]>(['@timestamp', 'source.ip', 'destination.ip', 'event.dataset'])
   const columnWidths = ref<Record<string, number>>({})
@@ -34,6 +35,7 @@ export const useLogExplorerStore = defineStore('logExplorer', () => {
   function clearConditions() {
     conditions.value = []
     kqlText.value = ''
+    keyword.value = ''
   }
 
   function setFieldMappings(fields: LogFieldMapping[]) {
@@ -54,6 +56,7 @@ export const useLogExplorerStore = defineStore('logExplorer', () => {
     conditions,
     kqlMode,
     kqlText,
+    keyword,
     fieldMappings,
     visibleFields,
     columnWidths,

@@ -14,6 +14,10 @@ export function getLogDetail(id: string, index: string): Promise<Record<string, 
   return request.get(`/logs/${encodeURIComponent(id)}`, { params: { index } })
 }
 
+export function triggerAiAnalysis(docId: string): Promise<{ status: string; analysis: Record<string, any> }> {
+  return request.post(`/analyze/${encodeURIComponent(docId)}`, {}, { timeout: 120000 })
+}
+
 export function getLogMapping(indices?: string[]): Promise<{ fields: LogFieldMapping[] }> {
   return request.get('/logs/mapping', { params: { indices: indices?.join(',') } })
 }

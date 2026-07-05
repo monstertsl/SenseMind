@@ -133,6 +133,7 @@ export interface LogCondition {
 export interface LogSearchRequest {
   conditions: LogCondition[]
   kql?: string
+  keyword?: string
   indices?: string[]
   time_range?: string
   time_from?: string
