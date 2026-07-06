@@ -1,5 +1,6 @@
 """FastAPI Webhook 服务 - 接收 Logstash 推送的告警"""
 
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from .routers import auth as auth_router
 from .routers import user as user_router
 from .routers import system_config as system_config_router
 from .routers import audit_log as audit_log_router
+from .routers import llm_config as llm_config_router
 from .scheduler import start_scheduler, shutdown_scheduler
 from .core.database import init_db
 
@@ -68,6 +70,7 @@ app.include_router(auth_router.router)
 app.include_router(user_router.router)
 app.include_router(system_config_router.router)
 app.include_router(audit_log_router.router)
+app.include_router(llm_config_router.router)
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None
@@ -79,6 +82,14 @@ def get_analyzer() -> AlertAnalyzer:
     global _analyzer
     if _analyzer is None:
         _analyzer = AlertAnalyzer()
+    return _analyzer
+
+
+def reload_analyzer() -> AlertAnalyzer:
+    """重新初始化分析器（LLM 配置变更后调用）"""
+    global _analyzer
+    _analyzer = AlertAnalyzer()
+    logger.info("分析器已重新加载，模型: %s", _analyzer.model_name)
     return _analyzer
 
 
@@ -166,9 +177,12 @@ async def analyze_alert(request: Request):
             }
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
+    # analyzer.analyze() 是同步阻塞的（含 LLM/ES 同步调用），
+    # 用 asyncio.to_thread 放到线程池执行，避免阻塞事件循环导致 /health、
+    # /auth/check-ip 等轻量请求超时
     try:
         analyzer = get_analyzer()
-        analysis = analyzer.analyze(alert)
+        analysis = await asyncio.to_thread(analyzer.analyze, alert)
     except Exception as e:
         logger.error("AI 分析失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"分析失败: {e}")
@@ -246,7 +260,7 @@ async def analyze_alert(request: Request):
 async def analyze_es_alert(doc_id: str):
     """
     手动触发分析 ES 中的某条告警（按 _id）
-    用于 Kibana 手动触发或定时任务
+    用于前端手动触发或定时任务
     """
     try:
         es = get_es_client()
@@ -270,7 +284,7 @@ async def analyze_es_alert(doc_id: str):
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
     analyzer = get_analyzer()
-    analysis = analyzer.analyze(alert)
+    analysis = await asyncio.to_thread(analyzer.analyze, alert)
 
     # 提取后台上下文（规则生成 + 漏报处理），不写入 ES
     bg_context = analysis.pop("_bg_context", None)

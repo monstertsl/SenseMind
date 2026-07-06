@@ -37,6 +37,7 @@ function handleSearch(filters: Partial<AlertQuery>) {
   query.destination_ip = filters.destination_ip
   query.soc_name = filters.soc_name
   query.alert_signature = filters.alert_signature
+  query.attack_result = filters.attack_result
   query.page = 1
   fetch()
 }
@@ -46,6 +47,7 @@ function handleReset() {
   query.destination_ip = undefined
   query.soc_name = undefined
   query.alert_signature = undefined
+  query.attack_result = undefined
   query.source_alert_id = undefined
   query.page = 1
   fetch()

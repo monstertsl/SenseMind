@@ -1,7 +1,7 @@
 """系统配置表（单行记录，id 固定为 1）"""
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, Text
+from sqlalchemy import String, Integer, DateTime, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column
 from ..core.database import Base
 
@@ -23,5 +23,13 @@ class SystemConfig(Base):
 
     # 允许登录 IP 白名单（逗号分隔，空字符串=全部允许）
     allowed_login_ips: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    # LLM 配置（通过系统设置页面配置）
+    llm_api_endpoint: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    llm_api_key: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    llm_model: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    llm_temperature: Mapped[float] = mapped_column(Float, default=0.1, nullable=False)
+    llm_max_tokens: Mapped[int] = mapped_column(Integer, default=8000, nullable=False)
+    llm_timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

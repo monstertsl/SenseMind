@@ -29,38 +29,6 @@
 
 ### 部署
 
-#### LLM 配置
-
-编辑 `ai-analyzer/config.yaml`：支持 OpenAI、Ollama、vLLM 等 OpenAI 兼容后端。
-
-```yaml
-llm:
-  api_key: "sk-xxx"
-  base_url: "https://..."   # OpenAI 兼容接口
-  model: "glm-5.2"          # 如果部署后需要修改模型执行: docker restart ai-analyzer
-  temperature: 0.1
-  max_tokens: 4000
-  timeout: 60
-```
-
-#### 威胁情报配置（可选）
-
-默认关闭，不影响部署。如需启用 IP/域名威胁情报查询，编辑 `ai-analyzer/config.yaml`：
-
-```yaml
-threat_intel:
-  enabled: true                                        # 开启查询
-  api_url: "http://10.0.0.1:8080/api/query?type={type}&value={value}"  # 接口地址，{type} 为 ip/domain，{value} 为查询值
-  api_key: "your-api-key"                              # API Key，留空则不传
-  api_key_in: "header"                                 # Key 传递方式: header 或 query
-  api_key_name: "x-apikey"                             # Key 的 header/参数名
-  timeout: 10                                          # 请求超时（秒）
-  jq_filter: ""                                        # 响应字段提取（jq 语法），留空返回原始 JSON
-```
-
-> 必须显式设置 `enabled: true` 且 `api_url` 非空才会启用查询，默认关闭不产生任何请求。修改后执行 `docker restart ai-analyzer` 生效。
-
-
 ```bash
 sudo bash deploy.sh <interface>   # 如 ens192、eth0
 ```
@@ -74,6 +42,11 @@ sudo bash deploy.sh <interface>   # 如 ens192、eth0
 
 ```bash
 cat .env | grep ELASTIC_PASSWORD
+```
+#### LLM 配置
+
+```
+`系统设置` > `集成配置` > `LLM 模型`
 ```
 
 ![AI 研判仪表板](demo-00.png)
@@ -161,6 +134,27 @@ curl -X POST http://localhost:9090/api/analyze/<doc_id>
 ```
 
 ### 故障恢复
+
+#### 查看当前WEB白名单
+
+```bash
+sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
+  -c "SELECT allowed_login_ips FROM system_config WHERE id=1;"
+```
+
+#### 清空WEB白名单（允许所有 IP 访问）
+
+```bash
+sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
+  -c "UPDATE system_config SET allowed_login_ips='' WHERE id=1;"
+```
+#### 或修改WEB为正确的 IP
+
+```bash
+sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
+  -c "UPDATE system_config SET allowed_login_ips='IP地址' WHERE id=1;"
+```
+
 
 无法登录前端时，可通过命令行直接操作。以下命令中 `sensemind-postgres` 和 `ai-analyzer` 为默认容器名。
 

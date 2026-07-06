@@ -68,6 +68,8 @@ export interface AlertAi {
   attack_chain: string
   handling_suggestion: string
   payload: string
+  http_status: number | null
+  response_body: string
   source_alert_id: string
   threat_verdict: string
   attack_result: string
@@ -101,6 +103,7 @@ export interface AlertQuery {
   confidence?: number
   alert_signature?: string
   source_alert_id?: string
+  attack_result?: string
   page: number
   page_size: number
   sort_field?: string

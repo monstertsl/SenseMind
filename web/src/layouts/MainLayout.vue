@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { WarningFilled, User, ArrowDown } from '@element-plus/icons-vue'
+import { WarningFilled, User, ArrowDown, Monitor, Aim, Document, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { useAuthStore } from '@/stores/auth'
@@ -15,13 +15,13 @@ const globalStore = useGlobalFilterStore()
 const authStore = useAuthStore()
 
 const baseMenus = [
-  { path: '/monitor/dashboard', title: '监测中心' },
-  { path: '/analysis/alerts', title: '分析中心' },
-  { path: '/log/explorer', title: '日志中心' },
+  { path: '/monitor/dashboard', title: '监测中心', icon: Monitor },
+  { path: '/analysis/alerts', title: '分析中心', icon: Aim },
+  { path: '/log/explorer', title: '日志中心', icon: Document },
 ]
 
 const adminMenus = [
-  { path: '/system/settings', title: '系统设置' },
+  { path: '/system/settings', title: '系统设置', icon: Setting },
 ]
 
 const menus = computed(() => {
@@ -170,8 +170,10 @@ onUnmounted(() => {
             :key="m.path"
             class="nav-item"
             :class="{ active: activeMenu === m.path }"
+            :title="m.title"
             @click="handleMenuSelect(m.path)"
           >
+            <el-icon class="nav-icon"><component :is="m.icon" /></el-icon>
             <span class="nav-label">{{ m.title }}</span>
           </button>
         </nav>
@@ -332,6 +334,7 @@ onUnmounted(() => {
 .nav-item {
   display: flex;
   align-items: center;
+  justify-content: center;
   padding: 0 20px;
   height: 100%;
   border: none;
@@ -342,6 +345,11 @@ onUnmounted(() => {
   font-weight: 500;
   transition: color 0.2s ease;
 
+  .nav-icon {
+    display: none;
+    font-size: 18px;
+  }
+
   &:hover {
     color: $color-nav-text-active;
   }
@@ -349,6 +357,23 @@ onUnmounted(() => {
   &.active {
     color: $color-nav-text-active;
     font-weight: 600;
+  }
+}
+
+// 窄屏：菜单文字切换为图标，避免文字竖排
+@media (max-width: 1100px) {
+  .nav-item {
+    padding: 0 14px;
+    .nav-icon {
+      display: inline-flex;
+    }
+    .nav-label {
+      display: none;
+    }
+  }
+  // 刷新间隔/时间范围：窄屏隐藏标题文字，只保留 select
+  .topbar-right .time-label {
+    display: none;
   }
 }
 

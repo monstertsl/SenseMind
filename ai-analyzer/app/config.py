@@ -27,10 +27,6 @@ class Config:
             self._config = yaml.safe_load(f)
 
     @property
-    def llm(self) -> dict:
-        return self._config["llm"]
-
-    @property
     def elasticsearch(self) -> dict:
         return self._config["elasticsearch"]
 
@@ -62,18 +58,6 @@ class Config:
             "window_seconds": 600,
             "max_entries": 10000,
         })
-
-    @property
-    def threat_intel(self) -> dict:
-        """威胁情报查询配置"""
-        return self._config.get("threat_intel", {
-            "enabled": False,
-        })
-
-    @property
-    def threat_intel_api_key(self) -> str:
-        """获取威胁情报 API Key（直接从配置读取）"""
-        return self.threat_intel.get("api_key", "")
 
     @property
     def es_password(self) -> str:

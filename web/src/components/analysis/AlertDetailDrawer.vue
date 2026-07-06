@@ -147,6 +147,15 @@ function jumpToLog() {
           <p v-else class="empty-text">暂无 Payload</p>
         </section>
 
+        <!-- Response Body -->
+        <section v-if="detail.ai?.response_body" class="detail-section">
+          <div class="section-head-row">
+            <h4 class="section-h">Response Body</h4>
+            <span v-if="detail.ai?.http_status" class="http-status-badge">HTTP {{ detail.ai.http_status }}</span>
+          </div>
+          <pre class="payload-block"><code v-html="hljs.highlight(maskPayload(detail.ai.response_body), { language: 'plaintext' }).value"></code></pre>
+        </section>
+
       </template>
       <div v-else-if="!loading" class="empty-text">未加载到详情</div>
     </div>
@@ -182,6 +191,16 @@ function jumpToLog() {
   .section-h {
     margin-bottom: 0;
   }
+}
+
+.http-status-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: $color-text-secondary;
+  background: $color-bg-inset;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: $font-mono;
 }
 
 .info-grid {

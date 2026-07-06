@@ -18,7 +18,14 @@ const form = reactive({
   destination_ip: '',
   soc_name: [] as string[],
   alert_signature: '',
+  attack_result: '',
 })
+
+const attackResultOptions = [
+  { label: '成功', value: '成功' },
+  { label: '失败', value: '失败' },
+  { label: '未知', value: '未知' },
+]
 
 function emitSearch() {
   // 搜索时把表单筛选值通过 search 事件传给父组件，由父组件应用到 query
@@ -27,6 +34,7 @@ function emitSearch() {
     destination_ip: form.destination_ip || undefined,
     soc_name: form.soc_name.length ? form.soc_name.join(',') : undefined,
     alert_signature: form.alert_signature || undefined,
+    attack_result: form.attack_result || undefined,
   }
   emit('search', filters)
 }
@@ -36,6 +44,7 @@ function reset() {
   form.destination_ip = ''
   form.soc_name = []
   form.alert_signature = ''
+  form.attack_result = ''
   emit('reset')
 }
 
@@ -87,6 +96,23 @@ watch(
             :key="b.key"
             :label="`${b.key} (${b.count})`"
             :value="b.key"
+          />
+        </el-select>
+      </div>
+      <div class="field">
+        <label>攻击结果</label>
+        <el-select
+          v-model="form.attack_result"
+          placeholder="选择结果"
+          clearable
+          style="width: 100%"
+          @change="emitSearch"
+        >
+          <el-option
+            v-for="opt in attackResultOptions"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
           />
         </el-select>
       </div>

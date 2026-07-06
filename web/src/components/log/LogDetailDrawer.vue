@@ -49,6 +49,23 @@ async function handleTriggerAi() {
 // 敏感字段集合（脱敏展示值）
 const SENSITIVE_KEYS = ['password', 'passwd', 'pwd', 'token', 'secret', 'authorization']
 
+// Suricata http-body: yes 输出的 Base64 编码字段，需解码才能看到中文
+const BASE64_BODY_KEYS = new Set(['http_response_body', 'http_request_body'])
+
+function decodeBase64Body(b64str: string): string {
+  try {
+    const binaryStr = atob(b64str)
+    const bytes = new Uint8Array(binaryStr.length)
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i)
+    }
+    const decoded = new TextDecoder('utf-8').decode(bytes)
+    return decoded.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+  } catch {
+    return b64str
+  }
+}
+
 interface TreeNode {
   key: string
   value: any
@@ -92,7 +109,9 @@ function buildTree(obj: any, key = 'root', path = '', depth = 0, parentSensitive
     }
   }
   const t: TreeNode['type'] = typeof obj === 'number' ? 'number' : typeof obj === 'boolean' ? 'boolean' : 'string'
-  return { key, value: obj, path, type: t, depth, sensitive }
+  // 对 Suricata http-body Base64 字段解码，保留中文
+  const value = t === 'string' && BASE64_BODY_KEYS.has(key) ? decodeBase64Body(obj) : obj
+  return { key, value, path, type: t, depth, sensitive }
 }
 
 const root = computed<TreeNode | null>(() => {

@@ -17,7 +17,7 @@ from .core.database import SessionLocal
 from .core.audit import write_system_log
 from .db_models.system_config import SystemConfig
 from .db_models.user import User
-from .db_models.audit_log import LoginLog, SystemLog
+from .db_models.audit_log import SystemLog
 
 logger = logging.getLogger(__name__)
 
@@ -78,30 +78,35 @@ def cleanup_raw_logs() -> None:
 
         # 2. 清理过期归档（归档文件 mtime 固定，find -mtime 可正确判断）
         #    只清理带日期后缀的归档（eve.json-* / *.log-*），不动活跃文件
+        #    -print -delete：输出已删除文件路径，用于统计实际清理数量
+        deleted_count = 0
         for log_dir in ("/data/suricata/logs", "/data/zeek/logs"):
             try:
                 result = subprocess.run(
                     ["find", log_dir, "-type", "f", "(",
                      "-name", "eve.json.*", "-o",
                      "-name", "*.log.*", ")",
-                     "-mtime", cutoff, "-delete"],
+                     "-mtime", cutoff, "-print", "-delete"],
                     capture_output=True, text=True, timeout=300,
                 )
                 if result.returncode != 0:
                     logger.warning("清理归档 %s 返回非零: %s", log_dir, result.stderr.strip())
+                deleted_count += len([l for l in result.stdout.splitlines() if l.strip()])
             except FileNotFoundError:
                 logger.warning("目录不存在，跳过: %s", log_dir)
             except Exception as e:
                 logger.warning("清理归档 %s 失败: %s", log_dir, e)
 
-        with SessionLocal() as db:
-            write_system_log(
-                db, action="cleanup_raw_log",
-                target_type="system", target_id="raw-logs",
-                detail=f"轮转并清理 {days} 天前原始日志归档（suricata/zeek）",
-                operator="scheduler",
-            )
-        logger.info("原始日志清理完成（保留 %s 天）", days)
+        # 仅当实际清理了归档文件时才记录日志（清理 0 条不记录）
+        if deleted_count > 0:
+            with SessionLocal() as db:
+                write_system_log(
+                    db, action="cleanup_raw_log",
+                    target_type="system", target_id="raw-logs",
+                    detail=f"清理 {days} 天前原始日志归档 {deleted_count} 个（suricata/zeek）",
+                    operator="system",
+                )
+        logger.info("原始日志清理完成：删除 %d 个归档（保留 %s 天）", deleted_count, days)
     except Exception as e:
         logger.error("原始日志清理任务失败: %s", e, exc_info=True)
         try:
@@ -109,9 +114,9 @@ def cleanup_raw_logs() -> None:
                 write_system_log(
                     db, action="cleanup_raw_log",
                     target_type="system", target_id="raw-logs",
-                    detail=f"清理失败: {e}",
-                    operator="scheduler",
-                )
+                detail=f"清理失败: {e}",
+                operator="system",
+            )
         except Exception:
             pass
 
@@ -143,13 +148,15 @@ def cleanup_es_indices() -> None:
         if to_delete:
             es.indices.delete(index=",".join(to_delete), ignore_unavailable=True)
 
-        with SessionLocal() as db:
-            write_system_log(
-                db, action="cleanup_es_log",
-                target_type="system", target_id="es-indices",
-                detail=f"删除 {len(to_delete)} 个超过 {days} 天的 ES 索引: {','.join(to_delete[:10])}{'...' if len(to_delete) > 10 else ''}",
-                operator="scheduler",
-            )
+        # 仅当实际删除了索引时才记录日志（清理 0 条不记录）
+        if to_delete:
+            with SessionLocal() as db:
+                write_system_log(
+                    db, action="cleanup_es_log",
+                    target_type="system", target_id="es-indices",
+                    detail=f"删除 {len(to_delete)} 个超过 {days} 天的 ES 索引: {','.join(to_delete[:10])}{'...' if len(to_delete) > 10 else ''}",
+                    operator="system",
+                )
         logger.info("ES 索引清理完成：删除 %d 个（保留 %s 天）", len(to_delete), days)
     except Exception as e:
         logger.error("ES 索引清理任务失败: %s", e, exc_info=True)
@@ -158,9 +165,9 @@ def cleanup_es_indices() -> None:
                 write_system_log(
                     db, action="cleanup_es_log",
                     target_type="system", target_id="es-indices",
-                    detail=f"清理失败: {e}",
-                    operator="scheduler",
-                )
+                detail=f"清理失败: {e}",
+                operator="system",
+            )
         except Exception:
             pass
 
@@ -197,7 +204,7 @@ def deactivate_inactive_users() -> None:
                     db, action="auto_disable",
                     target_type="user", target_id=",".join(usernames[:10]),
                     detail=f"禁用 {count} 个超过 {days} 天未登录的用户: {','.join(usernames[:5])}{'...' if count > 5 else ''}",
-                    operator="scheduler",
+                    operator="system",
                 )
             logger.info("未登录用户禁用完成：禁用 %d 个（阈值 %s 天）", count, days)
     except Exception as e:
@@ -207,15 +214,15 @@ def deactivate_inactive_users() -> None:
                 write_system_log(
                     db, action="auto_disable",
                     target_type="system", target_id="users",
-                    detail=f"禁用失败: {e}",
-                    operator="scheduler",
+                detail=f"禁用失败: {e}",
+                operator="system",
                 )
         except Exception:
             pass
 
 
 def cleanup_audit_logs() -> None:
-    """清理超过 audit_log_retention_days 的登录日志和系统日志。"""
+    """清理超过 audit_log_retention_days 的系统日志（含登录记录）。"""
     with SessionLocal() as db:
         cfg = _load_config(db)
         days = cfg.audit_log_retention_days if cfg else 180
@@ -223,9 +230,6 @@ def cleanup_audit_logs() -> None:
 
     try:
         with SessionLocal() as db:
-            login_deleted = db.execute(
-                LoginLog.__table__.delete().where(LoginLog.created_at < cutoff)
-            ).rowcount
             system_deleted = db.execute(
                 SystemLog.__table__.delete().where(
                     SystemLog.created_at < cutoff,
@@ -233,14 +237,16 @@ def cleanup_audit_logs() -> None:
                 )
             ).rowcount
             db.commit()
-            write_system_log(
-                db, action="cleanup_audit_log",
-                target_type="system", target_id="audit-logs",
-                detail=f"清理 {days} 天前审计日志：登录日志 {login_deleted} 条，系统日志 {system_deleted} 条",
-                operator="scheduler",
-            )
-            logger.info("审计日志清理完成：登录日志 %d 条，系统日志 %d 条（保留 %s 天）",
-                        login_deleted, system_deleted, days)
+            # 仅当实际清理了日志时才记录（清理 0 条不记录）
+            if system_deleted > 0:
+                write_system_log(
+                    db, action="cleanup_audit_log",
+                    target_type="system", target_id="audit-logs",
+                    detail=f"清理 {days} 天前系统日志 {system_deleted} 条",
+                    operator="system",
+                )
+            logger.info("审计日志清理完成：系统日志 %d 条（保留 %s 天）",
+                        system_deleted, days)
     except Exception as e:
         logger.error("审计日志清理任务失败: %s", e, exc_info=True)
         try:
@@ -249,7 +255,7 @@ def cleanup_audit_logs() -> None:
                     db, action="cleanup_audit_log",
                     target_type="system", target_id="audit-logs",
                     detail=f"清理失败: {e}",
-                    operator="scheduler",
+                    operator="system",
                 )
         except Exception:
             pass

@@ -40,7 +40,7 @@ def init_db() -> None:
     # 导入模型以注册到 Base.metadata
     from ..db_models.user import User  # noqa
     from ..db_models.system_config import SystemConfig  # noqa
-    from ..db_models.audit_log import LoginLog, SystemLog  # noqa
+    from ..db_models.audit_log import SystemLog  # noqa
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)
@@ -53,6 +53,25 @@ def init_db() -> None:
         # 将旧默认值 30 更新为 180（仅在值仍为旧默认时）
         conn.execute(text(
             "UPDATE system_config SET es_retention_days = 180 WHERE es_retention_days = 30"
+        ))
+        # LLM 配置字段（从系统设置页面配置）
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_api_endpoint TEXT NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_api_key TEXT NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_model VARCHAR(200) NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_temperature FLOAT NOT NULL DEFAULT 0.1"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_max_tokens INTEGER NOT NULL DEFAULT 8000"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_timeout INTEGER NOT NULL DEFAULT 60"
         ))
         conn.commit()
 

@@ -62,7 +62,7 @@ function buildGaugeOption(title: string, percent: number): EChartsOption {
           valueAnimation: true,
           fontSize: 24,
           fontWeight: 700,
-          fontFamily: 'JetBrains Mono, monospace',
+          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei', monospace",
           color: '#1e293b',
           offsetCenter: [0, '10%'],
           formatter: '{value}%',

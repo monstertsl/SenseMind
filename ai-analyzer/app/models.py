@@ -1,6 +1,7 @@
 """数据模型 - 各阶段 Chain 的输入输出"""
 
 from pydantic import BaseModel, Field
+from .http_utils import decode_http_body
 
 
 class AlertContext(BaseModel):
@@ -32,6 +33,8 @@ class AlertContext(BaseModel):
     http_url: str = ""
     http_host: str = ""
     http_user_agent: str = ""
+    http_status: int = 0
+    response_body: str = ""
 
     # TLS
     tls_sni: str = ""
@@ -54,6 +57,9 @@ class AlertContext(BaseModel):
         tls = eve.get("tls", {})
         soc = alert.get("soc", {})
         payload = eve.get("payload_printable", "")
+        # 优先使用 Base64 版本（http-body: yes），保留中文；
+        # 回退到 printable 版本（中文被替换为.）
+        response_body = decode_http_body(http, "http_response_body")
 
         return cls(
             timestamp=alert.get("@timestamp", ""),
@@ -77,6 +83,7 @@ class AlertContext(BaseModel):
             http_user_agent=http.get("http_user_agent", ""),
             tls_sni=tls.get("sni", ""),
             payload=payload[:2000] if payload else "",
+            response_body=response_body[:4000] if response_body else "",
             raw_alert=alert,
         )
 
@@ -94,10 +101,14 @@ class AlertContext(BaseModel):
             lines.append(f"- HTTP: {self.http_method} {self.http_host}{self.http_url}")
         if self.http_user_agent:
             lines.append(f"- User-Agent: {self.http_user_agent}")
+        if self.http_status:
+            lines.append(f"- 响应状态码: {self.http_status}")
         if self.tls_sni:
             lines.append(f"- TLS SNI: {self.tls_sni}")
         if self.payload:
             lines.append(f"- Payload:\n{self.payload[:1000]}")
+        if self.response_body:
+            lines.append(f"- 响应体:\n{self.response_body[:2000]}")
         return "\n".join(lines)
 
 
@@ -109,9 +120,6 @@ class TriageResult(BaseModel):
     )
     need_history_query: bool = Field(
         description="是否需要查询源IP历史行为"
-    )
-    need_threat_intel: bool = Field(
-        description="是否需要查询威胁情报"
     )
     risk: str = Field(
         description="当前风险等级: low / medium / high / critical"
