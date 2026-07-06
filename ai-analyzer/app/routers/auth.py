@@ -29,6 +29,24 @@ router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
 GENERIC_AUTH_FAILURE = "用户名或口令错误"
 
 
+@router.get("/check-ip")
+def check_ip(request: Request, db: Session = Depends(get_db)):
+    """Nginx auth_request 子请求端点：检查客户端 IP 是否在白名单
+
+    白名单为空时允许所有 IP；非空时只允许白名单内的 IP。
+    供 Nginx auth_request 调用，不需要认证。
+    """
+    client_ip = _extract_client_ip(request)
+    cfg = db.execute(select(SystemConfig).where(SystemConfig.id == 1)).scalar_one_or_none()
+
+    if cfg and cfg.allowed_login_ips:
+        allowed_ips = [ip.strip() for ip in cfg.allowed_login_ips.split(",") if ip.strip()]
+        if allowed_ips and client_ip not in allowed_ips:
+            raise HTTPException(status_code=403, detail="IP not allowed")
+
+    return {"status": "ok"}
+
+
 class CheckUserRequest(BaseModel):
     username: str
 
