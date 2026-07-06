@@ -207,6 +207,23 @@ class RuleWriter:
         return False
 
     @staticmethod
+    def _validate_rule_structure(rule: str) -> bool:
+        """检查规则基本结构（快速预检，在 suricata -T 之前拦截明显错误）"""
+        parts = rule.split()
+        if not parts:
+            return False
+        if parts[0].lower() not in {"alert", "drop", "reject", "pass"}:
+            logger.warning("规则动作无效: %s", parts[0])
+            return False
+        if rule.count("(") != rule.count(")"):
+            logger.warning("规则括号不匹配: (=%d, )=%d", rule.count("("), rule.count(")"))
+            return False
+        if "msg:" not in rule:
+            logger.warning("规则缺少 msg 字段")
+            return False
+        return True
+
+    @staticmethod
     def _sanitize_content_quotes(rule: str) -> str:
         """转义 content 字段内的裸双引号为 hex |22|
 
@@ -272,6 +289,11 @@ class RuleWriter:
         # 转义 content 字段内的裸双引号，防止 Suricata 解析失败
         rule = self._sanitize_content_quotes(rule)
 
+        # 快速结构预检：括号匹配、动作合法、必要字段
+        if not self._validate_rule_structure(rule):
+            logger.warning("规则结构无效，跳过: %s", rule[:80])
+            return False
+
         with _write_lock:
             # 去重检查（在锁内执行，防止并发漏检）
             if self._is_duplicate(rule):
@@ -319,77 +341,170 @@ class RuleWriter:
                 return False
 
     def reload_suricata(self) -> bool:
-        """通过 Docker Engine API 热加载规则
+        """验证规则语法 → 自动注释错误规则 → 热加载
 
-        直接调用 /var/run/docker.sock 的 exec 接口，在 suricata 容器内
-        执行 suricatasc -c reload-rules，无需 docker CLI。
+        流程:
+        1. 在 suricata 容器内运行 suricata -T 验证 local.rules
+        2. 如有语法错误，解析出错行号并自动注释（最多重试 3 轮）
+        3. 验证通过后执行 suricatasc -c reload-rules
 
         Returns:
             True=加载成功, False=加载失败
         """
         try:
-            return self._reload_via_docker_api()
+            # Step 1: 验证并自愈（持写锁，防止并发写入干扰）
+            with _write_lock:
+                for attempt in range(3):
+                    ok, bad_lines = self._test_rules_with_suricata()
+                    if ok:
+                        break
+                    if not bad_lines:
+                        logger.error("规则验证失败但无法定位错误行号，跳过自愈")
+                        break
+                    deleted = self._delete_bad_rules(bad_lines)
+                    if deleted == 0:
+                        break
+                    logger.info("第 %d 轮验证：删除了 %d 条错误规则", attempt + 1, deleted)
+
+            # Step 2: 热加载（无需写锁，仅 Docker exec）
+            exit_code, output = self._exec_in_suricata([
+                "suricatasc", "-c", "reload-rules",
+            ])
+            if exit_code != 0:
+                logger.error("suricatasc 退出码 %d: %s", exit_code, output[:200])
+                return False
+            logger.info("Suricata 规则热加载成功")
+            return True
         except Exception as e:
             logger.error("Suricata 热加载失败: %s", e)
             return False
 
-    def _reload_via_docker_api(self) -> bool:
-        """通过 Docker Engine socket API 执行热加载"""
+    def _exec_in_suricata(self, cmd: list, timeout: int = 180) -> tuple:
+        """通过 Docker Engine API 在 suricata 容器内执行命令
+
+        Returns:
+            (exit_code, output) — exit_code=-1 表示执行失败
+        """
         sock_path = "/var/run/docker.sock"
         if not os.path.exists(sock_path):
             logger.error("Docker socket 不存在: %s", sock_path)
-            return False
+            return -1, ""
 
-        base_url = "http+unix://" + sock_path.replace("/", "%2F")
+        try:
+            with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=timeout) as client:
+                # 1. 创建 exec 实例
+                resp = client.post(
+                    f"http://docker/containers/{self.suricata_container}/exec",
+                    json={"AttachStdout": True, "AttachStderr": True, "Cmd": cmd},
+                )
+                if resp.status_code != 201:
+                    logger.error("创建 exec 失败 (HTTP %d): %s", resp.status_code, resp.text)
+                    return -1, ""
 
-        # 1. 创建 exec 实例
-        exec_payload = {
-            "AttachStdout": True,
-            "AttachStderr": True,
-            "Cmd": ["suricatasc", "-c", "reload-rules"],
-        }
+                exec_id = resp.json().get("Id")
+                if not exec_id:
+                    logger.error("exec 响应无 Id: %s", resp.text)
+                    return -1, ""
 
-        with httpx.Client(transport=httpx.HTTPTransport(uds=sock_path), timeout=180) as client:
-            resp = client.post(
-                f"http://docker/containers/{self.suricata_container}/exec",
-                json=exec_payload,
-            )
-            if resp.status_code != 201:
-                logger.error("创建 exec 失败 (HTTP %d): %s", resp.status_code, resp.text)
-                return False
+                # 2. 启动 exec（同步等待输出）
+                resp = client.post(
+                    f"http://docker/exec/{exec_id}/start",
+                    json={"Detach": False, "Tty": False},
+                )
+                if resp.status_code != 200:
+                    logger.error("启动 exec 失败 (HTTP %d): %s", resp.status_code, resp.text)
+                    return -1, ""
 
-            exec_id = resp.json().get("Id")
-            if not exec_id:
-                logger.error("exec 响应无 Id: %s", resp.text)
-                return False
+                # 输出在 /start 的响应中，必须在此处捕获
+                output = self._parse_docker_stream(resp.content if hasattr(resp, 'content') else b"")
 
-            # 2. 启动 exec（同步等待输出）
-            resp = client.post(
-                f"http://docker/exec/{exec_id}/start",
-                json={"Detach": False, "Tty": False},
-            )
-            if resp.status_code != 200:
-                logger.error("启动 exec 失败 (HTTP %d): %s", resp.status_code, resp.text)
-                return False
+                # 3. 获取退出码
+                resp = client.get(f"http://docker/exec/{exec_id}/json")
+                exit_code = resp.json().get("ExitCode", -1) if resp.status_code == 200 else -1
 
-            # 3. 检查 exec 退出码
-            resp = client.get(f"http://docker/exec/{exec_id}/json")
-            if resp.status_code == 200:
-                exit_code = resp.json().get("ExitCode", -1)
-                if exit_code != 0:
-                    logger.error("suricatasc 退出码 %d", exit_code)
-                    return False
+                return exit_code, output
+        except Exception as e:
+            logger.error("Docker exec 失败: %s", e)
+            return -1, ""
 
-            # 4. 解析输出（Docker stream 格式，前 8 字节为 header）
-            output = self._parse_docker_stream(resp.content if hasattr(resp, 'content') else b"")
-            # start 的响应 body 才是实际输出，重新获取
-            # 上面的 /json 返回的是元数据，输出在 /start 的响应中
-            # 需要重新调用 start 获取输出 - 但 exec 已执行完毕
-            # 改用 inspect 获取输出不可行，输出在 start 响应中
+    def _test_rules_with_suricata(self) -> tuple:
+        """使用 suricata -T 验证 local.rules 全部规则
 
-            # 简化：只要退出码为 0 即认为成功
-            logger.info("Suricata 规则热加载成功 (exec=%s)", exec_id)
-            return True
+        在 suricata 容器内运行 suricata -T -c suricata.yaml -S local.rules，
+        利用 Suricata 自身的解析器做最严格的语法检查，能覆盖所有 Python
+        层面无法预检的边界情况（如 content 内裸 |、pcre 语法错误等）。
+
+        Returns:
+            (ok, bad_line_numbers) — ok=True 表示全部通过
+        """
+        exit_code, output = self._exec_in_suricata([
+            "suricata", "-T",
+            "-c", "/etc/suricata/suricata.yaml",
+            "-S", "/var/lib/suricata/rules/local.rules",
+            "-l", "/tmp",
+        ], timeout=120)
+
+        if exit_code == 0:
+            logger.info("Suricata 规则验证通过 (suricata -T)")
+            return True, set()
+
+        # 解析错误输出，提取出错行号
+        # Suricata 8 格式: "from file /path at line 37"
+        # 旧版格式: "from line 37 of /path"
+        bad_lines = set()
+        for match in re.finditer(r'(?:from line |at line )(\d+)', output):
+            bad_lines.add(int(match.group(1)))
+
+        logger.warning(
+            "Suricata 规则验证失败 (exit=%d), %d 条规则有语法错误: %s",
+            exit_code, len(bad_lines), output[:500],
+        )
+        return False, bad_lines
+
+    def _delete_bad_rules(self, bad_lines: set) -> int:
+        """删除指定行号的语法错误规则
+
+        Args:
+            bad_lines: 1-based 行号集合
+
+        Returns:
+            实际删除的规则数量
+        """
+        if not bad_lines:
+            return 0
+
+        try:
+            with open(self.rules_file, "r") as f:
+                lines = f.readlines()
+
+            new_lines = []
+            deleted = 0
+            for i, line in enumerate(lines):
+                line_num = i + 1
+                if line_num in bad_lines and not line.strip().startswith("#"):
+                    deleted += 1
+                    logger.warning("删除语法错误规则 (line %d): %s", line_num, line.strip()[:80])
+                else:
+                    new_lines.append(line)
+
+            if deleted > 0:
+                with open(self.rules_file, "w") as f:
+                    f.writelines(new_lines)
+                logger.info("已删除 %d 条语法错误规则", deleted)
+                # 删除后刷新内存状态，避免误判重复
+                self._refresh_existing()
+
+            return deleted
+        except Exception as e:
+            logger.error("删除错误规则失败: %s", e)
+            return 0
+
+    def _refresh_existing(self):
+        """重新加载文件状态（删除规则后调用）"""
+        self._existing_sids.clear()
+        self._existing_rules.clear()
+        self._existing_core_features.clear()
+        self._load_existing()
 
     @staticmethod
     def _parse_docker_stream(data: bytes) -> str:

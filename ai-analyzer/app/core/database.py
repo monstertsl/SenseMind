@@ -54,6 +54,25 @@ def init_db() -> None:
         conn.execute(text(
             "UPDATE system_config SET es_retention_days = 180 WHERE es_retention_days = 30"
         ))
+        # LLM 配置字段（从系统设置页面配置）
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_api_endpoint TEXT NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_api_key TEXT NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_model VARCHAR(200) NOT NULL DEFAULT ''"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_temperature FLOAT NOT NULL DEFAULT 0.1"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_max_tokens INTEGER NOT NULL DEFAULT 8000"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS llm_timeout INTEGER NOT NULL DEFAULT 60"
+        ))
         conn.commit()
 
     with SessionLocal() as db:

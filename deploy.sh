@@ -459,9 +459,15 @@ if [ -f "$SURICATA_YAML" ]; then
     touch /data/suricata/lib/rules/local.rules
     chmod 666 /data/suricata/lib/rules/local.rules
 
+    # 开启 alert 事件的 HTTP body 记录，供 AI 判断攻击是否成功
+    # http-body: Base64 编码的完整响应体（保留中文），由 ai-analyzer 解码
+    # http-body-printable: 可打印格式（中文被替换为.），作为回退
+    # 两者都是 - alert: 部分的选项，需要 metadata 启用才会生效
+    # 同时清理 - http: 部分下旧版误加的非注释 http-body-printable 行
     sed -i -E \
       -e 's/community-id: false/community-id: true/' \
-      -e '/- alert:/,/- frame:/ { s/# *(payload-buffer-size:)/\1/; s/# *(payload-printable:)/\1/ }' \
+      -e '/- alert:/,/- frame:/ { s/# *(payload-buffer-size:)/\1/; s/# *(payload-printable:)/\1/; s/# *(http-body-printable:)/\1/; s/# *(http-body: yes)/\1/; s/# *(metadata:).*/\1 yes/ }' \
+      -e '/^[[:space:]]*- http:/,/^[[:space:]]*- [a-z]/ { /^[[:space:]]*http-body-printable:/d }' \
       -e 's/http-body-inline: auto/http-body-inline: yes/' \
       "$SURICATA_YAML"
 

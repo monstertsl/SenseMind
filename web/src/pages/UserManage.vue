@@ -286,8 +286,8 @@ function copyToClipboard(text: string) {
     </el-table>
 
     <!-- 新建用户 -->
-    <el-dialog v-model="createDialogVisible" title="新建用户" width="440px">
-      <el-form label-width="90px">
+    <el-dialog v-model="createDialogVisible" title="新建用户" width="440px" class="user-create-dialog">
+      <el-form label-width="90px" label-position="left">
         <el-form-item label="用户名">
           <el-input v-model="createForm.username" placeholder="请输入用户名" />
         </el-form-item>
@@ -318,7 +318,7 @@ function copyToClipboard(text: string) {
     </el-dialog>
 
     <!-- 编辑用户（含密码重置 + TOTP 管理） -->
-    <el-dialog v-model="editDialogVisible" title="编辑用户" width="460px">
+    <el-dialog v-model="editDialogVisible" title="编辑用户" width="460px" class="user-edit-dialog">
       <el-form v-if="editForm && editUser" label-width="90px" label-position="left">
         <el-form-item label="角色">
           <el-select v-model="editForm.role" class="full-width">
@@ -341,10 +341,10 @@ function copyToClipboard(text: string) {
         </el-form-item>
         <el-form-item label="TOTP">
           <div class="edit-totp-actions">
-            <el-button v-if="!editForm.totp_enabled" text size="small" type="success" @click="handleEnableTotp(editUser)">启用 TOTP</el-button>
+            <el-button v-if="!editForm.totp_enabled" text type="success" @click="handleEnableTotp(editUser)">启用 TOTP</el-button>
             <template v-else>
-              <el-button text size="small" type="primary" @click="handleViewTotp(editUser)">查看 TOTP</el-button>
-              <el-button text size="small" type="warning" @click="handleDisableTotp(editUser)">禁用 TOTP</el-button>
+              <el-button text type="primary" @click="handleViewTotp(editUser)">查看 TOTP</el-button>
+              <el-button text type="warning" @click="handleDisableTotp(editUser)">禁用 TOTP</el-button>
             </template>
           </div>
         </el-form-item>
@@ -536,6 +536,44 @@ function copyToClipboard(text: string) {
     color: $color-text-secondary;
     word-break: break-all;
     flex: 1;
+  }
+}
+</style>
+
+<!-- 非 scoped：el-dialog teleport 到 body，需全局样式 -->
+<style lang="scss">
+.user-edit-dialog,
+.user-create-dialog {
+  .el-dialog__title {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 700;
+  }
+
+  .el-form-item__label {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 600;
+  }
+
+  .el-input__inner,
+  .el-select__placeholder,
+  .el-select__selected-item {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 600;
+  }
+
+  .el-switch__label {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 600;
+  }
+
+  .edit-totp-actions .el-button {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 600;
   }
 }
 </style>

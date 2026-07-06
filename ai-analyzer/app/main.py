@@ -19,6 +19,7 @@ from .routers import auth as auth_router
 from .routers import user as user_router
 from .routers import system_config as system_config_router
 from .routers import audit_log as audit_log_router
+from .routers import llm_config as llm_config_router
 from .scheduler import start_scheduler, shutdown_scheduler
 from .core.database import init_db
 
@@ -68,6 +69,7 @@ app.include_router(auth_router.router)
 app.include_router(user_router.router)
 app.include_router(system_config_router.router)
 app.include_router(audit_log_router.router)
+app.include_router(llm_config_router.router)
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None
@@ -79,6 +81,14 @@ def get_analyzer() -> AlertAnalyzer:
     global _analyzer
     if _analyzer is None:
         _analyzer = AlertAnalyzer()
+    return _analyzer
+
+
+def reload_analyzer() -> AlertAnalyzer:
+    """重新初始化分析器（LLM 配置变更后调用）"""
+    global _analyzer
+    _analyzer = AlertAnalyzer()
+    logger.info("分析器已重新加载，模型: %s", _analyzer.model_name)
     return _analyzer
 
 

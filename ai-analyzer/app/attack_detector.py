@@ -18,6 +18,7 @@ import html
 import base64
 import shlex
 from urllib.parse import unquote
+from .http_utils import decode_http_body
 
 logger = logging.getLogger(__name__)
 
@@ -620,12 +621,17 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
             # 提取事件信息用于规则生成
             url = ""
             payload = ""
+            http_status = 0
+            response_body = ""
 
             if is_http:
-                url = eve.get("http", {}).get("url", "")
+                http_obj = eve.get("http", {})
+                url = http_obj.get("url", "")
                 if not url:
                     url = log.get("url", {}).get("original", "")
                 payload = eve.get("payload_printable", "")[:500]
+                http_status = http_obj.get("status", 0) or 0
+                response_body = decode_http_body(http_obj, "http_response_body")
             elif is_dns:
                 query = ""
                 sc_dns = eve.get("dns", {})
@@ -651,6 +657,8 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
                 # 漏报攻击对应的原始日志 ES 文档引用（用于 source_alert_id）
                 "log_id": log.get("_id", ""),
                 "log_index": log.get("_index", ""),
+                "http_status": http_status,
+                "response_body": response_body[:2000] if response_body else "",
             })
             logger.info(
                 "发现未触发告警的攻击事件: types=%s, url=%s",

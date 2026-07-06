@@ -42,12 +42,17 @@ request.interceptors.response.use(
     const url = error?.config?.url || ''
     // logout 请求的 401 由 auth store 静默处理，不触发拦截器跳转
     const isLogoutRequest = url.includes('/auth/logout')
-    if (status === 401 && !isLogoutRequest) {
-      sessionStorage.removeItem(TOKEN_KEY)
-      sessionStorage.removeItem('sm_user')
-      if (window.location.pathname !== LOGIN_PATH) {
-        window.location.href = LOGIN_PATH
+    if (status === 401) {
+      if (!isLogoutRequest) {
+        sessionStorage.removeItem(TOKEN_KEY)
+        sessionStorage.removeItem('sm_user')
+        if (window.location.pathname !== LOGIN_PATH) {
+          window.location.href = LOGIN_PATH
+        }
       }
+      // 返回 pending promise，避免调用方 catch 到错误并弹出 ElMessage
+      // 页面即将跳转或已清除凭据，pending 的请求无需处理结果
+      return new Promise(() => {})
     }
     // 静默失败：不弹出 ElMessage，由调用方决定是否自动重试
     return Promise.reject(error)

@@ -25,7 +25,7 @@ from .tools.es_tools import format_logs
 from .knowledge.rag import create_knowledge_retriever
 from .es_client import ESClient
 from .attack_detector import find_unalerted_attacks
-from .threat_intel import ThreatIntelClient
+from .http_utils import decode_http_body
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +56,28 @@ class AlertAnalyzer:
     """告警分析器 - 5 阶段 Chain 编排"""
 
     def __init__(self):
-        cfg = Config()
-        llm_cfg = cfg.llm
+        # 从 DB 读取 LLM 配置（由系统设置页面管理）
+        from .routers.llm_config import get_llm_config_from_db
+        llm_cfg = get_llm_config_from_db()
+
+        if not llm_cfg.get("base_url"):
+            logger.warning("LLM 未配置，请在系统设置 > 集成配置中配置 LLM 模型")
+
+        # api_key 为空时传一个占位值，ChatOpenAI 要求非空
+        api_key = llm_cfg.get("api_key", "") or "not-needed"
 
         self.llm = ChatOpenAI(
-            api_key=llm_cfg["api_key"],
-            base_url=llm_cfg["base_url"],
-            model=llm_cfg["model"],
+            api_key=api_key,
+            base_url=llm_cfg.get("base_url", ""),
+            model=llm_cfg.get("model", ""),
             temperature=llm_cfg.get("temperature", 0.1),
-            max_tokens=llm_cfg.get("max_tokens", 2000),
+            max_tokens=llm_cfg.get("max_tokens", 8000),
             max_retries=0,
             timeout=llm_cfg.get("timeout", 60),
             # Qwen3 系列默认开启思考模式，会输出 <think> 块消耗 token 导致 JSON 截断
             model_kwargs={"extra_body": {"enable_thinking": False}},
         )
-        self.model_name = llm_cfg["model"]
+        self.model_name = llm_cfg.get("model", "未配置")
 
         # 初始化各阶段 Chain
         self.triage_chain = create_triage_chain(self.llm)
@@ -78,6 +85,7 @@ class AlertAnalyzer:
         self.unalerted_chain = create_unalerted_analysis_chain(self.llm)
 
         # 初始化知识检索
+        cfg = Config()
         self.knowledge_retriever = create_knowledge_retriever(cfg.knowledge_dir)
 
         # 初始化规则生成 Chain 和规则写入器
@@ -159,7 +167,6 @@ class AlertAnalyzer:
             triage = TriageResult(
                 need_session_query=True,
                 need_history_query=(ctx.severity >= 3),
-                need_threat_intel=False,
                 risk="high" if ctx.severity >= 2 else "medium",
                 triage_reason=f"severity={ctx.severity}，跳过 Triage 直接查询关联日志",
             )
@@ -175,25 +182,22 @@ class AlertAnalyzer:
             try:
                 t0 = time.time()
                 triage = self.triage_chain(triage_input)
-                logger.info("研判完成 (%.1fs): risk=%s, need_session=%s, need_history=%s, need_threat_intel=%s",
+                logger.info("研判完成 (%.1fs): risk=%s, need_session=%s, need_history=%s",
                             time.time() - t0,
                             triage.risk,
                             triage.need_session_query,
-                            triage.need_history_query,
-                            triage.need_threat_intel)
+                            triage.need_history_query)
             except Exception as e:
                 logger.warning("研判 Chain 失败，使用默认值: %s", e)
                 triage = TriageResult(
                     need_session_query=True,
                     need_history_query=False,
-                    need_threat_intel=False,
                     risk="medium",
                     triage_reason=f"研判失败，使用默认策略: {e}",
                 )
 
         # === Stage 3: 动态关联查询 ===
         logger.info("=== Stage 3: 动态关联查询 ===")
-        threat_intel_text = "无威胁情报"
         if related_logs is None:
             # 外部未预查，由 Triage 决定是否查询
             related_logs = []
@@ -222,26 +226,11 @@ class AlertAnalyzer:
                     related_logs.extend(history)
                 except Exception as e:
                     logger.warning("源IP历史查询失败: %s", e)
-
-            # 威胁情报查询
-            if triage.need_threat_intel:
-                try:
-                    ti = ThreatIntelClient()
-                    threat_intel_text = ti.query_for_alert(
-                        src_ip=ctx.src_ip,
-                        dst_ip=ctx.dst_ip,
-                        tls_sni=ctx.tls_sni,
-                        http_host=ctx.http_host,
-                    )
-                    logger.info("威胁情报查询完成: %d 字符", len(threat_intel_text))
-                except Exception as e:
-                    logger.warning("威胁情报查询失败: %s", e)
         else:
             logger.info("使用外部传入的关联日志: %d 条", len(related_logs))
 
-        # 补充 HTTP 上下文：当 alert 事件缺少 http 字段时（HTTP keep-alive 多事务场景），
-        # 从关联日志的 http 事件中查找实际触发告警的 URL
-        if related_logs and not ctx.http_url:
+        # 补充 HTTP 上下文：从关联日志的 http 事件中查找实际触发告警的 URL 和响应数据
+        if related_logs:
             ctx = self._enrich_http_context(ctx, related_logs)
 
         # === Stage 4: 知识增强 (RAG) ===
@@ -265,7 +254,6 @@ class AlertAnalyzer:
             "related_count": len(related_logs),
             "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
             "knowledge": knowledge,
-            "threat_intel": threat_intel_text,
         }
         try:
             t0 = time.time()
@@ -392,6 +380,8 @@ class AlertAnalyzer:
                 f"{i + 1}. 攻击类型: {', '.join(item['attack_types'])} | "
                 f"事件: {item['event_type']} | URL: {item['url']} | "
                 f"Payload: {item['payload'][:200]}"
+                + (f" | 响应状态码: {item['http_status']}" if item.get('http_status') else "")
+                + (f" | 响应体: {item['response_body'][:500]}" if item.get('response_body') else "")
                 for i, item in enumerate(unalerted)
             )
             llm_results = self.unalerted_chain({
@@ -557,6 +547,10 @@ class AlertAnalyzer:
         # 协议特定字段
         if item["event_type"] == "http":
             record["http_url"] = item["url"]
+            if item.get("http_status"):
+                record["http_status"] = item["http_status"]
+            if item.get("response_body"):
+                record["response_body"] = item["response_body"][:4000]
         elif item["event_type"] == "tls":
             record["tls_sni"] = item["payload"]
 
@@ -651,6 +645,8 @@ class AlertAnalyzer:
                     "method": method,
                     "host": host,
                     "timestamp": log.get("@timestamp", ""),
+                    "status": http.get("status", 0),
+                    "response_body": decode_http_body(http, "http_response_body") or eve.get("http", {}).get("http_response_body_printable", ""),
                 })
 
             # Zeek http 日志
@@ -663,6 +659,8 @@ class AlertAnalyzer:
                         "method": log.get("http", {}).get("request", {}).get("method", ""),
                         "host": host,
                         "timestamp": log.get("@timestamp", ""),
+                        "status": log.get("http", {}).get("response", {}).get("status_code", 0) or 0,
+                        "response_body": "",
                     })
 
         if not http_events:
@@ -673,6 +671,8 @@ class AlertAnalyzer:
         matched_url = ""
         matched_host = ""
         matched_method = ""
+        matched_status = 0
+        matched_response_body = ""
 
         for event in http_events:
             url_lower = event["url"].lower()
@@ -692,6 +692,8 @@ class AlertAnalyzer:
                 matched_url = event["url"]
                 matched_host = event["host"]
                 matched_method = event["method"]
+                matched_status = event.get("status", 0)
+                matched_response_body = event.get("response_body", "")
                 logger.info("HTTP 上下文补充: signature 匹配到 URL %s", matched_url[:80])
                 break
 
@@ -701,21 +703,30 @@ class AlertAnalyzer:
             matched_url = last["url"]
             matched_host = last["host"]
             matched_method = last["method"]
+            matched_status = last.get("status", 0)
+            matched_response_body = last.get("response_body", "")
             logger.info("HTTP 上下文补充: 使用最新 http 事件 URL %s", matched_url[:80])
 
         if matched_url:
-            ctx.http_url = matched_url
-            if matched_host:
+            # 仅当告警自身缺少 HTTP 请求上下文时才补充，避免覆盖
+            if not ctx.http_url:
+                ctx.http_url = matched_url
+            if not ctx.http_host and matched_host:
                 ctx.http_host = matched_host
-            if matched_method:
+            if not ctx.http_method and matched_method:
                 ctx.http_method = matched_method
-            # 重建 payload，包含实际触发告警的请求行
-            request_line = f"{matched_method} {matched_host}{matched_url} HTTP/1.1"
-            if ctx.payload:
-                # 追加到现有 payload 前面
-                ctx.payload = f"[实际触发告警的请求]\n{request_line}\n\n[alert payload（可能为流首事务）]\n{ctx.payload}"
-            else:
-                ctx.payload = request_line
+            # 响应侧字段始终提取
+            if matched_status:
+                ctx.http_status = matched_status
+            if matched_response_body:
+                ctx.response_body = matched_response_body
+                # 重建 payload，包含实际触发告警的请求行
+                request_line = f"{matched_method} {matched_host}{matched_url} HTTP/1.1"
+                if ctx.payload:
+                    # 追加到现有 payload 前面
+                    ctx.payload = f"[实际触发告警的请求]\n{request_line}\n\n[alert payload（可能为流首事务）]\n{ctx.payload}"
+                else:
+                    ctx.payload = request_line
 
         return ctx
 
@@ -805,6 +816,10 @@ class AlertAnalyzer:
             analysis["tls_sni"] = ctx.tls_sni
         if ctx.payload:
             analysis["payload"] = ctx.payload[:4000]
+        if ctx.http_status:
+            analysis["http_status"] = ctx.http_status
+        if ctx.response_body:
+            analysis["response_body"] = ctx.response_body[:4000]
 
     def _fallback_result(self, ctx: AlertContext, error: str) -> dict:
         """分析失败降级结果"""

@@ -68,6 +68,8 @@ export interface AlertAi {
   attack_chain: string
   handling_suggestion: string
   payload: string
+  http_status: number | null
+  response_body: string
   source_alert_id: string
   threat_verdict: string
   attack_result: string

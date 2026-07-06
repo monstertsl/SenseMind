@@ -6,6 +6,7 @@
 
 import logging
 from langchain_core.tools import tool
+from ..http_utils import decode_http_body
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ def format_logs(logs: list) -> str:
             url = sc_http.get("url", "")
             host = sc_http.get("hostname", "")
             ua = sc_http.get("http_user_agent", "")
+            status = sc_http.get("status", "")
+            resp_len = sc_http.get("length", "")
+            resp_body = decode_http_body(sc_http, "http_response_body")
             # Zeek HTTP 回退
             if not method:
                 method = log.get("http", {}).get("request", {}).get("method", "")
@@ -100,9 +104,17 @@ def format_logs(logs: list) -> str:
                 url = log.get("url", {}).get("original", "")
             if not host:
                 host = log.get("url", {}).get("domain", "")
+            if not status:
+                status = log.get("http", {}).get("response", {}).get("status_code", "")
             detail = f" | {method} {host}{url}"
+            if status:
+                detail += f" -> {status}"
+            if resp_len:
+                detail += f" ({resp_len}B)"
             if ua:
                 detail += f" UA={ua[:50]}"
+            if resp_body:
+                detail += f" RESP={resp_body[:200]}"
         elif event_type == "dns" or dataset == "zeek.dns":
             # Suricata DNS
             sc_dns = log.get("suricata", {}).get("eve", {}).get("dns", {})

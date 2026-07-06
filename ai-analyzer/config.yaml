@@ -1,42 +1,5 @@
 # SenseMind AI 分析中心配置文件
-
-########################################
-# LLM 模型配置
-########################################
-llm:
-
-  api_key: "sk-xxx"
-
-  base_url: "https://..."
-
-  model: "glm-5.2"
-
-  # 生成参数
-  temperature: 0.1
-  max_tokens: 8000
-  # 单次请求超时（秒），需大于 Logstash request_timeout
-  timeout: 60
-
-########################################
-# 威胁情报查询配置
-# 默认关闭，不影响现有流程
-# 启用时需配置 api_url 和 api_key
-########################################
-threat_intel:
-  enabled: false
-  # 查询接口 URL，可用 {type}（ip/domain）和 {value} 占位符
-  # 示例: "http://10.0.0.1:8080/api/query?type={type}&value={value}"
-  api_url: ""
-  # API Key，留空则不传
-  api_key: ""
-  # API Key 传递方式: header 或 query
-  api_key_in: "header"
-  # API Key 的 header/参数名
-  api_key_name: "x-apikey"
-  # 请求超时（秒）
-  timeout: 10
-  # 响应字段提取（jq 语法），留空返回原始 JSON
-  jq_filter: ""
+# LLM 模型配置已迁移到系统设置 > 集成配置 > LLM 模型配置 页面（DB 存储）
 
 ########################################
 # Elasticsearch 配置

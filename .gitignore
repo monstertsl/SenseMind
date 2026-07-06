@@ -5,8 +5,9 @@ certs/
 .env
 .env.bak
 
-# 前端依赖
+# 前端依赖与构建产物
 web/node_modules/
+web/dist/
 
 # Python 缓存
 __pycache__/

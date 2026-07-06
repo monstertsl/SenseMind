@@ -134,14 +134,16 @@ class LogService:
         if time_clause:
             must.append(time_clause)
 
-        # 关键字模糊匹配（multi_match，不能单独使用，必须配合其他条件）
+        # 关键字模糊匹配（simple_query_string，禁用所有特殊操作符，纯文本匹配）
+        # 使用 simple_query_string 而非 multi_match，避免 +、()、| 等被当作查询语法
         keyword = getattr(body, "keyword", None)
         if keyword and keyword.strip() and must:
             must.append({
-                "multi_match": {
+                "simple_query_string": {
                     "query": keyword.strip(),
                     "fields": ["*"],
-                    "type": "best_fields",
+                    "default_operator": "and",
+                    "flags": "NONE",
                 }
             })
 
