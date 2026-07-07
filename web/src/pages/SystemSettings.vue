@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { getConfig, updateConfig, type SystemConfig } from '@/api/systemConfig'
@@ -330,12 +330,25 @@ function formatTime(t: string | null): string {
   }
 }
 
+// ---- 响应式布局：窄屏断点切换时强制重建表格，修复列宽不回缩 ----
+const isNarrow = ref(false)
+const mql = window.matchMedia('(max-width: 1100px)')
+function onMediaChange() {
+  isNarrow.value = mql.matches
+}
+
 onMounted(() => {
+  isNarrow.value = mql.matches
+  mql.addEventListener('change', onMediaChange)
   fetchConfig()
   fetchLLMConfig()
   fetchCurrentIp()
   fetchLoginLogs()
   fetchSystemLogs()
+})
+
+onBeforeUnmount(() => {
+  mql.removeEventListener('change', onMediaChange)
 })
 </script>
 
@@ -487,7 +500,7 @@ onMounted(() => {
             <el-input v-model="loginFilter.ip_address" placeholder="IP" clearable class="filter-input" @keyup.enter="handleLoginSearch" />
             <el-button type="primary" :icon="Search" @click="handleLoginSearch">查询</el-button>
           </div>
-          <el-table v-loading="loginLoading" :data="loginLogs" stripe max-height="320">
+          <el-table :key="'login-' + (isNarrow ? 'n' : 'w')" v-loading="loginLoading" :data="loginLogs" stripe max-height="320">
             <el-table-column prop="username" label="用户名" width="100" />
             <el-table-column label="结果" width="80">
               <template #default="{ row }">
@@ -524,7 +537,7 @@ onMounted(() => {
             <el-input v-model="systemFilter.operator" placeholder="操作人" clearable class="filter-input" @keyup.enter="handleSystemSearch" />
             <el-button type="primary" :icon="Search" @click="handleSystemSearch">查询</el-button>
           </div>
-          <el-table v-loading="systemLoading" :data="systemLogs" stripe max-height="320">
+          <el-table :key="'system-' + (isNarrow ? 'n' : 'w')" v-loading="systemLoading" :data="systemLogs" stripe max-height="320">
             <el-table-column label="操作类型" width="130">
               <template #default="{ row }">
                 <el-tag size="small">{{ ACTION_LABELS[row.action] || row.action }}</el-tag>
@@ -585,6 +598,13 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+}
+
+// 窄屏：集成配置单列堆叠（安全策略 → 存储优化 → LLM 模型）
+@media (max-width: 1100px) {
+  .config-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 // 子卡片（存储优化 / 安全策略）用浅灰底，与外层白底形成层次
@@ -677,6 +697,13 @@ onMounted(() => {
   grid-template-columns: 1fr 1fr;
   gap: 20px;
   align-items: stretch;
+}
+
+// 窄屏：日志区单列堆叠（登录日志 → 系统日志）
+@media (max-width: 1100px) {
+  .logs-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .log-pane {
