@@ -52,6 +52,8 @@ class QueryService:
             must.append({"match_phrase": {"ai.alert_signature": params.alert_signature}})
         if params.source_alert_id:
             must.append({"term": {"ai.source_alert_id.keyword": params.source_alert_id}})
+        if params.attack_result:
+            must.append({"term": {"ai.attack_result.keyword": params.attack_result}})
 
         return {"query": {"bool": {"must": must}}}
 

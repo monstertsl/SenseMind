@@ -45,7 +45,9 @@ cat .env | grep ELASTIC_PASSWORD
 ```
 #### LLM 配置
 
+```
 `系统设置` > `集成配置` > `LLM 模型`
+```
 
 ![AI 研判仪表板](demo-00.png)
 
@@ -134,16 +136,24 @@ curl -X POST http://localhost:9090/api/analyze/<doc_id>
 ### 故障恢复
 
 #### 查看当前WEB白名单
+
+```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "SELECT allowed_login_ips FROM system_config WHERE id=1;"
+```
 
 #### 清空WEB白名单（允许所有 IP 访问）
+
+```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "UPDATE system_config SET allowed_login_ips='' WHERE id=1;"
-
+```
 #### 或修改WEB为正确的 IP
+
+```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "UPDATE system_config SET allowed_login_ips='IP地址' WHERE id=1;"
+```
 
 
 无法登录前端时，可通过命令行直接操作。以下命令中 `sensemind-postgres` 和 `ai-analyzer` 为默认容器名。

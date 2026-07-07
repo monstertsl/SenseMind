@@ -20,6 +20,7 @@ def list_alerts(
     confidence: float = Query(None),
     alert_signature: str = Query(None),
     source_alert_id: str = Query(None),
+    attack_result: str = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     sort_field: str = Query("ai.alert_timestamp"),
@@ -30,7 +31,8 @@ def list_alerts(
         time_range=time_range, time_from=time_from, time_to=time_to,
         source_ip=source_ip, destination_ip=destination_ip, soc_name=soc_name,
         confidence=confidence, alert_signature=alert_signature,
-        source_alert_id=source_alert_id, page=page, page_size=page_size,
+        source_alert_id=source_alert_id, attack_result=attack_result,
+        page=page, page_size=page_size,
         sort_field=sort_field, sort_order=sort_order,
     )
     service = get_query_service()

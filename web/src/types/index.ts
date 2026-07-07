@@ -103,6 +103,7 @@ export interface AlertQuery {
   confidence?: number
   alert_signature?: string
   source_alert_id?: string
+  attack_result?: string
   page: number
   page_size: number
   sort_field?: string

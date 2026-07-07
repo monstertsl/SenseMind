@@ -1,5 +1,6 @@
 """FastAPI Webhook 服务 - 接收 Logstash 推送的告警"""
 
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -176,9 +177,12 @@ async def analyze_alert(request: Request):
             }
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
+    # analyzer.analyze() 是同步阻塞的（含 LLM/ES 同步调用），
+    # 用 asyncio.to_thread 放到线程池执行，避免阻塞事件循环导致 /health、
+    # /auth/check-ip 等轻量请求超时
     try:
         analyzer = get_analyzer()
-        analysis = analyzer.analyze(alert)
+        analysis = await asyncio.to_thread(analyzer.analyze, alert)
     except Exception as e:
         logger.error("AI 分析失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"分析失败: {e}")
@@ -280,7 +284,7 @@ async def analyze_es_alert(doc_id: str):
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
     analyzer = get_analyzer()
-    analysis = analyzer.analyze(alert)
+    analysis = await asyncio.to_thread(analyzer.analyze, alert)
 
     # 提取后台上下文（规则生成 + 漏报处理），不写入 ES
     bg_context = analysis.pop("_bg_context", None)

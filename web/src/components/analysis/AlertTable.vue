@@ -152,8 +152,8 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
         </template>
       </el-table-column>
 
-      <!-- 7. 威胁名 -->
-      <el-table-column prop="ai.alert_signature" label="威胁名" width="240" show-overflow-tooltip>
+      <!-- 7. 威胁名（min-width 自适应填充剩余空间，避免表格右侧空白） -->
+      <el-table-column prop="ai.alert_signature" label="威胁名" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">
           <span
             class="text-ellipsis"

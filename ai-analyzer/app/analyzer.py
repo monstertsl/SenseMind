@@ -344,7 +344,19 @@ class AlertAnalyzer:
         if not related_logs:
             return []
 
-        unalerted = find_unalerted_attacks(related_logs)
+        # 查询同 community_id 的主告警 AI 分析记录（alert_triage），
+        # 用于动态基线计算：提取 attack_result="失败" 的响应长度纳入基线
+        ai_analyses = {}
+        if ctx.community_id:
+            try:
+                es = ESClient()
+                ai_analyses = es.query_ai_analyses_by_community(ctx.community_id)
+                logger.info("基线参考: 同会话主告警分析记录 %d 条 (community_id=%s)",
+                            len(ai_analyses), ctx.community_id[:20])
+            except Exception as e:
+                logger.warning("查询同会话 AI 分析记录失败，基线将不含 alert 失败样本: %s", e)
+
+        unalerted = find_unalerted_attacks(related_logs, ai_analyses)
         if not unalerted:
             return []
 
@@ -382,6 +394,13 @@ class AlertAnalyzer:
                 f"Payload: {item['payload'][:200]}"
                 + (f" | 响应状态码: {item['http_status']}" if item.get('http_status') else "")
                 + (f" | 响应体: {item['response_body'][:500]}" if item.get('response_body') else "")
+                + (
+                    f" | 动态基线预判: 响应长度={item['baseline_length']}B, "
+                    f"基线样本={item['baseline_sample_count']}, "
+                    f"预判结果={item['baseline_judgment']}"
+                    if item.get('baseline_judgment')
+                    else ""
+                )
                 for i, item in enumerate(unalerted)
             )
             llm_results = self.unalerted_chain({
@@ -551,6 +570,11 @@ class AlertAnalyzer:
                 record["http_status"] = item["http_status"]
             if item.get("response_body"):
                 record["response_body"] = item["response_body"][:4000]
+            # 动态基线预判字段（仅 HTTP 漏报攻击）
+            if item.get("baseline_length"):
+                record["baseline_length"] = item["baseline_length"]
+                record["baseline_sample_count"] = item.get("baseline_sample_count", 0)
+                record["baseline_judgment"] = item.get("baseline_judgment", "")
         elif item["event_type"] == "tls":
             record["tls_sni"] = item["payload"]
 

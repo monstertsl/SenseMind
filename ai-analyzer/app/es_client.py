@@ -354,6 +354,48 @@ class ESClient:
             logger.warning("源IP历史查询失败: %s", e)
             return []
 
+    def query_ai_analyses_by_community(self, community_id: str) -> dict:
+        """查询同 community_id 的 AI 分析记录（仅主告警 alert_triage）
+
+        用于漏报攻击动态基线计算：从已分析告警中提取 attack_result="失败"
+        的响应长度，纳入基线。
+
+        Returns:
+            {source_alert_id: {"attack_result": str, "http_status": int}, ...}
+        """
+        if not community_id:
+            return {}
+
+        query = {
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"ai.community_id.keyword": community_id}},
+                        {"term": {"ai.analysis_source.keyword": "alert_triage"}},
+                    ],
+                }
+            },
+            "size": 100,
+            "_source": ["ai.attack_result", "ai.http_status", "ai.source_alert_id"],
+        }
+        try:
+            resp = self.client.search(index="soc-ai-*", body=query)
+            result = {}
+            for h in resp["hits"]["hits"]:
+                src = h["_source"].get("ai", {})
+                alert_id = src.get("source_alert_id", "")
+                if alert_id:
+                    result[alert_id] = {
+                        "attack_result": src.get("attack_result", ""),
+                        "http_status": src.get("http_status", 0) or 0,
+                    }
+            logger.info("community_id=%s 查到 %d 条 AI 分析记录",
+                        community_id[:20] if community_id else "N/A", len(result))
+            return result
+        except Exception as e:
+            logger.warning("查询 AI 分析记录失败: %s", e)
+            return {}
+
     def write_analysis(self, analysis: dict) -> str:
         """将 AI 分析结果写入 ES"""
         cfg = Config()

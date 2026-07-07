@@ -565,7 +565,109 @@ def detect_attack_in_ssl_event(log: dict) -> list[str]:
     return matched_types
 
 
-def find_unalerted_attacks(related_logs: list) -> list[dict]:
+def _calculate_session_baseline(related_logs: list, ai_analyses: dict) -> dict:
+    """从关联日志计算同会话 HTTP 响应长度基线
+
+    基线来源（3 类，OR 关系）：
+    1. 非攻击 http 事件 (status=200, 无攻击特征) — 前端正常响应
+    2. alert 事件 + status 非 200 (400/403/404/405/500) — 服务端拒绝（确定失败）
+    3. alert 事件 + status=200 + ai_analyses 中 attack_result="失败" — AI 确认前端拦截
+
+    排除：attack_result="成功"或"未知"的 alert（不污染基线）
+
+    Args:
+        related_logs: 同 community_id 的关联日志
+        ai_analyses: {source_alert_id: {"attack_result": str, "http_status": int}}
+
+    Returns:
+        {"ranges": [{"length": int, "min": int, "max": int, "count": int}],
+         "sample_count": int}
+    """
+    baseline_lengths = []
+
+    for log in related_logs:
+        eve = log.get("suricata", {}).get("eve", {})
+        event_type = eve.get("event_type", "")
+        http_obj = eve.get("http", {})
+        status = http_obj.get("status", 0) or 0
+        length = http_obj.get("length", 0) or 0
+
+        if length <= 0:
+            continue
+
+        if event_type == "http":
+            # 非攻击 200 http 事件 → 纳入基线
+            if status == 200:
+                if not detect_attack_in_http_event(log):
+                    baseline_lengths.append(length)
+        elif event_type == "alert":
+            # alert 事件：非 200 → 确定失败，纳入基线
+            if status in (400, 403, 404, 405, 500):
+                baseline_lengths.append(length)
+            # alert 事件：200 → 需查 ai_analyses 确认 attack_result
+            elif status == 200:
+                log_id = log.get("_id", "")
+                ai_info = ai_analyses.get(log_id, {})
+                if ai_info.get("attack_result") == "失败":
+                    baseline_lengths.append(length)
+
+    if not baseline_lengths:
+        return {"ranges": [], "sample_count": 0}
+
+    # 按长度聚类
+    length_counts = {}
+    for l in baseline_lengths:
+        length_counts[l] = length_counts.get(l, 0) + 1
+
+    # 为每个长度构建 ±20% 动态范围
+    ranges = []
+    for length, count in length_counts.items():
+        tolerance = max(int(length * 0.2), 10)
+        ranges.append({
+            "length": length,
+            "min": length - tolerance,
+            "max": length + tolerance,
+            "count": count,
+        })
+
+    logger.info("基线计算: %d 个样本, %d 个聚类", len(baseline_lengths), len(ranges))
+    return {"ranges": ranges, "sample_count": len(baseline_lengths)}
+
+
+def _prejudge_attack_result(http_status: int, http_length: int,
+                            baseline: dict) -> str:
+    """基于状态码和动态基线预判攻击结果
+
+    Returns:
+        "失败" — 前端拦截或服务端拒绝
+        "未知" — 响应偏离基线，可能成功
+        ""     — 非HTTP攻击或数据不足，不预判
+    """
+    if not http_status:
+        return ""
+
+    # 非 200 状态码：服务端拒绝
+    if http_status in (400, 403, 404, 405, 500):
+        return "失败"
+
+    if http_status != 200:
+        return "未知"
+
+    # 200 状态码：与基线对比
+    ranges = baseline.get("ranges", [])
+    if not ranges:
+        return "未知"  # 无基线，200 无法判断
+
+    # 落在任一正常范围内 → 前端拦截
+    for r in ranges:
+        if r["min"] <= http_length <= r["max"]:
+            return "失败"
+
+    return "未知"  # 偏离所有正常范围 → 可能成功
+
+
+def find_unalerted_attacks(related_logs: list,
+                           ai_analyses: dict = None) -> list[dict]:
     """从关联日志中找出未触发 alert 的攻击事件
 
     检查范围：
@@ -575,11 +677,19 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
 
     Args:
         related_logs: 同 community_id 的关联日志列表
+        ai_analyses: {source_alert_id: {"attack_result": str, "http_status": int}}
+                      用于动态基线计算（仅 HTTP 漏报攻击需要）
 
     Returns:
         未触发 alert 但包含攻击特征的事件列表
         [{"log": log, "attack_types": [...], "url": "...", "payload": "..."}]
     """
+    if ai_analyses is None:
+        ai_analyses = {}
+
+    # 计算同会话响应长度基线（用于 HTTP 漏报攻击预判）
+    baseline = _calculate_session_baseline(related_logs, ai_analyses)
+
     # 收集已触发 alert 的时间戳和 tx_id，避免重复
     alerted_tx_ids = set()
     for log in related_logs:
@@ -624,6 +734,11 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
             http_status = 0
             response_body = ""
 
+            # 基线字段（仅 HTTP 漏报攻击有意义）
+            baseline_length = 0
+            baseline_sample_count = baseline.get("sample_count", 0)
+            baseline_judgment = ""
+
             if is_http:
                 http_obj = eve.get("http", {})
                 url = http_obj.get("url", "")
@@ -631,7 +746,15 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
                     url = log.get("url", {}).get("original", "")
                 payload = eve.get("payload_printable", "")[:500]
                 http_status = http_obj.get("status", 0) or 0
+                http_length = http_obj.get("length", 0) or 0
                 response_body = decode_http_body(http_obj, "http_response_body")
+
+                # 基线预判：用同会话响应长度基线推断攻击结果
+                if http_length > 0:
+                    baseline_length = http_length
+                    baseline_judgment = _prejudge_attack_result(
+                        http_status, http_length, baseline
+                    )
             elif is_dns:
                 query = ""
                 sc_dns = eve.get("dns", {})
@@ -659,10 +782,14 @@ def find_unalerted_attacks(related_logs: list) -> list[dict]:
                 "log_index": log.get("_index", ""),
                 "http_status": http_status,
                 "response_body": response_body[:2000] if response_body else "",
+                # 动态基线预判（仅 HTTP 漏报攻击）
+                "baseline_length": baseline_length,
+                "baseline_sample_count": baseline_sample_count,
+                "baseline_judgment": baseline_judgment,
             })
             logger.info(
-                "发现未触发告警的攻击事件: types=%s, url=%s",
-                attack_types, url[:80],
+                "发现未触发告警的攻击事件: types=%s, url=%s, baseline_judgment=%s",
+                attack_types, url[:80], baseline_judgment or "N/A",
             )
 
     return unalerted
