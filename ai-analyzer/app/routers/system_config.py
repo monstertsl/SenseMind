@@ -57,7 +57,7 @@ def _cfg_to_dict(cfg: SystemConfig) -> dict:
 
 
 @router.get("")
-def get_config(db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+def get_config(db: Session = Depends(get_db), current_user: AuthContext = Depends(require_role("admin"))):
     cfg = _get_or_create_config(db)
     return ApiResponse(code=0, message="ok", data=_cfg_to_dict(cfg), request_id=str(uuid.uuid4()))
 

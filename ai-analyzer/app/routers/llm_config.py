@@ -103,7 +103,7 @@ def _read_llm(db: Session) -> dict:
 
 
 @router.get("", response_model=ApiResponse)
-def get_llm_config(db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+def get_llm_config(db: Session = Depends(get_db), current_user: AuthContext = Depends(require_role("admin"))):
     cfg = _get_or_create_config(db)
     return ApiResponse(code=0, message="ok",
                        data=_cfg_to_llm_response(cfg).model_dump(),
