@@ -258,7 +258,11 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8080:80"
+      - "8080:443"
+
+    volumes:
+      - ./certs/web.crt:/etc/nginx/ssl/web.crt:ro
+      - ./certs/web.key:/etc/nginx/ssl/web.key:ro
 
     depends_on:
       - ai-analyzer

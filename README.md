@@ -37,7 +37,7 @@ sudo bash deploy.sh <interface>   # 如 ens192、eth0
 
 | 服务 | 地址 | 凭据 |
 |------|------|------|
-| SenseMind | `http://<IP>:8080` | `admin` / `.env` 中的 `ELASTIC_PASSWORD` |
+| SenseMind | `https://<IP>:8080` | `admin` / `.env` 中的 `ELASTIC_PASSWORD` |
 
 
 ```bash

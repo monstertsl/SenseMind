@@ -471,7 +471,9 @@ onBeforeUnmount(() => {
           <el-table-column label="时间" width="160">
             <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
           </el-table-column>
-          <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
+          <el-table-column label="详情" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }"><span class="font-mono">{{ row.detail }}</span></template>
+          </el-table-column>
         </el-table>
         <div class="pagination">
           <el-pagination
