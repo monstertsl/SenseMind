@@ -15,7 +15,6 @@
     rotate 90
     copytruncate
     compress
-    delaycompress
     missingok
     notifempty
     nocreate
