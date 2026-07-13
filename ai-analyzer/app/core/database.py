@@ -40,7 +40,7 @@ def init_db() -> None:
     # 导入模型以注册到 Base.metadata
     from ..db_models.user import User  # noqa
     from ..db_models.system_config import SystemConfig  # noqa
-    from ..db_models.audit_log import LoginLog, SystemLog  # noqa
+    from ..db_models.audit_log import SystemLog  # noqa
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)

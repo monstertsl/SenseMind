@@ -260,7 +260,7 @@ async def analyze_alert(request: Request):
 async def analyze_es_alert(doc_id: str):
     """
     手动触发分析 ES 中的某条告警（按 _id）
-    用于 Kibana 手动触发或定时任务
+    用于前端手动触发或定时任务
     """
     try:
         es = get_es_client()

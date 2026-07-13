@@ -21,7 +21,6 @@ from ..core.rate_limit import (
 )
 from ..db_models.user import User
 from ..db_models.system_config import SystemConfig
-from ..db_models.audit_log import LoginLog
 from ..schemas import ApiResponse
 
 router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
@@ -101,16 +100,14 @@ def check_user(body: CheckUserRequest, request: Request, db: Session = Depends(g
 
 
 def _record_failed_login(user: User, db: Session, *, username: str,
-                          client_ip: str, user_agent: str, reason: str, fail_limit: int) -> None:
+                          client_ip: str, reason: str, fail_limit: int) -> None:
     user.failed_login_attempts += 1
     if user.failed_login_attempts >= fail_limit:
         user.is_active = False
-    db.add(LoginLog(
-        username=username, success=False,
-        ip_address=client_ip, user_agent=user_agent,
-        message=f"{reason} (attempt {user.failed_login_attempts})",
-    ))
-    db.commit()
+    write_login_log(
+        db, username=username, success=False, ip_address=client_ip,
+        detail=f"登录失败：{reason} (attempt {user.failed_login_attempts})",
+    )
     invalidate_user_status(user.id)
     record_auth_failure(client_ip, username)
 
@@ -118,7 +115,6 @@ def _record_failed_login(user: User, db: Session, *, username: str,
 @router.post("/login")
 def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     client_ip = _extract_client_ip(request)
-    user_agent = request.headers.get("user-agent", "")
 
     # 限流
     allowed, _ = check_auth_ip_limit(client_ip)
@@ -135,31 +131,28 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.username == body.username)).scalar_one_or_none()
 
     if not user:
-        db.add(LoginLog(
-            username=body.username, success=False,
-            ip_address=client_ip, user_agent=user_agent, message="User not found",
-        ))
-        db.commit()
+        write_login_log(
+            db, username=body.username, success=False, ip_address=client_ip,
+            detail="登录失败：用户不存在",
+        )
         record_auth_failure(client_ip, body.username)
         raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
 
     if not user.is_active:
-        db.add(LoginLog(
-            username=body.username, success=False,
-            ip_address=client_ip, user_agent=user_agent, message="Account is disabled",
-        ))
-        db.commit()
+        write_login_log(
+            db, username=body.username, success=False, ip_address=client_ip,
+            detail="登录失败：账号已禁用",
+        )
         raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
 
     # IP 白名单校验
     if cfg and cfg.allowed_login_ips:
         allowed_ips = [ip.strip() for ip in cfg.allowed_login_ips.split(",") if ip.strip()]
         if allowed_ips and client_ip not in allowed_ips:
-            db.add(LoginLog(
-                username=body.username, success=False,
-                ip_address=client_ip, user_agent=user_agent, message="IP not allowed",
-            ))
-            db.commit()
+            write_login_log(
+                db, username=body.username, success=False, ip_address=client_ip,
+                detail="登录失败：IP 不允许",
+            )
             raise HTTPException(status_code=403, detail="该 IP 不允许登录")
 
     # 按认证模式校验
@@ -171,7 +164,7 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
         secret = decrypt_data(user.totp_secret_encrypted)
         if not verify_totp(secret, body.totp_code):
             _record_failed_login(user, db, username=body.username, client_ip=client_ip,
-                                 user_agent=user_agent, reason="Wrong TOTP code", fail_limit=fail_limit)
+                                 reason="Wrong TOTP code", fail_limit=fail_limit)
             raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
 
     elif user.auth_mode == "PASSWORD_ONLY":
@@ -179,7 +172,7 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="请输入密码")
         if not verify_password(body.password, user.password_hash):
             _record_failed_login(user, db, username=body.username, client_ip=client_ip,
-                                 user_agent=user_agent, reason="Wrong password", fail_limit=fail_limit)
+                                 reason="Wrong password", fail_limit=fail_limit)
             raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
 
     elif user.auth_mode == "PASSWORD_AND_TOTP":
@@ -187,7 +180,7 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="请输入密码")
         if not verify_password(body.password, user.password_hash):
             _record_failed_login(user, db, username=body.username, client_ip=client_ip,
-                                 user_agent=user_agent, reason="Wrong password", fail_limit=fail_limit)
+                                 reason="Wrong password", fail_limit=fail_limit)
             raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
         if not body.totp_code:
             raise HTTPException(status_code=400, detail="需要 TOTP 验证码", headers={"X-Need-Totp": "1"})
@@ -196,17 +189,16 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
         secret = decrypt_data(user.totp_secret_encrypted)
         if not verify_totp(secret, body.totp_code):
             _record_failed_login(user, db, username=body.username, client_ip=client_ip,
-                                 user_agent=user_agent, reason="Wrong TOTP code", fail_limit=fail_limit)
+                                 reason="Wrong TOTP code", fail_limit=fail_limit)
             raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
 
     # 登录成功
     user.failed_login_attempts = 0
     user.last_login_at = datetime.utcnow()
-    db.add(LoginLog(
-        username=body.username, success=True,
-        ip_address=client_ip, user_agent=user_agent, message="Login successful",
-    ))
-    db.commit()
+    write_login_log(
+        db, username=body.username, success=True, ip_address=client_ip,
+        detail="登录成功",
+    )
     invalidate_user_status(user.id)
     reset_auth_counters(client_ip, body.username)
 

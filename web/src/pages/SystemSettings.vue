@@ -9,8 +9,8 @@ import {
 } from '@/api/systemConfig'
 import { getClientIp } from '@/api/metrics'
 import {
-  listLoginLogs, listSystemLogs,
-  type LoginLogItem, type SystemLogItem,
+  listSystemLogs,
+  type SystemLogItem,
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
 
@@ -222,62 +222,20 @@ async function handleTestLLM() {
   }
 }
 
-// ---- 登录日志 ----
-const loginLogs = ref<LoginLogItem[]>([])
-const loginTotal = ref(0)
-const loginLoading = ref(false)
-const loginPage = ref(1)
-const loginPageSize = ref(10)
-const loginFilter = reactive({
-  username: '',
-  success: '' as '' | 'true' | 'false',
-  ip_address: '',
-})
-
-async function fetchLoginLogs() {
-  loginLoading.value = true
-  try {
-    const params: Record<string, unknown> = {
-      page: loginPage.value,
-      page_size: loginPageSize.value,
-    }
-    if (loginFilter.username) params.username = loginFilter.username
-    if (loginFilter.success) params.success = loginFilter.success === 'true'
-    if (loginFilter.ip_address) params.ip_address = loginFilter.ip_address
-    const data = await listLoginLogs(params as any)
-    loginLogs.value = data.items
-    loginTotal.value = data.total
-  } catch (e: any) {
-    ElMessage.error(e?.message || '加载登录日志失败')
-    loginLogs.value = []
-    loginTotal.value = 0
-  } finally {
-    loginLoading.value = false
-  }
-}
-
-function handleLoginSearch() {
-  loginPage.value = 1
-  fetchLoginLogs()
-}
-
-function handleLoginPageChange(p: number) {
-  loginPage.value = p
-  fetchLoginLogs()
-}
-
 // ---- 系统日志 ----
 const systemLogs = ref<SystemLogItem[]>([])
 const systemTotal = ref(0)
 const systemLoading = ref(false)
 const systemPage = ref(1)
-const systemPageSize = ref(10)
+const systemPageSize = ref(20)
 const systemFilter = reactive({
   action: '',
   operator: '',
+  detail: '',
 })
 
 const ACTION_LABELS: Record<string, string> = {
+  login: '登录',
   create: '创建用户',
   update: '修改用户',
   delete: '删除用户',
@@ -287,7 +245,7 @@ const ACTION_LABELS: Record<string, string> = {
   cleanup_es_log: '清理ES索引',
   cleanup_audit_log: '清理审计日志',
   update_security_policy: '安全策略',
-  update_storage_policy: '集成配置',
+  update_storage_policy: '存储优化',
 }
 
 async function fetchSystemLogs() {
@@ -299,6 +257,7 @@ async function fetchSystemLogs() {
     }
     if (systemFilter.action) params.action = systemFilter.action
     if (systemFilter.operator) params.operator = systemFilter.operator
+    if (systemFilter.detail) params.detail = systemFilter.detail
     const data = await listSystemLogs(params as any)
     systemLogs.value = data.items
     systemTotal.value = data.total
@@ -312,6 +271,11 @@ async function fetchSystemLogs() {
 }
 
 function handleSystemSearch() {
+  systemPage.value = 1
+  fetchSystemLogs()
+}
+
+function handleSystemSizeChange() {
   systemPage.value = 1
   fetchSystemLogs()
 }
@@ -343,7 +307,6 @@ onMounted(() => {
   fetchConfig()
   fetchLLMConfig()
   fetchCurrentIp()
-  fetchLoginLogs()
   fetchSystemLogs()
 })
 
@@ -485,81 +448,42 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <!-- 登录日志 + 系统日志 并排 -->
-    <div class="logs-row">
-      <!-- 登录日志 -->
-      <div class="log-section">
-        <div class="block-title">登录日志</div>
-        <div class="log-pane">
-          <div class="log-toolbar">
-            <el-input v-model="loginFilter.username" placeholder="用户名" clearable class="filter-input" @keyup.enter="handleLoginSearch" />
-            <el-select v-model="loginFilter.success" placeholder="结果" clearable class="filter-select">
-              <el-option label="成功" value="true" />
-              <el-option label="失败" value="false" />
-            </el-select>
-            <el-input v-model="loginFilter.ip_address" placeholder="IP" clearable class="filter-input" @keyup.enter="handleLoginSearch" />
-            <el-button type="primary" :icon="Search" @click="handleLoginSearch">查询</el-button>
-          </div>
-          <el-table :key="'login-' + (isNarrow ? 'n' : 'w')" v-loading="loginLoading" :data="loginLogs" stripe max-height="320">
-            <el-table-column prop="username" label="用户名" width="100" />
-            <el-table-column label="结果" width="80">
-              <template #default="{ row }">
-                <el-tag :type="row.success ? 'success' : 'danger'" size="small">{{ row.success ? '成功' : '失败' }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="ip_address" label="IP" width="130" />
-            <el-table-column label="时间" width="160">
-              <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
-            </el-table-column>
-            <el-table-column prop="message" label="消息" min-width="160" show-overflow-tooltip />
-          </el-table>
-          <div class="pagination">
-            <el-pagination
-              v-model:current-page="loginPage"
-              :page-size="loginPageSize"
-              :total="loginTotal"
-              layout="total, prev, pager, next"
-              small
-              @current-change="handleLoginPageChange"
-            />
-          </div>
+    <!-- 系统日志 -->
+    <div class="section-block">
+      <div class="block-title">系统日志</div>
+      <div class="log-pane">
+        <div class="log-toolbar">
+          <el-select v-model="systemFilter.action" placeholder="操作类型" clearable class="filter-select-wide">
+            <el-option v-for="(label, key) in ACTION_LABELS" :key="key" :label="label" :value="key" />
+          </el-select>
+          <el-input v-model="systemFilter.operator" placeholder="用户" clearable class="filter-input" @keyup.enter="handleSystemSearch" />
+          <el-input v-model="systemFilter.detail" placeholder="操作详情（模糊查询）" clearable class="filter-input-wide" @keyup.enter="handleSystemSearch" />
+          <el-button type="primary" :icon="Search" @click="handleSystemSearch">查询</el-button>
         </div>
-      </div>
-
-      <!-- 系统日志 -->
-      <div class="log-section">
-        <div class="block-title">系统日志</div>
-        <div class="log-pane">
-          <div class="log-toolbar">
-            <el-select v-model="systemFilter.action" placeholder="操作类型" clearable class="filter-select-wide">
-              <el-option v-for="(label, key) in ACTION_LABELS" :key="key" :label="label" :value="key" />
-            </el-select>
-            <el-input v-model="systemFilter.operator" placeholder="操作人" clearable class="filter-input" @keyup.enter="handleSystemSearch" />
-            <el-button type="primary" :icon="Search" @click="handleSystemSearch">查询</el-button>
-          </div>
-          <el-table :key="'system-' + (isNarrow ? 'n' : 'w')" v-loading="systemLoading" :data="systemLogs" stripe max-height="320">
-            <el-table-column label="操作类型" width="130">
-              <template #default="{ row }">
-                <el-tag size="small">{{ ACTION_LABELS[row.action] || row.action }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="operator" label="操作人" width="90" />
-            <el-table-column prop="ip_address" label="IP" width="120" />
-            <el-table-column label="时间" width="150">
-              <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
-            </el-table-column>
-            <el-table-column prop="detail" label="详情" min-width="160" show-overflow-tooltip />
-          </el-table>
-          <div class="pagination">
-            <el-pagination
-              v-model:current-page="systemPage"
-              :page-size="systemPageSize"
-              :total="systemTotal"
-              layout="total, prev, pager, next"
-              small
-              @current-change="handleSystemPageChange"
-            />
-          </div>
+        <el-table :key="'system-' + (isNarrow ? 'n' : 'w')" v-loading="systemLoading" :data="systemLogs" stripe max-height="420">
+          <el-table-column label="操作类型" width="130">
+            <template #default="{ row }">
+              <el-tag size="small">{{ ACTION_LABELS[row.action] || row.action }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="operator" label="用户" width="100" />
+          <el-table-column prop="ip_address" label="IP" width="130" />
+          <el-table-column label="时间" width="160">
+            <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
+          </el-table-column>
+          <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
+        </el-table>
+        <div class="pagination">
+          <el-pagination
+            v-model:current-page="systemPage"
+            v-model:page-size="systemPageSize"
+            :total="systemTotal"
+            :page-sizes="[20, 50, 100, 200]"
+            layout="total, sizes, prev, pager, next, jumper"
+            background
+            @current-change="handleSystemPageChange"
+            @size-change="handleSystemSizeChange"
+          />
         </div>
       </div>
     </div>
@@ -574,8 +498,7 @@ onBeforeUnmount(() => {
 }
 
 // 三个大板块统一样式：白底 + 边框 + 圆角 + 内边距
-.section-block,
-.log-section {
+.section-block {
   background: #ffffff;
   border: 1px solid #e4e7ed;
   border-radius: $radius-md;
@@ -692,20 +615,6 @@ onBeforeUnmount(() => {
   margin-top: 4px;
 }
 
-.logs-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  align-items: stretch;
-}
-
-// 窄屏：日志区单列堆叠（登录日志 → 系统日志）
-@media (max-width: 1100px) {
-  .logs-row {
-    grid-template-columns: 1fr;
-  }
-}
-
 .log-pane {
   display: flex;
   flex-direction: column;
@@ -727,6 +636,10 @@ onBeforeUnmount(() => {
     width: 120px;
   }
 
+  .filter-input-wide {
+    width: 220px;
+  }
+
   .filter-select {
     width: 90px;
   }
@@ -737,9 +650,10 @@ onBeforeUnmount(() => {
 }
 
 .pagination {
+  padding: $space-md 0;
   display: flex;
   justify-content: flex-end;
-  padding-top: 4px;
+  border-top: 1px solid $color-divider;
   margin-top: auto;
 }
 

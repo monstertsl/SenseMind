@@ -169,9 +169,6 @@ echo "[*] 1. 初始化环境变量文件..."
 ENV_FILE="$BASE_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
     cp -f "$ENV_FILE" "${ENV_FILE}.bak" >/dev/null 2>&1 || true
-    # 清理已移除的 Kibana 相关变量
-    grep -v '^KIBANA_KEY_[123]=' "$ENV_FILE" 2>/dev/null | grep -v '^KIBANA_TOKEN=' > "${ENV_FILE}.tmp" || true
-    mv "${ENV_FILE}.tmp" "$ENV_FILE"
 fi
 touch "$ENV_FILE"
 chmod 600 "$ENV_FILE"
