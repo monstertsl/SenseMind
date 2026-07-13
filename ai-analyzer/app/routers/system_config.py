@@ -52,7 +52,7 @@ def _cfg_to_dict(cfg: SystemConfig) -> dict:
         "inactive_days_limit": cfg.inactive_days_limit,
         "idle_timeout_minutes": cfg.idle_timeout_minutes,
         "allowed_login_ips": cfg.allowed_login_ips or "",
-        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+        "updated_at": cfg.updated_at.isoformat() + 'Z' if cfg.updated_at else None,
     }
 
 

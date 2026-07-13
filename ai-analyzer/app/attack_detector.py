@@ -139,7 +139,8 @@ SQL_SEMANTIC_PATTERNS = [
     r"into\s+(outfile|dumpfile)",         # 文件写入
     r"load_file\s*\(",                    # 文件读取
     r"information_schema",                # 信息探测
-    r"(select|insert|update|delete|drop|alter|create)\s+",  # SQL 操作
+    # SQL 操作：必须词边界，避免 sqlSelect / safe_update 等业务接口名被子串误报
+    r"\b(select|insert|update|delete|drop|alter|create)\s+",
 ]
 
 
@@ -245,9 +246,9 @@ def detect_sql_injection_semantic(text: str) -> bool:
         if re.search(pattern, cleaned):
             return True
 
-    # 危险函数检测
+    # 危险函数检测：要求词边界，避免 notification( / classify( 等被 if( 误报
     for func in SQL_DANGEROUS_FUNCTIONS:
-        if f"{func}(" in cleaned:
+        if re.search(rf"\b{re.escape(func)}\(", cleaned):
             return True
 
     return False
@@ -517,9 +518,6 @@ def detect_attack_in_dns_event(log: dict) -> list[str]:
     dns_threat_patterns = {
         "dns_tunneling": [
             ".dnscat.", "iodine.", "tcpoverdns.",
-        ],
-        "c2_callback": [
-            "update.", "cdn.", "cloudflare-dns.",
         ],
     }
 

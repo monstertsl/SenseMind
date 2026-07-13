@@ -5,12 +5,13 @@
 node.name: soc-logstash
 
 # 多pipeline配置
-pipeline.workers: 2
-pipeline.batch.size: 125
+pipeline.workers: 8
+pipeline.batch.size: 500
 pipeline.batch.delay: 50
 
 # 持久化队列
 queue.type: persisted
+queue.max_bytes: 8gb
 
 # 日志
 log.level: info

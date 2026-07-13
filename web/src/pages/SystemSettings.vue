@@ -13,6 +13,7 @@ import {
   type SystemLogItem,
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
+import AiBypassManage from '@/pages/AiBypassManage.vue'
 
 // ---- 集成配置 ----
 const configLoading = ref(false)
@@ -96,7 +97,7 @@ const llmSaved = reactive<LLMConfig>({
   api_key: '',
   model: '',
   temperature: 0.1,
-  max_tokens: 8000,
+  max_tokens: 4000,
   timeout: 60,
 })
 // 对话框中的编辑副本
@@ -106,7 +107,7 @@ const llmForm = reactive<LLMConfig>({
   api_key: '',
   model: '',
   temperature: 0.1,
-  max_tokens: 8000,
+  max_tokens: 4000,
   timeout: 60,
 })
 // 是否使用自定义模型名称（手动输入而非从列表选择）
@@ -246,6 +247,9 @@ const ACTION_LABELS: Record<string, string> = {
   cleanup_audit_log: '清理审计日志',
   update_security_policy: '安全策略',
   update_storage_policy: '存储优化',
+  create_bypass_rule: '创建白名单',
+  update_bypass_rule: '修改白名单',
+  delete_bypass_rule: '删除白名单',
 }
 
 async function fetchSystemLogs() {
@@ -448,6 +452,12 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <!-- AI 分析白名单 -->
+    <div class="section-block">
+      <div class="block-title">AI 分析白名单</div>
+      <AiBypassManage />
+    </div>
+
     <!-- 系统日志 -->
     <div class="section-block">
       <div class="block-title">系统日志</div>
@@ -471,7 +481,9 @@ onBeforeUnmount(() => {
           <el-table-column label="时间" width="160">
             <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
           </el-table-column>
-          <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
+          <el-table-column label="详情" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }"><span class="font-mono">{{ row.detail }}</span></template>
+          </el-table-column>
         </el-table>
         <div class="pagination">
           <el-pagination
@@ -716,6 +728,12 @@ onBeforeUnmount(() => {
 <!-- 非 scoped：el-dialog teleport 到 body，需全局样式 -->
 <style lang="scss">
 .llm-config-dialog {
+  .el-dialog__title {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 700;
+  }
+
   .el-form-item__label {
     font-family: $font-mono;
     font-feature-settings: 'tnum';

@@ -252,6 +252,7 @@ function reset() {
           :placeholder="getFieldInfo(c.field)?.example || '输入值'"
           @update:model-value="(v: string) => store.updateCondition(c.id, { value: v })"
           @paste="onPasteBatch(c.id, $event)"
+          @keyup.enter="search"
         />
         <el-input
           v-else
@@ -259,11 +260,11 @@ function reset() {
           class="value-input"
           placeholder="多个值用逗号/换行分隔"
           @paste="onPasteBatch(c.id, $event)"
+          @keyup.enter="search"
         />
 
         <el-button
-          text
-          type="danger"
+          plain
           class="remove-btn"
           @click="store.removeCondition(c.id)"
         >
@@ -367,6 +368,11 @@ function reset() {
 }
 .remove-btn {
   flex-shrink: 0;
+  &:hover {
+    color: var(--el-color-danger);
+    border-color: var(--el-color-danger);
+    background-color: var(--el-color-danger-light-9);
+  }
 }
 
 .add-btn {
@@ -394,6 +400,7 @@ function reset() {
   padding-top: $space-md;
   border-top: 1px solid $color-divider;
   display: flex;
+  justify-content: flex-end;
   gap: $space-sm;
 }
 

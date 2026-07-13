@@ -60,6 +60,18 @@ class AlertContext(BaseModel):
         # 优先使用 Base64 版本（http-body: yes），保留中文；
         # 回退到 printable 版本（中文被替换为.）
         response_body = decode_http_body(http, "http_response_body")
+        # 请求体也优先解码 Base64 版本，保留中文
+        request_body = decode_http_body(http, "http_request_body")
+
+        # 如果有请求体（Base64 解码，含中文），追加到 payload 后面
+        # payload_printable 只含 HTTP 头 + 部分 body（中文被替换为.且被截断）
+        # http_request_body 是完整的请求体 Base64，解码后含中文
+        if request_body:
+            # 找到 payload 中 body 的起始位置（\r\n\r\n 之后）
+            header_end = payload.find("\r\n\r\n")
+            if header_end >= 0:
+                # 用请求头 + 解码后的请求体 重建 payload
+                payload = payload[:header_end + 4] + request_body
 
         return cls(
             timestamp=alert.get("@timestamp", ""),
@@ -82,7 +94,7 @@ class AlertContext(BaseModel):
             http_host=http.get("hostname", ""),
             http_user_agent=http.get("http_user_agent", ""),
             tls_sni=tls.get("sni", ""),
-            payload=payload[:2000] if payload else "",
+            payload=payload[:4000] if payload else "",
             response_body=response_body[:4000] if response_body else "",
             raw_alert=alert,
         )

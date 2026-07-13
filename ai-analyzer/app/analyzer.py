@@ -71,7 +71,7 @@ class AlertAnalyzer:
             base_url=llm_cfg.get("base_url", ""),
             model=llm_cfg.get("model", ""),
             temperature=llm_cfg.get("temperature", 0.1),
-            max_tokens=llm_cfg.get("max_tokens", 8000),
+            max_tokens=llm_cfg.get("max_tokens", 4000),
             max_retries=0,
             timeout=llm_cfg.get("timeout", 60),
             # Qwen3 系列默认开启思考模式，会输出 <think> 块消耗 token 导致 JSON 截断
