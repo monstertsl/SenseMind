@@ -13,6 +13,7 @@ import {
   type SystemLogItem,
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
+import AiBypassManage from '@/pages/AiBypassManage.vue'
 
 // ---- 集成配置 ----
 const configLoading = ref(false)
@@ -246,6 +247,9 @@ const ACTION_LABELS: Record<string, string> = {
   cleanup_audit_log: '清理审计日志',
   update_security_policy: '安全策略',
   update_storage_policy: '存储优化',
+  create_bypass_rule: '创建白名单',
+  update_bypass_rule: '修改白名单',
+  delete_bypass_rule: '删除白名单',
 }
 
 async function fetchSystemLogs() {
@@ -447,6 +451,12 @@ onBeforeUnmount(() => {
         <el-button type="primary" :loading="llmSaving" @click="handleSaveLLM">保存并生效</el-button>
       </template>
     </el-dialog>
+
+    <!-- AI 分析白名单 -->
+    <div class="section-block">
+      <div class="block-title">AI 分析白名单</div>
+      <AiBypassManage />
+    </div>
 
     <!-- 系统日志 -->
     <div class="section-block">

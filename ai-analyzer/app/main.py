@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -21,8 +22,9 @@ from .routers import user as user_router
 from .routers import system_config as system_config_router
 from .routers import audit_log as audit_log_router
 from .routers import llm_config as llm_config_router
+from .routers import ai_bypass_rule as ai_bypass_rule_router
 from .scheduler import start_scheduler, shutdown_scheduler
-from .core.database import init_db
+from .core.database import init_db, SessionLocal
 
 # 日志配置
 logging.basicConfig(
@@ -71,6 +73,7 @@ app.include_router(user_router.router)
 app.include_router(system_config_router.router)
 app.include_router(audit_log_router.router)
 app.include_router(llm_config_router.router)
+app.include_router(ai_bypass_rule_router.router)
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None
@@ -143,6 +146,41 @@ async def root():
     }
 
 
+def _match_bypass_rule(alert: dict) -> bool:
+    """检查告警是否匹配 AI 分析白名单规则
+
+    逐条匹配白名单，四元组中空值表示通配符。
+    所有非空字段都匹配才算命中。
+    """
+    try:
+        from .db_models.ai_bypass_rule import AiBypassRule
+        from sqlalchemy import select
+
+        src_ip = alert.get("source", {}).get("ip", "")
+        src_port = alert.get("source", {}).get("port", 0)
+        dst_ip = alert.get("destination", {}).get("ip", "")
+        dst_port = alert.get("destination", {}).get("port", 0)
+
+        with SessionLocal() as db:
+            rules = db.execute(select(AiBypassRule)).scalars().all()
+            for rule in rules:
+                if rule.src_ip and rule.src_ip != src_ip:
+                    continue
+                if rule.src_port and rule.src_port != src_port:
+                    continue
+                if rule.dst_ip and rule.dst_ip != dst_ip:
+                    continue
+                if rule.dst_port and rule.dst_port != dst_port:
+                    continue
+                logger.info("告警命中白名单规则: %s (remark=%s)", 
+                           f"{rule.src_ip}:{rule.src_port}->{rule.dst_ip}:{rule.dst_port}",
+                           rule.remark)
+                return True
+    except Exception as e:
+        logger.debug("白名单匹配检查失败: %s", e)
+    return False
+
+
 @app.post("/api/alert")
 async def analyze_alert(request: Request):
     """
@@ -175,6 +213,14 @@ async def analyze_alert(request: Request):
                 "previous_verdict": cached.get("verdict"),
                 "previous_es_doc_id": cached.get("es_doc_id"),
             }
+
+    # 白名单检查：命中白名单规则的告警跳过 AI 分析
+    if _match_bypass_rule(alert):
+        logger.info("告警命中白名单，跳过分析: %s", signature)
+        return {
+            "status": "skipped",
+            "message": "告警命中白名单规则，跳过分析",
+        }
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
     # analyzer.analyze() 是同步阻塞的（含 LLM/ES 同步调用），

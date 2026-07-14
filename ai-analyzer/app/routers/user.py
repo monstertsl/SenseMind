@@ -57,9 +57,9 @@ def _user_to_dict(user: User) -> dict:
         "auth_mode": user.auth_mode,
         "is_active": user.is_active,
         "failed_login_attempts": user.failed_login_attempts,
-        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "last_login_at": user.last_login_at.isoformat() + 'Z' if user.last_login_at else None,
         "totp_enabled": bool(user.totp_secret_encrypted),
-        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "created_at": user.created_at.isoformat() + 'Z' if user.created_at else None,
     }
 
 

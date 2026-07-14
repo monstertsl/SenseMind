@@ -75,6 +75,11 @@ if command -v ethtool >/dev/null 2>&1; then
     ethtool -K "$INTERFACE" lro off || true
     ethtool -K "$INTERFACE" tso off || true
     ethtool -K "$INTERFACE" gso off || true
+    # 禁用 RX/TX checksum offload，避免网卡硬件计算 checksum 导致
+    # Zeek/Suricata 在混杂模式下捕获到错误 checksum（如 tcp checksum incorrect），
+    # 进而影响 payload 解析和 http_request_body 提取
+    ethtool -K "$INTERFACE" rx off || true
+    ethtool -K "$INTERFACE" tx off || true
 fi
 
 export PUID=$(id -u)

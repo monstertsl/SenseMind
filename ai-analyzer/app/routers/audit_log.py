@@ -76,7 +76,7 @@ def list_system_logs(
         "id": l.id, "action": l.action, "target_type": l.target_type,
         "target_id": l.target_id, "detail": l.detail,
         "operator": l.operator, "ip_address": l.ip_address,
-        "created_at": l.created_at.isoformat() if l.created_at else None,
+        "created_at": l.created_at.isoformat() + 'Z' if l.created_at else None,
     } for l in logs]
 
     return ApiResponse(code=0, message="ok", data={

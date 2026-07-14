@@ -41,9 +41,17 @@ def init_db() -> None:
     from ..db_models.user import User  # noqa
     from ..db_models.system_config import SystemConfig  # noqa
     from ..db_models.audit_log import SystemLog  # noqa
+    from ..db_models.ai_bypass_rule import AiBypassRule  # noqa
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)
+
+    # 迁移：为已有 ai_bypass_rules 表添加 updated_at 列
+    with engine.connect() as conn:
+        conn.execute(text(
+            "ALTER TABLE ai_bypass_rules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL"
+        ))
+        conn.commit()
 
     # 迁移：为已有 system_config 表添加新列（PostgreSQL ADD COLUMN IF NOT EXISTS）
     with engine.connect() as conn:

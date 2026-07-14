@@ -62,9 +62,10 @@ def cleanup_raw_logs() -> None:
 
     try:
         # 1. logrotate 轮转（copytruncate 不重启 Suricata/Zeek）
+        #    -f 强制轮转，不依赖状态文件（scheduler 每天只调用一次，无需防重复）
         try:
             result = subprocess.run(
-                ["logrotate", "/etc/logrotate.d/sensemind-raw-logs"],
+                ["logrotate", "-f", "/etc/logrotate.d/sensemind-raw-logs"],
                 capture_output=True, text=True, timeout=300,
             )
             if result.returncode != 0:
