@@ -94,7 +94,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       </el-table-column>
 
       <!-- 2. 源IP -->
-      <el-table-column prop="ai.source_ip" label="源IP" width="110">
+      <el-table-column prop="ai.source_ip" label="源IP" width="140">
         <template #default="{ row }">
           <span
             v-if="row.ai?.source_ip"
@@ -109,14 +109,14 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       </el-table-column>
 
       <!-- 3. 源端口 -->
-      <el-table-column prop="ai.source_port" label="源端口" width="90" align="right">
+      <el-table-column prop="ai.source_port" label="源端口" width="70">
         <template #default="{ row }">
           <span class="font-mono">{{ formatPort(row.ai?.source_port) }}</span>
         </template>
       </el-table-column>
 
       <!-- 4. 目的IP -->
-      <el-table-column prop="ai.destination_ip" label="目的IP" width="110">
+      <el-table-column prop="ai.destination_ip" label="目的IP" width="140">
         <template #default="{ row }">
           <span
             v-if="row.ai?.destination_ip"
@@ -131,7 +131,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       </el-table-column>
 
       <!-- 5. 目的端口 -->
-      <el-table-column prop="ai.destination_port" label="目的端口" width="90" align="right">
+      <el-table-column prop="ai.destination_port" label="目的端口" width="70">
         <template #default="{ row }">
           <span class="font-mono">{{ formatPort(row.ai?.destination_port) }}</span>
         </template>
@@ -163,7 +163,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       </el-table-column>
 
       <!-- 8. 可信度 -->
-      <el-table-column prop="ai.confidence" label="可信度" width="90">
+      <el-table-column prop="ai.confidence" label="可信度" width="70">
         <template #default="{ row }">
           <span class="font-mono">{{ formatConfidence(row.ai?.confidence) }}</span>
         </template>
@@ -213,7 +213,6 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
             @click="handleSourceAlertIdClick(row.ai.source_alert_id, $event)"
           >
             <span class="font-mono">{{ row.ai.source_alert_id }}</span>
-            <el-icon class="link-icon"><Link /></el-icon>
           </span>
           <span v-else class="empty-placeholder">-</span>
         </template>

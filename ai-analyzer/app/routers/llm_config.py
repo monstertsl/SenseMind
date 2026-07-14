@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1/llm-config", tags=["LLM配置"])
 
 # 固定默认值
 _DEFAULT_TEMPERATURE = 0.1
-_DEFAULT_MAX_TOKENS = 8000
+_DEFAULT_MAX_TOKENS = 4000
 _DEFAULT_TIMEOUT = 60
 
 

@@ -15,7 +15,8 @@ export function getLogDetail(id: string, index: string): Promise<Record<string, 
 }
 
 export function triggerAiAnalysis(docId: string): Promise<{ status: string; analysis: Record<string, any> }> {
-  return request.post(`/analyze/${encodeURIComponent(docId)}`, {}, { timeout: 120000 })
+  // AI 研判需执行多阶段 LLM 链，单次可能耗时数分钟，超时须与 nginx 侧（600s）匹配
+  return request.post(`/analyze/${encodeURIComponent(docId)}`, {}, { timeout: 600000 })
 }
 
 export function getLogMapping(indices?: string[]): Promise<{ fields: LogFieldMapping[] }> {

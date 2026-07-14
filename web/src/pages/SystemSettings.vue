@@ -96,7 +96,7 @@ const llmSaved = reactive<LLMConfig>({
   api_key: '',
   model: '',
   temperature: 0.1,
-  max_tokens: 8000,
+  max_tokens: 4000,
   timeout: 60,
 })
 // 对话框中的编辑副本
@@ -106,7 +106,7 @@ const llmForm = reactive<LLMConfig>({
   api_key: '',
   model: '',
   temperature: 0.1,
-  max_tokens: 8000,
+  max_tokens: 4000,
   timeout: 60,
 })
 // 是否使用自定义模型名称（手动输入而非从列表选择）
@@ -718,6 +718,12 @@ onBeforeUnmount(() => {
 <!-- 非 scoped：el-dialog teleport 到 body，需全局样式 -->
 <style lang="scss">
 .llm-config-dialog {
+  .el-dialog__title {
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
+    font-weight: 700;
+  }
+
   .el-form-item__label {
     font-family: $font-mono;
     font-feature-settings: 'tnum';
