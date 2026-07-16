@@ -32,9 +32,7 @@ function handleSearch() {
 }
 
 function handleReset() {
-  store.clearConditions()
   req.page = 1
-  fetch()
 }
 
 function handlePageChange(page: number) {
