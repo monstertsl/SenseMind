@@ -29,7 +29,7 @@ class SystemConfig(Base):
     llm_api_key: Mapped[str] = mapped_column(Text, default="", nullable=False)
     llm_model: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     llm_temperature: Mapped[float] = mapped_column(Float, default=0.1, nullable=False)
-    llm_max_tokens: Mapped[int] = mapped_column(Integer, default=8000, nullable=False)
+    llm_max_tokens: Mapped[int] = mapped_column(Integer, default=4000, nullable=False)
     llm_timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

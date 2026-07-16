@@ -82,30 +82,39 @@ if command -v ethtool >/dev/null 2>&1; then
     ethtool -K "$INTERFACE" tx off || true
 fi
 
+# 持久化网卡配置：创建 systemd 服务，重启后自动恢复混杂模式和 offload 禁用
+NET_SERVICE="/etc/systemd/system/sensemind-network.service"
+cat > "$NET_SERVICE" << EOF
+[Unit]
+Description=SenseMind network interface configuration
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'ip link set $INTERFACE promisc on; ethtool -K $INTERFACE gro off lro off tso off gso off rx off tx off 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable sensemind-network.service 2>/dev/null
+echo "[+] 网卡配置已持久化（sensemind-network.service，开机自动执行）"
+
 export PUID=$(id -u)
 export PGID=$(id -g)
 
-echo "[*] 检查 Docker 镜像..."
+echo "[*] 构建/拉取 Docker 镜像..."
 
-# docker compose pull 默认会联网核对所有镜像的远程 manifest，即便本地已有镜像，
-# 在代理/离线环境下会导致校验失败并中断部署。这里改为：逐个检查本地是否已存在，
-# 仅对本地缺失的镜像联网拉取，且失败时不中断整体流程；全部存在时静默跳过。
-MISSING_IMAGES=""
-TOTAL=0
-while IFS= read -r IMG; do
-    [ -z "$IMG" ] && continue
-    TOTAL=$((TOTAL+1))
-    if ! docker image inspect "$IMG" >/dev/null 2>&1; then
-        MISSING_IMAGES="${MISSING_IMAGES}${IMG} "
-    fi
-done < <(docker compose config --images 2>/dev/null)
-
-if [ -n "$MISSING_IMAGES" ]; then
-    echo "[*] 本地缺失镜像，开始拉取: $MISSING_IMAGES"
-    docker compose pull --ignore-pull-failures || \
-        echo "[!] 部分镜像拉取失败，若本地已存在可继续，否则请检查网络/代理。"
-else
-    echo "[+] 镜像检测完成，全部已存在，跳过拉取"
+# 证书生成依赖 elasticsearch 镜像（certutil），需提前拉取
+ES_IMAGE="docker.elastic.co/elasticsearch/elasticsearch:8.19.16"
+if ! docker image inspect "$ES_IMAGE" >/dev/null 2>&1; then
+    echo "[*] 拉取 Elasticsearch 镜像（证书生成依赖）..."
+    docker pull "$ES_IMAGE" || {
+        echo "[-] 拉取 Elasticsearch 镜像失败，请检查网络/代理。"
+        exit 1
+    }
 fi
 
 ########################################
@@ -479,7 +488,19 @@ fi
 chmod 600 "$ENV_FILE"
 
 # 4. 一键拉起整套 SOC 堆栈（Suricata, Zeek）
+#    先构建本地镜像（web、ai-analyzer），避免 up 时尝试从远程拉取本地镜像
 echo "[*] 4. 正在拉起探针与展示层..."
+
+# 预拉取构建基础镜像（BuildKit 不走 Docker daemon 代理，需先 docker pull 缓存到本地）
+BASE_IMAGES="python:3.12-slim node:20-alpine nginx:1.27-alpine"
+for IMG in $BASE_IMAGES; do
+    if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+        echo "[+] 拉取基础镜像 $IMG ..."
+        docker pull "$IMG" || echo "[!] 拉取 $IMG 失败，若已有缓存可继续。"
+    fi
+done
+
+docker compose build
 docker compose up -d
 
 echo "[*] 4.1 强制重启 logstash 以加载最新 API Key..."
@@ -552,7 +573,7 @@ else
     
     echo "[-] Suricata 引擎日志（最后 200 行）：" >&2
     docker exec suricata sh -c 'tail -n 200 /var/log/suricata/suricata.log 2>/dev/null || true' >&2
-    echo "[-] 注意：部分 Suricata 规则更新失败请使用 "docker exec --user suricata suricata suricata-update -f" 手动更新规则，脚本将继续执行后续步骤。" >&2
+    echo -e "\033[33m[-] 注意：部分 Suricata 规则更新失败请使用 \033[36mdocker exec --user suricata suricata suricata-update -f\033[33m 手动更新规则，脚本将继续执行后续步骤。\033[0m" >&2
 fi
 
 # 6. 阅后即焚：擦除 Shell 进程中的环境变量
