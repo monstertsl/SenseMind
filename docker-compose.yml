@@ -162,7 +162,7 @@ services:
     environment:
       - LOGSTASH_API_KEY=${LOGSTASH_API_KEY}
       - AI_ANALYZER_URL=http://ai-analyzer:9090/api/alert
-      - LS_JAVA_OPTS=-Xms1g -Xmx1g
+      - LS_JAVA_OPTS=-Xms4g -Xmx4g
 
     networks:
       - elastic
