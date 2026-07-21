@@ -1,9 +1,12 @@
 """告警去重缓存
 
-双维度去重：
+三维度去重：
 1. community_id + signature_id：同一会话同一规则只分析一次
 2. source_ip + signature_id：同一源IP同一规则在时间窗口内只分析一次
    （防止端口扫描等场景产生大量不同 community_id 但相同攻击类型的告警）
+3. community_id（流级别）：同一网络会话（flow）在时间窗口内只分析一次，
+   不论触发的是哪条规则。用于抑制同一攻击被多条变体规则（如 Remote/Local
+   Instance）分别触发而产生的重复分析。
 
 使用进程内存缓存，重启后清空（可接受，去重只是为了减少短时间内的重复调用）。
 """
@@ -51,6 +54,10 @@ class AlertDeduplicator:
     def _make_ip_key(self, source_ip: str, signature_id: int) -> str:
         """生成源IP去重 key"""
         return f"ip:{source_ip}:{signature_id}"
+
+    def _make_flow_key(self, community_id: str) -> str:
+        """生成流级别去重 key（同一会话不论哪条规则只分析一次）"""
+        return f"flow:{community_id}"
 
     def _cleanup(self):
         """清理过期缓存项"""
@@ -119,6 +126,24 @@ class AlertDeduplicator:
                 else:
                     del self._cache[ip_key]
 
+        # 3. 流级别去重: 同一 community_id（不论哪条规则）只分析一次
+        #    抑制同一攻击被多条变体规则（如 Remote/Local Instance）分别触发
+        if community_id:
+            flow_key = self._make_flow_key(community_id)
+            entry = self._cache.get(flow_key)
+            if entry is not None:
+                if now - entry["analyzed_at"] <= self.dedup_window:
+                    self._cache.move_to_end(flow_key)
+                    logger.info(
+                        "告警命中流级别去重: community_id=%s, 上次分析 %.0f 秒前, 判定=%s",
+                        community_id[:20],
+                        now - entry["analyzed_at"],
+                        entry.get("verdict", "N/A"),
+                    )
+                    return entry
+                else:
+                    del self._cache[flow_key]
+
         return None
 
     def record(self, community_id: str, signature_id: int,
@@ -147,6 +172,11 @@ class AlertDeduplicator:
         if community_id:
             key = self._make_key(community_id, signature_id)
             self._cache[key] = entry
+
+        # 流级别去重 key（同一会话不论哪条规则只分析一次）
+        if community_id:
+            flow_key = self._make_flow_key(community_id)
+            self._cache[flow_key] = entry
 
         # 源IP去重 key（共享 entry 副本）
         if source_ip:

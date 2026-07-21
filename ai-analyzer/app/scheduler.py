@@ -5,6 +5,8 @@ APScheduler 内嵌 FastAPI 进程（单 worker），不引入 Celery。
 """
 
 import logging
+import os
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -48,17 +50,18 @@ def cleanup_raw_logs() -> None:
 
     两步走：
     1. 调用 logrotate 按 daily + copytruncate 模式轮转活跃日志：
-       - eve.json → eve.json-YYYYMMDD（归档文件 mtime 固定）
+       - eve.json → eve.json-YYYYMMDD（归档文件名含轮转日期）
        - 原文件被截断为 0 字节，Suricata/Zeek 继续写入，无需重启
-    2. find -mtime +N -delete 清理超过保留期的归档文件
+    2. 按文件名中的轮转日期（YYYYMMDD）清理超过保留期的归档文件
 
-    原本只用 find -mtime -delete 对持续追加的活跃文件无效
-    （mtime 始终为当前时间），导致 eve.json/conn.log 等无限增长。
+    说明：归档文件名形如 eve.json-20260716 / conn.log-20260716.gz，
+    日期即轮转当天。直接按文件名日期判断是否超过保留期，避免
+    find -mtime +N 因归档 mtime 为轮转时刻而多留一天的语义陷阱
+    （原实现导致保留 3 天时 16 号归档直到第 5 天才被删）。
     """
     with SessionLocal() as db:
         cfg = _load_config(db)
         days = cfg.raw_log_retention_days if cfg else 7
-    cutoff = f"+{days}"
 
     try:
         # 1. logrotate 轮转（copytruncate 不重启 Suricata/Zeek）
@@ -66,7 +69,7 @@ def cleanup_raw_logs() -> None:
         try:
             result = subprocess.run(
                 ["logrotate", "-f", "/etc/logrotate.d/sensemind-raw-logs"],
-                capture_output=True, text=True, timeout=300,
+                capture_output=True, text=True, timeout=1800,
             )
             if result.returncode != 0:
                 logger.warning("logrotate 返回非零: %s", result.stderr.strip())
@@ -77,26 +80,36 @@ def cleanup_raw_logs() -> None:
         except Exception as e:
             logger.warning("logrotate 调用失败: %s", e)
 
-        # 2. 清理过期归档（归档文件 mtime 固定，find -mtime 可正确判断）
-        #    只清理带日期后缀的归档（eve.json-* / *.log-*），不动活跃文件
-        #    -print -delete：输出已删除文件路径，用于统计实际清理数量
+        # 2. 按文件名日期清理过期归档（归档名含 YYYYMMDD 轮转日期）
+        #    只处理带日期后缀的归档（eve.json-* / *.log-*），不动活跃文件
+        #    （活跃文件 eve.json / conn.log / fast.log 等无日期后缀，自动跳过）
+        #    cutoff = 今天 - days，文件名日期 < cutoff 即超过保留期
+        date_re = re.compile(r"-(\d{8})")
+        cutoff_date = (datetime.now() - timedelta(days=days)).date()
         deleted_count = 0
         for log_dir in ("/data/suricata/logs", "/data/zeek/logs"):
-            try:
-                result = subprocess.run(
-                    ["find", log_dir, "-type", "f", "(",
-                     "-name", "eve.json.*", "-o",
-                     "-name", "*.log.*", ")",
-                     "-mtime", cutoff, "-print", "-delete"],
-                    capture_output=True, text=True, timeout=300,
-                )
-                if result.returncode != 0:
-                    logger.warning("清理归档 %s 返回非零: %s", log_dir, result.stderr.strip())
-                deleted_count += len([l for l in result.stdout.splitlines() if l.strip()])
-            except FileNotFoundError:
+            if not os.path.isdir(log_dir):
                 logger.warning("目录不存在，跳过: %s", log_dir)
-            except Exception as e:
-                logger.warning("清理归档 %s 失败: %s", log_dir, e)
+                continue
+            for name in os.listdir(log_dir):
+                # 仅匹配带日期后缀的归档，跳过活跃文件
+                if not (name.startswith("eve.json-") or ".log-" in name):
+                    continue
+                m = date_re.search(name)
+                if not m:
+                    continue
+                try:
+                    file_date = datetime.strptime(m.group(1), "%Y%m%d").date()
+                except ValueError:
+                    continue
+                if file_date < cutoff_date:
+                    path = os.path.join(log_dir, name)
+                    try:
+                        os.remove(path)
+                        deleted_count += 1
+                        logger.info("删除过期原始日志归档: %s", path)
+                    except OSError as e:
+                        logger.warning("删除失败 %s: %s", path, e)
 
         # 仅当实际清理了归档文件时才记录日志（清理 0 条不记录）
         if deleted_count > 0:
@@ -117,7 +130,7 @@ def cleanup_raw_logs() -> None:
                     target_type="system", target_id="raw-logs",
                 detail=f"清理失败: {e}",
                 operator="system",
-            )
+                )
         except Exception:
             pass
 
@@ -135,12 +148,11 @@ def cleanup_es_indices() -> None:
         to_delete = []
         for index_name in resp.keys():
             # 解析索引名末尾日期：soc-2026.07.02 / soc-ai-2026.07.02
-            parts = index_name.rsplit(".", 2)
-            if len(parts) < 3:
-                continue
+            # 索引名格式：soc-2026.07.17 / soc-ai-2026.07.17
+            # 以最后一个 "-" 切分，后半段即 "YYYY.MM.DD"
+            date_part = index_name.rsplit("-", 1)[-1]
             try:
-                date_str = ".".join(parts[-2:])
-                idx_date = datetime.strptime(date_str, "%Y.%m.%d").replace(tzinfo=timezone.utc)
+                idx_date = datetime.strptime(date_part, "%Y.%m.%d").replace(tzinfo=timezone.utc)
             except ValueError:
                 continue
             if idx_date < cutoff:

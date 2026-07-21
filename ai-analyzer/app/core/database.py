@@ -2,7 +2,7 @@
 
 import os
 import logging
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from ..config import Config
 
@@ -45,6 +45,15 @@ def init_db() -> None:
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)
+
+    # 迁移：为已存在的 ai_bypass_rules 表补充 host 字段（幂等，仅对已建表生效）
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE ai_bypass_rules ADD COLUMN IF NOT EXISTS host VARCHAR(255) NOT NULL DEFAULT ''"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ai_bypass_rules.host 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
 
     with SessionLocal() as db:
         # 初始化 admin 用户

@@ -156,8 +156,11 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       <el-table-column prop="ai.alert_signature" label="威胁名" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">
           <span
-            class="text-ellipsis"
-            v-html="highlightKeyword(row.ai?.alert_signature || '', props_keyword)"
+            v-if="row.ai?.alert_signature"
+            class="signature-cell"
+            title="点击复制"
+            @click="handleCopy(row.ai.alert_signature, $event)"
+            v-html="highlightKeyword(row.ai.alert_signature, props_keyword)"
           ></span>
         </template>
       </el-table-column>
@@ -252,6 +255,14 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   .copy-icon {
     font-size: 12px;
     opacity: 0.8;
+  }
+}
+
+.signature-cell {
+  cursor: pointer;
+  &:hover {
+    color: $color-primary;
+    text-decoration: underline;
   }
 }
 

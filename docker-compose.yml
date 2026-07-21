@@ -101,6 +101,8 @@ services:
 
     volumes:
       - /data/zeek/logs:/opt/logs
+      # 自定义日志过滤：只保留 SOC 采集的 conn/dns/http/ssl，禁用其余日志输出
+      - /data/zeek/zeek-log-filter.zeek:/opt/zeek-log-filter.zeek:ro
 
     command:
       - zeek
@@ -109,6 +111,8 @@ services:
       - policy/tuning/json-logs
       - policy/protocols/conn/community-id-logging
       - LogAscii::json_timestamps=JSON::TS_ISO8601
+      # 仅输出 SOC 需要的日志（见挂载的过滤脚本）
+      - /opt/zeek-log-filter.zeek
 
   filebeat:
     <<: *default-logging

@@ -265,19 +265,28 @@ function jumpToLog() {
   background: #f1f5f9;
   padding: $space-md;
   border-radius: $radius-sm;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   font-family: $font-mono;
   font-size: 12px;
   line-height: 1.6;
   max-height: 320px;
+  overflow-y: auto;
   border: 1px solid $color-border-light;
   code {
     background: transparent;
     color: #334155;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   :deep(.hljs) {
     background: transparent;
     padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 }
 

@@ -14,6 +14,7 @@ class AiBypassRule(Base):
     src_port: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     dst_ip: Mapped[str] = mapped_column(String(45), nullable=False, default="")
     dst_port: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     remark: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

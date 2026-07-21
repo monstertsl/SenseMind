@@ -227,6 +227,12 @@ echo "[+] 环境变量文件已就绪: $ENV_FILE（权限 600）"
 # Ensure LOGSTASH_API_KEY exists to avoid docker-compose warnings when referenced
 grep -q '^LOGSTASH_API_KEY=' "$ENV_FILE" 2>/dev/null || echo 'LOGSTASH_API_KEY=' >> "$ENV_FILE"
 
+# 持久化监听网卡到 .env，避免后续 docker compose 重启（如 reboot、手动 up）
+# 回退到默认 ens192 导致 Suricata/Zeek 因网卡不存在而崩溃
+grep -q '^INTERFACE=' "$ENV_FILE" 2>/dev/null && \
+  sed -i "s/^INTERFACE=.*/INTERFACE=$INTERFACE/" "$ENV_FILE" || \
+  echo "INTERFACE=$INTERFACE" >> "$ENV_FILE"
+
 # 确保 filebeat.yml 的权限和所有者符合 Filebeat 要求
 if [ -f "$BASE_DIR/filebeat/filebeat.yml" ]; then
     echo "[*] 修改 filebeat/filebeat.yml 权限，确保容器内 filebeat 可读取"
@@ -237,6 +243,74 @@ fi
 # 预创建宿主机 Suricata/Zeek 目录，以便日志、配置和规则持久化
 mkdir -p /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
 chmod 755 /data /data/suricata /data/zeek /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
+
+# 创建 Zeek 日志过滤脚本（仅保留 conn 做全流量记录，dns/http/ssl 不再输出）。
+# 注意：必须创建为“文件”，docker 才会把宿主机路径作为文件挂载到 /opt/zeek-log-filter.zeek；
+# 若此处漏建，docker 会自动用同名“空目录”挂载，导致 zeek 把目录当包加载而崩溃循环。
+if [ ! -f /data/zeek/zeek-log-filter.zeek ]; then
+    cat > /data/zeek/zeek-log-filter.zeek <<'ZEEK_FILTER_EOF'
+# SenseMind Zeek 日志过滤脚本
+# 仅保留 conn 日志流做全流量记录；dns / http / ssl 不再输出（其余协议本就禁用）。
+# 本脚本随 zeek 启动命令加载（未经过 site/local.zeek）。
+#
+# 实现：运行时遍历 Log::active_streams（priority=-10，在各协议脚本 zeek_init
+# 创建日志流之后执行）反向保留，其余一律 disable_stream。
+# 相比旧的逐个 @ifdef 点名禁用，此法可彻底规避两类问题：
+#   1) 漏项：新协议（kerberos/rdp/sip/pe/postgresql/ldap_search/mqtt_subscribe 等）
+#      无需逐个补充，凡不在保留集内一律禁用；
+#   2) 编译期命名空间不可见：@ifdef 会对 analyzer/mysql/quic 等判假跳过导致禁用失效，
+#      而遍历运行时已存在的 active_streams 不受此限制。
+# 注：conn 属 base 协议，命名空间始终可见，直接引用其 Log::ID 安全。
+
+module SenseMindFilter;
+
+# 保留的日志流：仅 conn（全流量记录）
+const keep_streams: set[Log::ID] = {
+    Conn::LOG,
+};
+
+event zeek_init() &priority=-10
+    {
+    # 先收集待禁用的流，再统一禁用；避免在遍历 active_streams 的同时
+    # disable_stream 修改该表引发迭代器失效（iterator invalidation）。
+    local to_disable: set[Log::ID] = set();
+    for ( sid in Log::active_streams )
+        {
+        if ( sid !in keep_streams )
+            add to_disable[sid];
+        }
+    for ( sid in to_disable )
+        Log::disable_stream(sid);
+    }
+
+# 减少 conn.log 体积：写盘前剔除与 SOC 分析冗余或纯噪音的连接。
+# 不丢安全价值——443/80/业务应用端口全部保留，供威胁狩猎与横向移动检测。
+# 排除项（基于实际流量分析）：
+#   - DNS(53)：DNS 连接噪音，conn 中冗余（约占 14%）
+#   - LLMNR(5355)/mDNS(5353)/SSDP(1900)/NetBIOS(137/138/139)：本地发现广播噪音
+#   - NTP(123)/DHCP(67/68)：无安全分析价值
+#   - 组播/广播目的地址（224.0.0.0/4，如 LLMNR 224.0.0.252）
+const conn_noise_ports: set[port] = {
+    53/udp, 53/tcp,
+    5355/udp, 5353/udp, 1900/udp,
+    137/udp, 138/udp, 139/tcp,
+    123/udp, 67/udp, 68/udp,
+};
+
+# Zeek 8.2 移除 filter$invalidate 字段，改用 break 否决该记录写入。
+hook Conn::log_policy(rec: Conn::Info, id: Log::ID, filter: Log::Filter)
+    {
+    if ( ! rec?$id ) return;
+    if ( rec$id$resp_p in conn_noise_ports )
+        break;
+    if ( rec$id$resp_h in 224.0.0.0/4 )
+        break;
+    }
+
+ZEEK_FILTER_EOF
+    chmod 644 /data/zeek/zeek-log-filter.zeek
+fi
+
 chown -R "$PUID:$PGID" /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc
 
 echo "[*] 2. 准备 elastic 密码并启动 Elasticsearch..."
@@ -536,45 +610,84 @@ if [ -f "$SURICATA_YAML" ]; then
         sed -i '/- suricata\.rules/a\  - local.rules' "$SURICATA_YAML"
     fi
 
+    # 源头禁用 eve-log 的 stats/flow/mdns/files/snmp/dcerpc（SOC 不入库，纯协议元数据噪音）
+    sed -i -E \
+      -e '/^[[:space:]]{8}- stats:/,/^[[:space:]]*# bi-directional flows/ s/^/# /' \
+      -e 's/^([[:space:]]{8})- flow$/# \1- flow/' \
+      -e 's/^([[:space:]]{8})- mdns:$/# \1- mdns:/' \
+      -e 's/^([[:space:]]{8})- files:$/# \1- files:/' \
+      -e 's/^([[:space:]]{12})force-magic: no.*$/# \1force-magic: no/' \
+      -e 's/^([[:space:]]{8})- snmp$/# \1- snmp/' \
+      -e 's/^([[:space:]]{8})- dcerpc$/# \1- dcerpc/' \
+      "$SURICATA_YAML"
+
     docker restart suricata
     echo "[+] Suricata 配置已更新并重启（含 local.rules 加载，suricatasc 热加载就绪）"
 else
     echo "[-] 警告：Suricata 配置文件 $SURICATA_YAML 未找到，跳过配置修改。"
 fi
 
+echo "[*] 4.3 部署 Suricata 规则抑制配置 disable.conf（按组禁用误报，重部署不复活）..."
+DISABLE_CONF="/data/suricata/lib/rules/disable.conf"
+SRC_DISABLE_CONF="$(dirname "$0")/suricata/disable.conf"
+if [ -f "$SRC_DISABLE_CONF" ]; then
+    cp -f "$SRC_DISABLE_CONF" "$DISABLE_CONF"
+    chmod 644 "$DISABLE_CONF"
+    echo "[+] disable.conf 已从仓库拷贝: $SRC_DISABLE_CONF -> $DISABLE_CONF"
+else
+    echo "[!] 警告：仓库 suricata/disable.conf 不存在，跳过（规则抑制将不生效）"
+fi
+
 echo "[*] 5. 更新 Suricata 规则 suricata-update (-f)，将显示实时输出："
 
 docker exec --user suricata suricata suricata-update update-sources || true
 
-echo "[*] 正在启用免费 Suricata 规则源（排除低价值源）..."
-# 排除以下低价值噪音源：
-#   oisf/trafficid           - 流量识别，产生大量低价值告警
-#   pawpatrules              - emoji系列规则，告警噪音大
-#   julioliraup/antiphishing - 钓鱼检测，质量未知且重复
-#   ipfire/dbl               - 域名黑名单，娱乐/合规分类
-ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\" && name!=\"oisf/trafficid\" && name!=\"pawpatrules\" && name!=\"julioliraup/antiphishing\" && name!=\"ipfire/dbl\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源\"")
+echo "[*] 正在启用免费 Suricata 规则源（排除低价值噪音源）..."
+# 永久排除的商业/低价值源（其余免费源保留启用）：oisf/trafficid、pawpatrules、julioliraup/antiphishing、
+# ipfire/dbl、aleksibovellan/nmap、tgreen/hunting（github 常超时+误报高）、the-hunters-ledger/open（THL 误报偏高）。
+ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\" && name!=\"oisf/trafficid\" && name!=\"pawpatrules\" && name!=\"julioliraup/antiphishing\" && name!=\"ipfire/dbl\" && name!=\"aleksibovellan/nmap\" && name!=\"tgreen/hunting\" && name!=\"the-hunters-ledger/open\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源（已永久排除 tgreen/hunting、the-hunters-ledger/open）\"")
 echo "$ENABLED_MSG"
 
 TMP_LOG=$(mktemp)
 set +e
-docker exec --user suricata suricata suricata-update -f 2>&1 | tee "$TMP_LOG"
-
-RET=${PIPESTATUS[0]}
+# 首次部署（零缓存）时，部分源可能无缓存且拉取超时 -> suricata-update 致命中断、不写规则、disable.conf 不生效。
+# 重试：每次成功的源会建立缓存，后续该源即用缓存继续，逐步逼近完整规则集并让 disable.conf 生效。
+MAX_RETRY=8
+RET=1
+for i in $(seq 1 $MAX_RETRY); do
+    docker exec --user suricata suricata suricata-update -f --disable-conf /var/lib/suricata/rules/disable.conf 2>&1 | tee "$TMP_LOG"
+    RET=${PIPESTATUS[0]}
+    if [ "$RET" -eq 0 ]; then
+        break
+    fi
+    echo "[-] 第 $i/$MAX_RETRY 次规则更新失败（部分源拉取超时），10s 后重试以累积缓存..." >&2
+    sleep 10
+done
 set -e
 
 if [ "$RET" -eq 0 ]; then
     echo "[+] Suricata 规则已下载并重新加载。"
     rm -f "$TMP_LOG"
 else
-    echo "[-] suricata-update 返回退出码: $RET" >&2
+    echo "[-] suricata-update 连续 $MAX_RETRY 次失败（退出码 $RET）" >&2
     echo "[-] suricata-update 错误摘要：" >&2
     grep -v "<Info>" "$TMP_LOG" | tail -n 30 >&2
     rm -f "$TMP_LOG"
-    
+
     echo "[-] Suricata 引擎日志（最后 200 行）：" >&2
     docker exec suricata sh -c 'tail -n 200 /var/log/suricata/suricata.log 2>/dev/null || true' >&2
-    echo -e "\033[33m[-] 注意：部分 Suricata 规则更新失败请使用 \033[36mdocker exec --user suricata suricata suricata-update -f\033[33m 手动更新规则，脚本将继续执行后续步骤。\033[0m" >&2
+
+    # 兜底：用已建缓存离线生成规则并应用 disable.conf。
+    # 注：若仍有源“完全无缓存”（持续超时从未成功），--offline 会因该源缺失而致命，
+    # 此时 disable.conf 仅对成功加载的源生效；该源规则缺失，待网络恢复后手动补拉即可。
+    echo "[-] 尝试 --offline 兜底（用已有缓存生成规则并应用 disable.conf）..."
+    docker exec --user suricata suricata suricata-update -f --offline --disable-conf /var/lib/suricata/rules/disable.conf 2>&1 | tail -8
+    echo -e "\033[33m[-] 部分规则源可能仍因持续超时未加载。disable.conf 已对成功加载的源生效。网络恢复后可手动补拉：\033[36mdocker exec --user suricata suricata suricata-update -f --disable-conf /var/lib/suricata/rules/disable.conf\033[33m\033[0m" >&2
 fi
+
+# 规则抑制已统一由 suricata-update --disable-conf 处理（见上方生成的 disable.conf），
+# 不再用 sed 注释 suricata.rules（suricata-update -f 会重写规则，sed 会被覆盖）。
+docker restart suricata
 
 # 6. 阅后即焚：擦除 Shell 进程中的环境变量
 unset PUID PGID

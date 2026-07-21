@@ -146,10 +146,101 @@ async def root():
     }
 
 
+def _extract_candidate_hosts(alert: dict) -> list:
+    """从告警事件中提取所有可作为 Host 的候选值（已转小写、去端口）
+
+    与 src_ip/dst_ip 的提取逻辑保持一致：从告警 JSON 的多个位置收集 host，
+    任一位置命中白名单即视为匹配。覆盖：
+      - Suricata HTTP:  http.hostname / http.host（旧字段 http_host 亦兼容）
+      - Suricata TLS:   tls.sni / tls.server_name
+      - Suricata DNS:   dns.queries[].rrname（新版本数组）/ dns.rrname（旧版本）
+      - Suricata URL:   http.url 中的 host 部分（仅当为完整 URL 时）
+      - Zeek HTTP:      http.host
+      - Zeek SSL:       ssl.server_name
+      - Zeek DNS:       dns.query
+      - ECS 顶层:        source.domain / destination.domain
+    注意：Suricata eve.json 的 HTTP 主机字段名为 `hostname`（非 http_host），
+    此处统一按项目其他模块（models/es_client/attack_detector）的约定取值，
+    避免白名单 host 匹配失效。
+    """
+    candidates = []
+
+    def add(value):
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip().lower())
+
+    # ---- Suricata ----
+    eve = (alert.get("suricata", {}) or {}).get("eve", {}) or {}
+
+    http = eve.get("http") or {}
+    if isinstance(http, dict):
+        # Suricata 实际字段为 hostname；旧字段 http_host / http.host 亦兼容
+        add(http.get("hostname") or http.get("http_host") or http.get("host"))
+        # http.url 可能是完整 URL（含 scheme://host），提取其中的 host
+        url = http.get("url") or ""
+        if isinstance(url, str) and "://" in url:
+            add(url.split("://", 1)[1].split("/", 1)[0])
+
+    tls = eve.get("tls") or {}
+    if isinstance(tls, dict):
+        add(tls.get("sni") or tls.get("server_name"))
+
+    dns = eve.get("dns") or {}
+    if isinstance(dns, dict):
+        # 新版本 Suricata：rrname 在 queries 数组内
+        queries = dns.get("queries") or []
+        if isinstance(queries, list):
+            for q in queries:
+                if isinstance(q, dict):
+                    add(q.get("rrname"))
+        # 旧版本 Suricata：rrname 直接在 dns 下
+        add(dns.get("rrname"))
+
+    # ---- Zeek ----
+    zeek = alert.get("zeek", {}) or {}
+    for sub in ("http", "ssl", "dns"):
+        node = zeek.get(sub) or {}
+        if isinstance(node, dict):
+            add(node.get("host") or node.get("server_name") or node.get("query"))
+
+    # ---- ECS 顶层 domain 字段（部分 pipeline 会打 source.domain / destination.domain）----
+    src = alert.get("source", {}) or {}
+    dst = alert.get("destination", {}) or {}
+    if isinstance(src, dict):
+        add(src.get("domain"))
+    if isinstance(dst, dict):
+        add(dst.get("domain"))
+
+    return candidates
+
+
+def _host_matches(entry: str, candidate: str) -> bool:
+    """域名后缀匹配（防 example.com.evil.cc 这类伪装域名）
+
+    entry 形如 "example.com"，candidate 形如 "www.example.com" / "example.com:8080" / "www.example.com:443"。
+    命中条件：
+      - 完全相等：candidate == example.com
+      - 子域后缀：candidate 以 ".example.com" 结尾（即任意 *.example.com）
+    端口会被忽略；不会误中 "example.com.evil.cc"（它不以 ".example.com" 结尾）。
+    """
+    entry = (entry or "").strip().lower().rstrip(".")
+    if not entry:
+        return False
+    candidate = (candidate or "").strip().lower().rstrip(".")
+    candidate = candidate.split(":")[0].strip()  # 去掉端口
+    if not candidate:
+        return False
+    if candidate == entry:
+        return True
+    if candidate.endswith("." + entry):
+        return True
+    return False
+
+
 def _match_bypass_rule(alert: dict) -> bool:
     """检查告警是否匹配 AI 分析白名单规则
 
-    逐条匹配白名单，四元组中空值表示通配符。
+    逐条匹配白名单，四元组与 host 中空值表示通配符。
     所有非空字段都匹配才算命中。
     """
     try:
@@ -160,6 +251,7 @@ def _match_bypass_rule(alert: dict) -> bool:
         src_port = alert.get("source", {}).get("port", 0)
         dst_ip = alert.get("destination", {}).get("ip", "")
         dst_port = alert.get("destination", {}).get("port", 0)
+        cand_hosts = _extract_candidate_hosts(alert)
 
         with SessionLocal() as db:
             rules = db.execute(select(AiBypassRule)).scalars().all()
@@ -172,8 +264,12 @@ def _match_bypass_rule(alert: dict) -> bool:
                     continue
                 if rule.dst_port and rule.dst_port != dst_port:
                     continue
-                logger.info("告警命中白名单规则: %s (remark=%s)", 
-                           f"{rule.src_ip}:{rule.src_port}->{rule.dst_ip}:{rule.dst_port}",
+                if rule.host:
+                    if not any(_host_matches(rule.host, c) for c in cand_hosts):
+                        continue
+                logger.info("告警命中白名单规则: %s (remark=%s)",
+                           f"{rule.src_ip}:{rule.src_port}->{rule.dst_ip}:{rule.dst_port}"
+                           + (f" host={rule.host}" if rule.host else ""),
                            rule.remark)
                 return True
     except Exception as e:

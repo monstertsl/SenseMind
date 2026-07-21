@@ -160,6 +160,45 @@ class RuleWriter:
         "GET", "POST", "union", "select", "from",
     }
 
+    # 已知正常域名/CDN/更新服务后缀，禁止写入仅匹配这些域名的规则
+    # 避免 AI 将正常 CDN/软件更新流量误判为 C2 回调
+    BENIGN_DOMAIN_SUFFIXES = {
+        # CDN / 云存储
+        ".alicdn.com", ".alikunlun.com", ".aliyuncs.com",
+        ".cdn.bcebos.com", ".bcebos.com", ".bdstatic.com",
+        ".qq.com", ".wxqcloud.qq.com", ".wxlivecdn.com", ".gdt.qq.com",
+        ".douyincdn.com", ".douyin.com", ".douyincdn.cn",
+        ".wpscdn.cn", ".wpscdn.com",
+        ".sogou.com", ".sogou-pdf.com", ".sogou-img.com",
+        ".jsdelivr.net", ".cloudflare.com", ".cloudfront.net",
+        ".akamai.net", ".akamaized.net", ".fastly.net",
+        ".bdimg.com", ".bdstatic.com", ".staticfile.org",
+        ".bootcss.com", ".unpkg.com", ".npmjs.com",
+        ".msstatic.com", ".myqcloud.com", ".tencdns.net",
+        ".huggingface.co", ".github.io", ".githubusercontent.com",
+        # 操作系统/软件更新
+        ".update.microsoft.com", ".windowsupdate.com",
+        ".microsoft.com", ".office.com", ".msft.net",
+        ".apple.com", ".icloud.com",
+        ".ubuntu.com", ".debian.org", ".canonical.com",
+        ".google.com", ".gstatic.com", ".googleapis.com",
+        # 国内软件更新
+        ".360safe.com", ".360.cn", ".360.com",
+        ".2345.cc", ".2345.com",
+        ".duba.net", ".kingsoft.com",
+        ".baidu.com", ".bdstatic.com",
+        ".tencent.com", ".tencent-cloud.com",
+        ".alibaba.com", ".aliyun.com",
+        ".sogou.com",
+        # TLD 后缀不能单独作为恶意判定
+    }
+
+    # 仅匹配 TLD 后缀的 content（如 ".cc"、".top"、".pw"、".com"）不是有效攻击特征
+    BARE_TLD_PATTERNS = {
+        ".com", ".cn", ".cc", ".top", ".pw", ".net", ".org",
+        ".info", ".xyz", ".club", ".online", ".site", ".icu",
+    }
+
     def _is_too_broad(self, rule: str) -> bool:
         """检查规则是否过于宽泛（单个短 content 或通用字符串）"""
         contents = self._extract_contents(rule)
@@ -204,6 +243,139 @@ class RuleWriter:
             for part in parts:
                 if len(part) != 2 or not all(c in '0123456789abcdefABCDEF' for c in part):
                     return True
+        return False
+
+    def _is_benign_domain_rule(self, rule: str) -> bool:
+        """检查规则是否仅匹配已知正常域名/CDN/更新服务
+
+        AI 常将正常 CDN 流量（阿里 CDN、WPS 更新、360 更新、抖音直播等）
+        误判为 C2 回调并生成 DNS/HTTP 规则。此方法在写入前拦截这类误报。
+
+        判定逻辑：提取规则中所有 content 值，若任一 content 匹配已知正常
+        域名后缀或裸 TLD 后缀（如 .cc/.top/.pw），且该 content 不是明确
+        攻击特征（如 /etc/passwd、UNION SELECT），则判定为误报规则。
+        """
+        contents = self._extract_contents(rule)
+        if not contents:
+            return False
+
+        # 已知攻击特征关键词，content 中包含这些词时不判为误报
+        attack_indicators = {
+            "/etc/passwd", "/etc/shadow", "union select", "or 1=1",
+            "../", "..\\", "webshell", "cmd=", "exec(", "eval(",
+            "system(", "passthru", "base64_decode", "file_put_contents",
+            "alert(", "onerror", "onload", "javascript:",
+            "<script", "<?php", "<?=",
+            "/proc/self", "/var/log", "wp-admin",
+            "freemarker", "ognl", "log4j", "jndi:",
+            "container", "providername", "activemq",
+        }
+
+        for content in contents:
+            decoded = self._decode_hex_content(content).lower()
+
+            # 包含明确攻击特征，不判为误报
+            if any(indicator in decoded for indicator in attack_indicators):
+                continue
+
+            # 检查是否匹配已知正常域名后缀
+            for suffix in self.BENIGN_DOMAIN_SUFFIXES:
+                if suffix in decoded:
+                    logger.warning(
+                        "规则 content 匹配已知正常域名 (%s): %s",
+                        suffix, content[:60],
+                    )
+                    return True
+
+            # 检查裸 TLD 后缀（如 content:".cc"）
+            # 只拦截 content 值本身是或以裸 TLD 开头的规则
+            stripped = decoded.strip().lstrip(".")
+            for tld in self.BARE_TLD_PATTERNS:
+                tld_clean = tld.lstrip(".")
+                # content 是 ".cc" 或 "cc" 这种纯 TLD
+                if stripped == tld_clean:
+                    logger.warning(
+                        "规则 content 是裸 TLD 后缀 (.%s)，无攻击特征: %s",
+                        tld_clean, content[:60],
+                    )
+                    return True
+
+        return False
+
+    # 高误报攻击类型 / 协议类关键词（msg 中含这些词则禁止写入 local.rules）
+    # - 高误报攻击类型：C2 回调 / SMB / RPC / DNS（正常业务心跳、域认证、内网
+    #   RPC、DNS 解析极易命中，且语义检测层已覆盖对应检测）
+    # - 协议类（Protocol-level）：需按协议内部字节结构/偏移精确匹配，对精确度
+    #   要求极高、AI 自动生成极易大规模误报，由人工手写精确规则（如 local.rules
+    #   的 Heartbleed）而非自动生成
+    HIGH_FP_ATTACK_KEYWORDS = {
+        # 高误报攻击类型
+        "C2", "SMB", "RPC", "DNS",
+        # 协议类 · 会话/传输层
+        "HEARTBLEED", "HEARTBEAT", "QUIC", "HANDSHAKE",
+        "TLS", "DTLS", "SSL", "SSLV2", "SSLV3",
+        "SSH", "RDP",
+        # 协议类 · 应用层（按协议命令/结构匹配）
+        "FTP", "SMTP", "POP3", "IMAP", "SNMP", "NTP", "SIP", "RTP",
+        "KERBEROS", "MODBUS", "TPKT", "COTP",
+        # 协议指纹类
+        "JA3", "JA4",
+        # 网络层协议结构
+        "ICMP", "GRE",
+    }
+
+    # 协议类 sticky buffer / 协议结构关键字（出现在规则选项里即判定为协议类规则）
+    # 仅匹配规则选项（已剔除 content/pcre 引号值），不依赖 msg 措辞，更可靠
+    PROTOCOL_STRUCTURE_MARKERS = (
+        r"\btls\.", r"\bdtls\.", r"\bssh\.", r"\bftp\.", r"\bsmb\.",
+        r"\brdp\.", r"\bdns\.", r"\bdhcp\.", r"\bja3", r"\bquic\.",
+        r"\bhttp2\.", r"\bmodbus\.", r"\bsnmp\.", r"\bsip\.", r"\bntp\.",
+        r"\bkerberos\.", r"\brpc\.", r"\btcp\.hdr", r"\bicmp\.type",
+        r"\bicmp\.code", r"\bgtp\.", r"\bflags:",
+    )
+
+    @staticmethod
+    def _is_protocol_structure_rule(rule: str) -> bool:
+        """协议类规则兜底检测：规则选项里出现协议 sticky buffer / 协议结构关键字
+
+        仅检查规则选项（先剔除 content/pcre/uricontent 的引号值，避免正常
+        content 中的子串被误判），不依赖 msg 措辞。协议类规则需按协议内部字节
+        结构精确匹配，对精确度要求极高、AI 自动生成极易大规模误报，一律禁止
+        写入 local.rules。
+        """
+        # 剔除带引号的选项值，避免 content/pcre 内部的正常子串触发误判
+        options = re.sub(r'(?:content|pcre|uricontent):"[^"]*"', "", rule)
+        return any(re.search(p, options, re.IGNORECASE) for p in RuleWriter.PROTOCOL_STRUCTURE_MARKERS)
+
+    def _is_high_fp_attack_type(self, rule: str) -> bool:
+        """拦截高误报攻击类型的规则（C2 回调 / SMB / RPC / DNS / 协议类）
+
+        两路检测，任一命中即拦截：
+        1) msg 关键词匹配（HIGH_FP_ATTACK_KEYWORDS）：覆盖 C2/SMB/RPC/DNS 及
+           各类协议族（TLS/SSH/RDP/QUIC/...）
+        2) 协议结构检测（_is_protocol_structure_rule）：规则选项里出现协议 sticky
+           buffer（tls./ssh./ftp./tcp.hdr/flags:/...）即判为协议类，不依赖 msg
+           措辞，可拦住 AI 用其它命名方式生成的协议级规则
+
+        AI 生成的 C2/SMB/RPC/DNS/协议类规则在本环境误报率极高：
+        - C2/SMB/RPC：正常业务心跳、域认证、内网 RPC 管理调用都会命中
+        - DNS：长/随机子域名、DNS 隧道特征在正常 CDN/软件更新/内网 DNS
+          解析中极易误报，且语义检测层已覆盖 DNS 隧道
+        - 协议类（TLS 记录层/Heartbeat、SSH 握手、QUIC、RDP、NTP monlist、
+          TCP 标志位等）：需按协议内部字节结构精确匹配，一个字节偏移或版本号
+          偏差就会大规模误报，协议实现差异大、难以通用
+        rule_generator 已禁止生成此类规则，这里再做一层防御性兜底，
+        确保这类规则永不写入 local.rules。
+        """
+        # 1) msg 关键词匹配
+        msg_match = re.search(r'msg:"([^"]*)"', rule)
+        if msg_match:
+            msg = msg_match.group(1).upper()
+            if any(kw in msg for kw in self.HIGH_FP_ATTACK_KEYWORDS):
+                return True
+        # 2) 协议结构检测（不依赖 msg 措辞，更可靠）
+        if self._is_protocol_structure_rule(rule):
+            return True
         return False
 
     @staticmethod
@@ -308,6 +480,17 @@ class RuleWriter:
             # 无效十六进制编码拦截：如 |3c 3f php| 或 |a|
             if self._has_invalid_hex(rule):
                 logger.warning("规则包含无效的十六进制编码，跳过写入: %s", rule[:80])
+                return False
+
+            # 高误报攻击类型拦截：C2 回调 / SMB / RPC 类规则误报率极高，
+            # 即使 AI 生成也禁止写入 local.rules（防御性兜底，与 rule_generator 策略一致）
+            if self._is_high_fp_attack_type(rule):
+                logger.warning("规则属于高误报攻击类型/协议类(C2/SMB/RPC/DNS/协议结构)，跳过写入: %s", rule[:80])
+                return False
+
+            # 域名白名单拦截：AI 常将正常 CDN/更新服务误判为 C2
+            if self._is_benign_domain_rule(rule):
+                logger.warning("规则匹配已知正常域名/CDN，跳过写入: %s", rule[:80])
                 return False
 
             # 始终用唯一 SID 覆盖 AI 提供的 SID（AI 常照抄示例中的 9000001）

@@ -19,12 +19,39 @@ router = APIRouter(prefix="/api/v1/ai-bypass-rules", tags=["AI分析白名单"])
 
 _IPV4_RE = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
 
+# 域名标签：每段 [a-z0-9] 开头结尾，中间可含 -；TLD 至少 2 个字母
+_HOST_RE = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
+
+
+def _normalize_host(raw: str) -> str:
+    """规范化用户输入的 host：去通配前缀、scheme、路径、端口、末尾点，转小写"""
+    h = (raw or "").strip().lower()
+    if h.startswith("*."):
+        h = h[2:]
+    if "://" in h:
+        h = h.split("://", 1)[1]
+    h = h.split("/", 1)[0]      # 去路径/查询
+    h = h.split(":", 1)[0]      # 去端口
+    h = h.rstrip(".")
+    return h
+
+
+def _validate_host(host: str) -> bool:
+    """校验 host 字段，空表示通配。支持裸域名或用户误粘贴的 URL/端口形式"""
+    if not host:
+        return True
+    h = _normalize_host(host)
+    if not h:
+        return False
+    return bool(_HOST_RE.match(h))
+
 
 class BypassRuleCreate(BaseModel):
     src_ip: str = ""
     src_port: int = 0
     dst_ip: str = ""
     dst_port: int = 0
+    host: str = ""
     remark: str = ""
 
 
@@ -33,6 +60,7 @@ class BypassRuleUpdate(BaseModel):
     src_port: Optional[int] = None
     dst_ip: Optional[str] = None
     dst_port: Optional[int] = None
+    host: Optional[str] = None
     remark: Optional[str] = None
 
 
@@ -68,6 +96,7 @@ def _rule_to_dict(rule: AiBypassRule) -> dict:
         "src_port": rule.src_port or 0,
         "dst_ip": rule.dst_ip or "",
         "dst_port": rule.dst_port or 0,
+        "host": rule.host or "",
         "remark": rule.remark or "",
         "created_at": rule.created_at.isoformat() + 'Z' if rule.created_at else None,
         "updated_at": rule.updated_at.isoformat() + 'Z' if rule.updated_at else None,
@@ -75,7 +104,11 @@ def _rule_to_dict(rule: AiBypassRule) -> dict:
 
 
 def _format_rule(rule: AiBypassRule) -> str:
-    return f"{rule.src_ip or '*'}:{rule.src_port or '*'} -> {rule.dst_ip or '*'}:{rule.dst_port or '*'}"
+    parts = []
+    parts.append(f"{rule.src_ip or '*'}:{rule.src_port or '*'} -> {rule.dst_ip or '*'}:{rule.dst_port or '*'}")
+    if rule.host:
+        parts.append(f"host={rule.host}")
+    return " ".join(parts)
 
 
 @router.get("")
@@ -92,6 +125,7 @@ def list_rules(
         conditions.append(or_(
             AiBypassRule.src_ip.ilike(kw),
             AiBypassRule.dst_ip.ilike(kw),
+            AiBypassRule.host.ilike(kw),
             AiBypassRule.remark.ilike(kw),
         ))
 
@@ -116,8 +150,8 @@ def list_rules(
 def create_rule(body: BypassRuleCreate, request: Request, db: Session = Depends(get_db),
                 current_user: AuthContext = Depends(require_role("admin"))):
     # 全空校验
-    if not body.src_ip and not body.src_port and not body.dst_ip and not body.dst_port:
-        raise HTTPException(status_code=400, detail="至少填写一个四元组字段")
+    if not body.src_ip and not body.src_port and not body.dst_ip and not body.dst_port and not body.host:
+        raise HTTPException(status_code=400, detail="至少填写一个四元组字段或 Host")
     # IP 格式校验
     if body.src_ip and not _validate_ip(body.src_ip):
         raise HTTPException(status_code=400, detail=f"源 IP 格式错误: {body.src_ip}（不支持 CIDR）")
@@ -128,12 +162,16 @@ def create_rule(body: BypassRuleCreate, request: Request, db: Session = Depends(
         raise HTTPException(status_code=400, detail=f"源端口范围错误: {body.src_port}（1-65535）")
     if not _validate_port(body.dst_port):
         raise HTTPException(status_code=400, detail=f"目的端口范围错误: {body.dst_port}（1-65535）")
+    # Host 格式校验
+    if body.host and not _validate_host(body.host):
+        raise HTTPException(status_code=400, detail=f"Host 格式错误: {body.host}（应为域名，如 example.com）")
 
     rule = AiBypassRule(
         src_ip=body.src_ip.strip(),
         src_port=body.src_port,
         dst_ip=body.dst_ip.strip(),
         dst_port=body.dst_port,
+        host=_normalize_host(body.host),
         remark=body.remark.strip(),
     )
     db.add(rule)
@@ -176,13 +214,18 @@ def update_rule(rule_id: int, body: BypassRuleUpdate, request: Request, db: Sess
             raise HTTPException(status_code=400, detail=f"目的端口范围错误: {body.dst_port}（1-65535）")
         rule.dst_port = body.dst_port
         changes.append("dst_port")
+    if body.host is not None:
+        if body.host and not _validate_host(body.host):
+            raise HTTPException(status_code=400, detail=f"Host 格式错误: {body.host}（应为域名，如 example.com）")
+        rule.host = _normalize_host(body.host)
+        changes.append("host")
     if body.remark is not None:
         rule.remark = body.remark.strip()
         changes.append("remark")
 
     # 全空校验（更新后不能全部为空）
-    if not rule.src_ip and not rule.src_port and not rule.dst_ip and not rule.dst_port:
-        raise HTTPException(status_code=400, detail="至少保留一个四元组字段")
+    if not rule.src_ip and not rule.src_port and not rule.dst_ip and not rule.dst_port and not rule.host:
+        raise HTTPException(status_code=400, detail="至少保留一个四元组字段或 Host")
 
     db.commit()
     db.refresh(rule)

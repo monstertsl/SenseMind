@@ -15,7 +15,7 @@
 - **三层联合查询**：Community ID 精确关联（同会话全量日志，跨 Suricata + Zeek 探针）+ 源/目的 IP 时间窗口关联（覆盖多连接、横向移动）+ IP 历史告警查询（24h），结果去重合并。
 - **类语义检测引擎**：关键词匹配（13 类攻击特征）+ 递归解码（5 层 URL/HTML/Base64/Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），零 LLM 调用捕获编码绕过和变形攻击。
 - **AI 自学习闭环**：确认攻击后自动生成 Suricata 规则写入 `local.rules` 并热加载，采用 HTTP sticky buffer 精确匹配 + 动态地址组，持续积累检测能力。
-- **告警去重**：同一 `community_id` + `signature_id` 在时间窗口内只分析一次。
+- **告警去重**：同一 `community_id` + `signature_id`、同一 `source_ip` + `signature_id`，以及同一 `community_id`（流级别，不论触发哪条规则）在时间窗口内只分析一次。
 - **一键部署**：证书生成、密码引导、规则更新、全栈启动全流程自动化。
 
 > **规划中**：接入客户端日志（syslog / Beats / 自定义推送），将主机层告警与网络流量关联，为 AI 研判提供更丰富的上下文，提升检测精度。

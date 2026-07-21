@@ -66,6 +66,21 @@ function validatePort(port: string): boolean {
   return /^\d+$/.test(port) && n >= 1 && n <= 65535
 }
 
+// 域名标签：每段 [a-z0-9] 开头结尾，中间可含 -；TLD 至少 2 个字母
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+function normalizeHost(raw: string): string {
+  let h = (raw || '').trim().toLowerCase()
+  if (h.startsWith('*.')) h = h.slice(2)
+  if (h.includes('://')) h = h.split('://', 1)[1]
+  h = h.split('/', 1)[0]
+  h = h.split(':', 1)[0]
+  return h.replace(/\.+$/, '')
+}
+function validateHost(host: string): boolean {
+  if (!host) return true
+  return HOST_RE.test(normalizeHost(host))
+}
+
 // ---- 新建白名单 ----
 const createDialogVisible = ref(false)
 const createForm = reactive({
@@ -73,6 +88,7 @@ const createForm = reactive({
   src_port: '',
   dst_ip: '',
   dst_port: '',
+  host: '',
   remark: '',
 })
 const createErrors = reactive({
@@ -80,16 +96,17 @@ const createErrors = reactive({
   src_port: '',
   dst_ip: '',
   dst_port: '',
+  host: '',
 })
 
 function openCreateDialog() {
-  Object.assign(createForm, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', remark: '' })
-  Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '' })
+  Object.assign(createForm, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '', remark: '' })
+  Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
   createDialogVisible.value = true
 }
 
 function validateCreateForm(): boolean {
-  Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '' })
+  Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
   let ok = true
   if (createForm.src_ip && !validateIp(createForm.src_ip)) {
     createErrors.src_ip = '请输入正确的 IP 地址（不支持子网）'
@@ -107,9 +124,13 @@ function validateCreateForm(): boolean {
     createErrors.dst_port = '端口范围 1-65535'
     ok = false
   }
+  if (createForm.host && !validateHost(createForm.host)) {
+    createErrors.host = '请输入正确的域名（如 example.com）'
+    ok = false
+  }
   // 全空校验
-  if (!createForm.src_ip && !createForm.src_port && !createForm.dst_ip && !createForm.dst_port) {
-    ElMessage.warning('至少填写一个四元组字段')
+  if (!createForm.src_ip && !createForm.src_port && !createForm.dst_ip && !createForm.dst_port && !createForm.host) {
+    ElMessage.warning('至少填写一个四元组字段或 Host')
     return false
   }
   return ok
@@ -123,6 +144,7 @@ async function handleCreate() {
       src_port: createForm.src_port ? parseInt(createForm.src_port) : 0,
       dst_ip: createForm.dst_ip,
       dst_port: createForm.dst_port ? parseInt(createForm.dst_port) : 0,
+      host: createForm.host,
       remark: createForm.remark,
     } as any)
     ElMessage.success('白名单规则已创建')
@@ -141,6 +163,7 @@ const editForm = ref<{
   src_port: string
   dst_ip: string
   dst_port: string
+  host: string
   remark: string
 } | null>(null)
 const editErrors = reactive({
@@ -148,6 +171,7 @@ const editErrors = reactive({
   src_port: '',
   dst_ip: '',
   dst_port: '',
+  host: '',
 })
 
 // ---- 实时校验（输入时即提示）----
@@ -163,6 +187,9 @@ watch(() => createForm.dst_ip, (v) => {
 watch(() => createForm.dst_port, (v) => {
   createErrors.dst_port = (v && !validatePort(v)) ? '端口范围 1-65535' : ''
 })
+watch(() => createForm.host, (v) => {
+  createErrors.host = (v && !validateHost(v)) ? '请输入正确的域名（如 example.com）' : ''
+})
 watch(() => editForm.value?.src_ip, (v) => {
   editErrors.src_ip = (v && !validateIp(v)) ? '请输入正确的 IP 地址（不支持子网）' : ''
 })
@@ -175,6 +202,9 @@ watch(() => editForm.value?.dst_ip, (v) => {
 watch(() => editForm.value?.dst_port, (v) => {
   editErrors.dst_port = (v && !validatePort(v)) ? '端口范围 1-65535' : ''
 })
+watch(() => editForm.value?.host, (v) => {
+  editErrors.host = (v && !validateHost(v)) ? '请输入正确的域名（如 example.com）' : ''
+})
 
 function openEditDialog(row: BypassRuleItem) {
   editForm.value = {
@@ -183,15 +213,16 @@ function openEditDialog(row: BypassRuleItem) {
     src_port: row.src_port ? String(row.src_port) : '',
     dst_ip: row.dst_ip,
     dst_port: row.dst_port ? String(row.dst_port) : '',
+    host: row.host,
     remark: row.remark,
   }
-  Object.assign(editErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '' })
+  Object.assign(editErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
   editDialogVisible.value = true
 }
 
 function validateEditForm(): boolean {
   if (!editForm.value) return false
-  Object.assign(editErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '' })
+  Object.assign(editErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
   let ok = true
   if (editForm.value.src_ip && !validateIp(editForm.value.src_ip)) {
     editErrors.src_ip = '请输入正确的 IP 地址（不支持子网）'
@@ -209,8 +240,12 @@ function validateEditForm(): boolean {
     editErrors.dst_port = '端口范围 1-65535'
     ok = false
   }
-  if (!editForm.value.src_ip && !editForm.value.src_port && !editForm.value.dst_ip && !editForm.value.dst_port) {
-    ElMessage.warning('至少保留一个四元组字段')
+  if (editForm.value.host && !validateHost(editForm.value.host)) {
+    editErrors.host = '请输入正确的域名（如 example.com）'
+    ok = false
+  }
+  if (!editForm.value.src_ip && !editForm.value.src_port && !editForm.value.dst_ip && !editForm.value.dst_port && !editForm.value.host) {
+    ElMessage.warning('至少保留一个四元组字段或 Host')
     return false
   }
   return ok
@@ -224,6 +259,7 @@ async function handleEdit() {
       src_port: editForm.value.src_port ? parseInt(editForm.value.src_port) : 0,
       dst_ip: editForm.value.dst_ip,
       dst_port: editForm.value.dst_port ? parseInt(editForm.value.dst_port) : 0,
+      host: editForm.value.host,
       remark: editForm.value.remark,
     } as any)
     ElMessage.success('白名单规则已更新')
@@ -258,6 +294,10 @@ function formatIp(ip: string): string {
   return ip || '*'
 }
 
+function formatHost(host: string): string {
+  return host || '*'
+}
+
 function formatTime(t: string | null): string {
   if (!t) return '-'
   try {
@@ -274,7 +314,7 @@ function formatTime(t: string | null): string {
       <div class="toolbar-left">
         <el-input
           v-model="keyword"
-          placeholder="按 IP 或备注搜索"
+          placeholder="按 IP / Host / 备注搜索"
           clearable
           class="search-input"
           @keyup.enter="handleSearch"
@@ -303,6 +343,11 @@ function formatTime(t: string | null): string {
       <el-table-column label="目的端口" min-width="90">
         <template #default="{ row }">
           <span class="font-mono">{{ formatPort(row.dst_port) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="Host" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="font-mono">{{ formatHost(row.host) }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
@@ -358,6 +403,10 @@ function formatTime(t: string | null): string {
           <el-input v-model="createForm.dst_port" placeholder="留空表示任意" />
           <div v-if="createErrors.dst_port" class="field-error">{{ createErrors.dst_port }}</div>
         </el-form-item>
+        <el-form-item label="Host">
+          <el-input v-model="createForm.host" placeholder="域名，如 example.com（匹配该域名及所有子域名，忽略端口）" />
+          <div v-if="createErrors.host" class="field-error">{{ createErrors.host }}</div>
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" placeholder="如：LLM API 流量" />
         </el-form-item>
@@ -386,6 +435,10 @@ function formatTime(t: string | null): string {
         <el-form-item label="目的端口">
           <el-input v-model="editForm.dst_port" placeholder="留空表示任意" />
           <div v-if="editErrors.dst_port" class="field-error">{{ editErrors.dst_port }}</div>
+        </el-form-item>
+        <el-form-item label="Host">
+          <el-input v-model="editForm.host" placeholder="域名，如 example.com（匹配该域名及所有子域名，忽略端口）" />
+          <div v-if="editErrors.host" class="field-error">{{ editErrors.host }}</div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="editForm.remark" placeholder="如：LLM API 流量" />
