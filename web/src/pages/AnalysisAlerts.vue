@@ -38,6 +38,9 @@ function handleSearch(filters: Partial<AlertQuery>) {
   query.soc_name = filters.soc_name
   query.alert_signature = filters.alert_signature
   query.attack_result = filters.attack_result
+  query.exclude_source_ip = filters.exclude_source_ip
+  query.exclude_destination_ip = filters.exclude_destination_ip
+  query.exclude_alert_signature = filters.exclude_alert_signature
   query.page = 1
   fetch()
 }
@@ -49,6 +52,9 @@ function handleReset() {
   query.alert_signature = undefined
   query.attack_result = undefined
   query.source_alert_id = undefined
+  query.exclude_source_ip = undefined
+  query.exclude_destination_ip = undefined
+  query.exclude_alert_signature = undefined
   query.page = 1
   fetch()
 }

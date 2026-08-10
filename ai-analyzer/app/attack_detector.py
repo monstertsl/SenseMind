@@ -79,6 +79,11 @@ ATTACK_PATTERNS = {
         "${jndi:", "${lower:", "${upper:", "${env:",
         "ldap://", "rmi://", "dns://", "iiop://",
     ],
+    "scanning_detection": [
+        "nmap scripting engine",
+        "nmap http scan",
+        "user-agent: nmap",
+    ],
 }
 
 
@@ -422,10 +427,12 @@ def detect_attack_in_http_event(log: dict) -> list[str]:
 
     # Suricata http 事件
     eve = log.get("suricata", {}).get("eve", {})
+    user_agent = ""
     if eve.get("event_type") == "http":
         http = eve.get("http", {})
         url = http.get("url", "")
         payload = eve.get("payload_printable", "")
+        user_agent = http.get("http_user_agent", "")
 
     # Zeek http 日志
     if not url and log.get("event", {}).get("dataset") == "zeek.http":
@@ -440,12 +447,14 @@ def detect_attack_in_http_event(log: dict) -> list[str]:
         if original:
             payload = original
 
-    if not url and not payload:
+    if not url and not payload and not user_agent:
         return []
 
     # === 第一层：关键词匹配（快速） ===
     url_decoded = unquote(url) if url else ""
-    text_to_check = f"{url_decoded} {payload}".lower()
+    # 将 user_agent 拼入匹配文本以检测 Nmap 等扫描器 UA
+    ua_fragment = f"user-agent: {user_agent}" if user_agent else ""
+    text_to_check = f"{url_decoded} {payload} {ua_fragment}".lower()
 
     matched_types = []
     for attack_type, patterns in ATTACK_PATTERNS.items():

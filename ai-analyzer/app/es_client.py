@@ -401,6 +401,10 @@ class ESClient:
         cfg = Config()
         index_name = cfg.get_result_index()
 
+        # 删除前端不展示、仅占存储的元数据字段
+        analysis.pop("reasoning", None)
+        analysis.pop("model", None)
+
         doc = {
             "@timestamp": datetime.utcnow().isoformat() + "Z",
             "event": {"kind": "ai_analysis", "module": "ai-analyzer"},

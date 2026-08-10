@@ -162,6 +162,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
             @click="handleCopy(row.ai.alert_signature, $event)"
             v-html="highlightKeyword(row.ai.alert_signature, props_keyword)"
           ></span>
+          <span v-else class="empty-value">-</span>
         </template>
       </el-table-column>
 
@@ -264,6 +265,10 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
     color: $color-primary;
     text-decoration: underline;
   }
+}
+
+.empty-value {
+  color: $color-text-secondary;
 }
 
 .summary-cell {

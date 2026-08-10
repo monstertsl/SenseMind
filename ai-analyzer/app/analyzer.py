@@ -49,6 +49,7 @@ ATTACK_TYPE_SOC_MAPPING = {
     "dns_tunneling":         {"soc_category": "08", "soc_name": "隧道通信",   "mitre_id": "T1572", "technique": "DNS隧道"},
     "c2_callback":           {"soc_category": "05", "soc_name": "恶意通信C2", "mitre_id": "T1071", "technique": "C2回调通信"},
     "suspicious_tls_sni":    {"soc_category": "05", "soc_name": "恶意通信C2", "mitre_id": "T1071", "technique": "可疑TLS SNI"},
+    "scanning_detection":    {"soc_category": "07", "soc_name": "侦查扫描",   "mitre_id": "T1595", "technique": "Nmap扫描探测"},
 }
 
 
@@ -66,6 +67,21 @@ class AlertAnalyzer:
         # api_key 为空时传一个占位值，ChatOpenAI 要求非空
         api_key = llm_cfg.get("api_key", "") or "not-needed"
 
+        # 仅对支持「思考模式」的模型下发关闭参数，避免 <think> 块吃 token 致 JSON 截断。
+        # 非思考类模型（GPT/Gemma/Llama 等）不发送这些字段，避免严格网关（如 OpenAI）
+        # 对未知参数返回 400。Qwen3/QwQ 家族使用 enable_thinking 开关，两后端约定不同，
+        # 同时下发以兼容：
+        #  - vLLM/SGLang：Qwen3 的 Jinja chat template 从 chat_template_kwargs 读 enable_thinking
+        #  - DashScope(阿里云百炼)兼容模式：enable_thinking 是顶层请求参数
+        # 各后端只用自己那个字段，另一个被忽略，互不影响。
+        # 注意：Ollama 走 prompt /no_think 控制思考，不在此列，需单独处理。
+        model_name_lower = llm_cfg.get("model", "").lower()
+        _THINKING_MODELS = ("qwen3", "qwen-3", "qwq")
+        extra_body = {
+            "chat_template_kwargs": {"enable_thinking": False},
+            "enable_thinking": False,
+        } if any(k in model_name_lower for k in _THINKING_MODELS) else None
+
         self.llm = ChatOpenAI(
             api_key=api_key,
             base_url=llm_cfg.get("base_url", ""),
@@ -74,8 +90,7 @@ class AlertAnalyzer:
             max_tokens=llm_cfg.get("max_tokens", 4000),
             max_retries=0,
             timeout=llm_cfg.get("timeout", 60),
-            # Qwen3 系列默认开启思考模式，会输出 <think> 块消耗 token 导致 JSON 截断
-            model_kwargs={"extra_body": {"enable_thinking": False}},
+            model_kwargs={"extra_body": extra_body} if extra_body else {},
         )
         self.model_name = llm_cfg.get("model", "未配置")
 

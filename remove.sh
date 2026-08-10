@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 # SenseMind SOC 平台清理脚本
 # 彻底清理容器、网络、数据卷及本地数据目录
-# 包括：Elasticsearch、Suricata、Zeek、PostgreSQL、Redis、ai-analyzer、web
+# 包括：Elasticsearch、Suricata、Zeek、PostgreSQL、ai-analyzer、web
 
 set -euo pipefail
+
+# 0. 确认操作
+echo "========================================="
+echo "  SenseMind SOC 平台清理脚本"
+echo "  将删除所有容器、数据卷、本地数据目录"
+echo "  包括: Elasticsearch / Suricata / Zeek / PostgreSQL / ai-analyzer / web"
+echo "  以及: /data/suricata, /data/zeek, .env, certs/"
+echo "========================================="
+read -p "确认清理? (输入 yes 继续): " CONFIRM
+if [ "${CONFIRM}" != "yes" ]; then
+    echo "已取消。"
+    exit 0
+fi
+echo ""
 
 # 1. 在 .env 尚存在时，先获取 compose 项目名前缀（用于清理残留命名卷）
 #    docker compose 的项目名默认取自目录名（小写），命名卷格式为: <项目名>_<卷名>

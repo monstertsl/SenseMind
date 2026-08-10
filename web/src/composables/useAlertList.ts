@@ -57,6 +57,13 @@ export function useAlertList() {
     detailLoading.value = true
     try {
       detail.value = await getAlertDetail(id)
+      // 从列表中查找该告警的 alert_count（前端连续聚合时已计算）
+      const item = list.value.find((i) => i._id === id)
+      if (item?.ai?.alert_count && detail.value?.ai) {
+        detail.value.ai.alert_count = item.ai.alert_count
+      } else if (detail.value?.ai) {
+        detail.value.ai.alert_count = 1
+      }
     } catch {
       detail.value = null
     } finally {
@@ -69,6 +76,9 @@ export function useAlertList() {
     query.destination_ip = undefined
     query.soc_name = undefined
     query.source_alert_id = undefined
+    query.exclude_source_ip = undefined
+    query.exclude_destination_ip = undefined
+    query.exclude_alert_signature = undefined
     for (const [k, v] of Object.entries(filter)) {
       if (k === 'source_ip') query.source_ip = v as string
       else if (k === 'destination_ip') query.destination_ip = v as string

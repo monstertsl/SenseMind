@@ -13,7 +13,6 @@ def _build_database_url() -> str:
     env_url = os.environ.get("DATABASE_URL")
     if env_url:
         return env_url
-    cfg = Config().redis
     password = os.environ.get("ELASTIC_PASSWORD", "")
     return f"postgresql+psycopg2://postgres:{password}@postgres:5432/sensemind"
 

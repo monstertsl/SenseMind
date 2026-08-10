@@ -29,13 +29,45 @@ const attackResultOptions = [
 
 function emitSearch() {
   // 搜索时把表单筛选值通过 search 事件传给父组件，由父组件应用到 query
+  // 支持 ! 前缀排除：值以 ! 开头表示排除该条件（源IP/目的IP/威胁名）
   const filters: Partial<AlertQuery> = {
-    source_ip: form.source_ip || undefined,
-    destination_ip: form.destination_ip || undefined,
+    source_ip: undefined,
+    destination_ip: undefined,
+    alert_signature: undefined,
+    exclude_source_ip: undefined,
+    exclude_destination_ip: undefined,
+    exclude_alert_signature: undefined,
     soc_name: form.soc_name.length ? form.soc_name.join(',') : undefined,
-    alert_signature: form.alert_signature || undefined,
     attack_result: form.attack_result || undefined,
   }
+
+  // 源IP
+  const sip = form.source_ip.trim()
+  if (sip.startsWith('!')) {
+    const v = sip.slice(1).trim()
+    if (v) filters.exclude_source_ip = v
+  } else if (sip) {
+    filters.source_ip = sip
+  }
+
+  // 目的IP
+  const dip = form.destination_ip.trim()
+  if (dip.startsWith('!')) {
+    const v = dip.slice(1).trim()
+    if (v) filters.exclude_destination_ip = v
+  } else if (dip) {
+    filters.destination_ip = dip
+  }
+
+  // 威胁名
+  const sig = form.alert_signature.trim()
+  if (sig.startsWith('!')) {
+    const v = sig.slice(1).trim()
+    if (v) filters.exclude_alert_signature = v
+  } else if (sig) {
+    filters.alert_signature = sig
+  }
+
   emit('search', filters)
 }
 
@@ -67,7 +99,7 @@ watch(
         <label>源IP</label>
         <el-input
           v-model="form.source_ip"
-          placeholder="精确匹配，如 10.0.0.1"
+          placeholder="精确匹配，! 排除"
           clearable
           @keyup.enter="emitSearch"
         />
@@ -76,7 +108,7 @@ watch(
         <label>目的IP</label>
         <el-input
           v-model="form.destination_ip"
-          placeholder="精确匹配"
+          placeholder="精确匹配，! 排除"
           clearable
           @keyup.enter="emitSearch"
         />
@@ -120,7 +152,7 @@ watch(
         <label>威胁名</label>
         <el-input
           v-model="form.alert_signature"
-          placeholder="模糊匹配"
+          placeholder="模糊匹配，! 排除"
           clearable
           @keyup.enter="emitSearch"
         />

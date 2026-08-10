@@ -52,6 +52,7 @@ class BypassRuleCreate(BaseModel):
     dst_ip: str = ""
     dst_port: int = 0
     host: str = ""
+    threat_name: str = ""
     remark: str = ""
 
 
@@ -61,6 +62,7 @@ class BypassRuleUpdate(BaseModel):
     dst_ip: Optional[str] = None
     dst_port: Optional[int] = None
     host: Optional[str] = None
+    threat_name: Optional[str] = None
     remark: Optional[str] = None
 
 
@@ -97,6 +99,7 @@ def _rule_to_dict(rule: AiBypassRule) -> dict:
         "dst_ip": rule.dst_ip or "",
         "dst_port": rule.dst_port or 0,
         "host": rule.host or "",
+        "threat_name": rule.threat_name or "",
         "remark": rule.remark or "",
         "created_at": rule.created_at.isoformat() + 'Z' if rule.created_at else None,
         "updated_at": rule.updated_at.isoformat() + 'Z' if rule.updated_at else None,
@@ -108,6 +111,8 @@ def _format_rule(rule: AiBypassRule) -> str:
     parts.append(f"{rule.src_ip or '*'}:{rule.src_port or '*'} -> {rule.dst_ip or '*'}:{rule.dst_port or '*'}")
     if rule.host:
         parts.append(f"host={rule.host}")
+    if rule.threat_name:
+        parts.append(f"threat_name={rule.threat_name}")
     return " ".join(parts)
 
 
@@ -126,6 +131,7 @@ def list_rules(
             AiBypassRule.src_ip.ilike(kw),
             AiBypassRule.dst_ip.ilike(kw),
             AiBypassRule.host.ilike(kw),
+            AiBypassRule.threat_name.ilike(kw),
             AiBypassRule.remark.ilike(kw),
         ))
 
@@ -150,8 +156,8 @@ def list_rules(
 def create_rule(body: BypassRuleCreate, request: Request, db: Session = Depends(get_db),
                 current_user: AuthContext = Depends(require_role("admin"))):
     # 全空校验
-    if not body.src_ip and not body.src_port and not body.dst_ip and not body.dst_port and not body.host:
-        raise HTTPException(status_code=400, detail="至少填写一个四元组字段或 Host")
+    if not body.src_ip and not body.src_port and not body.dst_ip and not body.dst_port and not body.host and not body.threat_name:
+        raise HTTPException(status_code=400, detail="至少填写一个匹配字段（IP/端口/Host/威胁名）")
     # IP 格式校验
     if body.src_ip and not _validate_ip(body.src_ip):
         raise HTTPException(status_code=400, detail=f"源 IP 格式错误: {body.src_ip}（不支持 CIDR）")
@@ -172,6 +178,7 @@ def create_rule(body: BypassRuleCreate, request: Request, db: Session = Depends(
         dst_ip=body.dst_ip.strip(),
         dst_port=body.dst_port,
         host=_normalize_host(body.host),
+        threat_name=body.threat_name.strip(),
         remark=body.remark.strip(),
     )
     db.add(rule)
@@ -219,20 +226,23 @@ def update_rule(rule_id: int, body: BypassRuleUpdate, request: Request, db: Sess
             raise HTTPException(status_code=400, detail=f"Host 格式错误: {body.host}（应为域名，如 example.com）")
         rule.host = _normalize_host(body.host)
         changes.append("host")
+    if body.threat_name is not None:
+        rule.threat_name = body.threat_name.strip()
+        changes.append("threat_name")
     if body.remark is not None:
         rule.remark = body.remark.strip()
         changes.append("remark")
 
     # 全空校验（更新后不能全部为空）
-    if not rule.src_ip and not rule.src_port and not rule.dst_ip and not rule.dst_port and not rule.host:
-        raise HTTPException(status_code=400, detail="至少保留一个四元组字段或 Host")
+    if not rule.src_ip and not rule.src_port and not rule.dst_ip and not rule.dst_port and not rule.host and not rule.threat_name:
+        raise HTTPException(status_code=400, detail="至少保留一个匹配字段（IP/端口/Host/威胁名）")
 
     db.commit()
     db.refresh(rule)
 
     write_system_log(db, action="update_bypass_rule", target_type="ai_bypass_rule",
                      target_id=str(rule.id),
-                     detail=f"修改白名单: {old_desc} → {_format_rule(rule)}",
+                     detail=f"修改白名单: {old_desc} => {_format_rule(rule)}",
                      operator=current_user.username, ip_address=_client_ip(request))
     return ApiResponse(code=0, message="ok", data=_rule_to_dict(rule), request_id=str(uuid.uuid4()))
 

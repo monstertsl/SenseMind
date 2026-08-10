@@ -16,13 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from .database import get_db
-from .rate_limit import (
-    get_cached_user_status,
-    set_cached_user_status,
-    invalidate_user_status,
-    is_token_blacklisted,
-    blacklist_token,
-)
+from .rate_limit import is_token_blacklisted, blacklist_token
 from .security import encrypt_data, decrypt_data
 from ..db_models.user import User
 
@@ -97,19 +91,15 @@ class AuthContext:
 
 
 def _load_user_status(user_id: int, db: Session) -> Optional[dict]:
-    cached = get_cached_user_status(user_id)
-    if cached:
-        return cached
+    """直接从数据库加载用户状态（无缓存）。"""
     user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
     if not user:
         return None
-    payload = {
+    return {
         "role": user.role,
         "is_active": bool(user.is_active),
         "auth_mode": user.auth_mode,
     }
-    set_cached_user_status(user_id, payload)
-    return payload
 
 
 def _maybe_refresh_token(ctx: AuthContext, response: Optional[Response]) -> None:

@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/v1/system-config", tags=["系统配置"])
 
 
 class SystemConfigUpdate(BaseModel):
-    es_retention_days: Optional[int] = None
+    ai_retention_days: Optional[int] = None
     raw_log_retention_days: Optional[int] = None
     audit_log_retention_days: Optional[int] = None
     login_fail_limit: Optional[int] = None
@@ -29,7 +29,7 @@ class SystemConfigUpdate(BaseModel):
 # 安全策略字段 → 存储优化字段
 _SECURITY_FIELDS = {"login_fail_limit", "inactive_days_limit",
                     "idle_timeout_minutes", "allowed_login_ips"}
-_STORAGE_FIELDS = {"es_retention_days", "raw_log_retention_days",
+_STORAGE_FIELDS = {"ai_retention_days", "raw_log_retention_days",
                    "audit_log_retention_days"}
 
 
@@ -45,7 +45,7 @@ def _get_or_create_config(db: Session) -> SystemConfig:
 
 def _cfg_to_dict(cfg: SystemConfig) -> dict:
     return {
-        "es_retention_days": cfg.es_retention_days,
+        "ai_retention_days": cfg.ai_retention_days,
         "raw_log_retention_days": cfg.raw_log_retention_days,
         "audit_log_retention_days": cfg.audit_log_retention_days,
         "login_fail_limit": cfg.login_fail_limit,

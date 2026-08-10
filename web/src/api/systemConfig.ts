@@ -1,7 +1,7 @@
 import request from './request'
 
 export interface SystemConfig {
-  es_retention_days: number
+  ai_retention_days: number
   raw_log_retention_days: number
   audit_log_retention_days: number
   login_fail_limit: number

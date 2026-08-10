@@ -252,6 +252,7 @@ def _match_bypass_rule(alert: dict) -> bool:
         dst_ip = alert.get("destination", {}).get("ip", "")
         dst_port = alert.get("destination", {}).get("port", 0)
         cand_hosts = _extract_candidate_hosts(alert)
+        signature = alert.get("suricata", {}).get("eve", {}).get("alert", {}).get("signature", "")
 
         with SessionLocal() as db:
             rules = db.execute(select(AiBypassRule)).scalars().all()
@@ -267,9 +268,14 @@ def _match_bypass_rule(alert: dict) -> bool:
                 if rule.host:
                     if not any(_host_matches(rule.host, c) for c in cand_hosts):
                         continue
+                if rule.threat_name:
+                    # 威胁名匹配：大小写不敏感，rule.threat_name 为 signature 的子串即命中
+                    if not signature or rule.threat_name.lower() not in signature.lower():
+                        continue
                 logger.info("告警命中白名单规则: %s (remark=%s)",
                            f"{rule.src_ip}:{rule.src_port}->{rule.dst_ip}:{rule.dst_port}"
-                           + (f" host={rule.host}" if rule.host else ""),
+                           + (f" host={rule.host}" if rule.host else "")
+                           + (f" threat={rule.threat_name}" if rule.threat_name else ""),
                            rule.remark)
                 return True
     except Exception as e:

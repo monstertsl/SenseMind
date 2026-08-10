@@ -17,7 +17,7 @@ from ..core.audit import write_login_log
 from ..core.rate_limit import (
     check_auth_ip_limit, check_auth_user_limit,
     record_auth_failure, reset_auth_counters,
-    invalidate_user_status, blacklist_token,
+    blacklist_token,
 )
 from ..db_models.user import User
 from ..db_models.system_config import SystemConfig
@@ -108,7 +108,6 @@ def _record_failed_login(user: User, db: Session, *, username: str,
         db, username=username, success=False, ip_address=client_ip,
         detail=f"登录失败：{reason} (attempt {user.failed_login_attempts})",
     )
-    invalidate_user_status(user.id)
     record_auth_failure(client_ip, username)
 
 
@@ -199,7 +198,6 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
         db, username=body.username, success=True, ip_address=client_ip,
         detail="登录成功",
     )
-    invalidate_user_status(user.id)
     reset_auth_counters(client_ip, body.username)
 
     access_token = create_access_token({
@@ -219,7 +217,6 @@ def logout(current_user: AuthContext = Depends(get_current_user)):
     import time
     remaining_ttl = (current_user.exp or int(time.time()) + 60) - int(time.time())
     blacklist_token(current_user.jti, remaining_ttl)
-    invalidate_user_status(current_user.user_id)
     return ApiResponse(code=0, message="ok", data={"message": "已注销"}, request_id=str(uuid.uuid4()))
 
 

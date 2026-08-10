@@ -19,7 +19,7 @@ import AiBypassManage from '@/pages/AiBypassManage.vue'
 const configLoading = ref(false)
 const configSaving = ref(false)
 const config = reactive<SystemConfig>({
-  es_retention_days: 180,
+  ai_retention_days: 180,
   raw_log_retention_days: 7,
   audit_log_retention_days: 180,
   login_fail_limit: 5,
@@ -69,7 +69,7 @@ async function handleSaveConfig() {
   configSaving.value = true
   try {
     await updateConfig({
-      es_retention_days: config.es_retention_days,
+      ai_retention_days: config.ai_retention_days,
       raw_log_retention_days: config.raw_log_retention_days,
       audit_log_retention_days: config.audit_log_retention_days,
       login_fail_limit: config.login_fail_limit,
@@ -242,8 +242,9 @@ const ACTION_LABELS: Record<string, string> = {
   delete: '删除用户',
   reset_password: '重置密码',
   auto_disable: '自动禁用',
-  cleanup_raw_log: '清理原始日志',
-  cleanup_es_log: '清理ES索引',
+  cleanup_raw_log: '清理原始日志文件',
+  cleanup_raw_es_log: '清理原始日志',
+  cleanup_ai_es_log: '清理分析日志',
   cleanup_audit_log: '清理审计日志',
   update_security_policy: '安全策略',
   update_storage_policy: '存储优化',
@@ -367,12 +368,12 @@ onBeforeUnmount(() => {
             <div class="section-title">存储优化</div>
             <div class="config-grid">
               <div class="config-item">
-                <label>ES 日志保留天数</label>
-                <el-input-number v-model="config.es_retention_days" :min="1" :max="365" />
+                <label>分析日志保留天数</label>
+                <el-input-number v-model="config.ai_retention_days" :min="1" :max="365" />
               </div>
               <div class="config-item">
                 <label>原始日志保留天数</label>
-                <el-input-number v-model="config.raw_log_retention_days" :min="1" :max="90" />
+                <el-input-number v-model="config.raw_log_retention_days" :min="1" :max="365" />
               </div>
               <div class="config-item">
                 <label>系统日志保留天数</label>

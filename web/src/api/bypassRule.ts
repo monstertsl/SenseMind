@@ -7,6 +7,7 @@ export interface BypassRuleItem {
   dst_ip: string
   dst_port: number
   host: string
+  threat_name: string
   remark: string
   created_at: string | null
   updated_at: string | null

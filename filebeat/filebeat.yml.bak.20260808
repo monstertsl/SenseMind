@@ -17,14 +17,12 @@ filebeat.modules:
   connection:
     enabled: true
     var.paths: ["/var/log/zeek/conn.log"]
-  # zeek 端过滤脚本保留 conn + http 流，dns/ssl 不再产出
   dns:
-    enabled: false
+    enabled: true
   http:
     enabled: true
-    var.paths: ["/var/log/zeek/http.log"]
   ssl:
-    enabled: false
+    enabled: true
 
 
 # =========================
@@ -43,10 +41,3 @@ setup.template.enabled: true
 setup.ilm.enabled: false
 logging.to_stderr: true
 logging.level: info
-
-# 删除 Filebeat 模块自动保留的原始日志副本 event.original
-# 该字段与已结构化字段完全重复，且仅磁盘原始日志(/data)已留存，删之省约 20% ES 空间
-processors:
-  - drop_fields:
-      fields: ["event.original"]
-      ignore_missing: true

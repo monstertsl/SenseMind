@@ -76,6 +76,7 @@ export interface AlertAi {
   attack_technique: string
   mitre_id: string
   protocol: string
+  alert_count?: number
 }
 
 export interface AlertItem {
@@ -104,6 +105,9 @@ export interface AlertQuery {
   alert_signature?: string
   source_alert_id?: string
   attack_result?: string
+  exclude_source_ip?: string
+  exclude_destination_ip?: string
+  exclude_alert_signature?: string
   page: number
   page_size: number
   sort_field?: string

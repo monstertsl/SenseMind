@@ -40,6 +40,9 @@ class AlertQueryParams(BaseModel):
     alert_signature: Optional[str] = None
     source_alert_id: Optional[str] = None
     attack_result: Optional[str] = None
+    exclude_source_ip: Optional[str] = None
+    exclude_destination_ip: Optional[str] = None
+    exclude_alert_signature: Optional[str] = None
     page: int = 1
     page_size: int = 20
     sort_field: str = "ai.alert_timestamp"

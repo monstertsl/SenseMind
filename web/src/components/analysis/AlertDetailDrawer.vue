@@ -84,8 +84,12 @@ function jumpToLog() {
               <span class="info-value font-mono">{{ formatDateTime(detail.ai?.alert_timestamp) }}</span>
             </div>
             <div class="info-item">
-              <span class="info-label">告警类型</span>
-              <span class="info-value">{{ formatEmpty(detail.ai?.soc_name) }}</span>
+              <span class="info-label">告警次数</span>
+              <span class="info-value font-mono">{{ detail.ai?.alert_count ?? 1 }}</span>
+            </div>
+            <div class="info-item info-item-wide">
+              <span class="info-label">威胁名</span>
+              <span class="info-value font-mono">{{ formatEmpty(detail.ai?.alert_signature) }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">威胁判定</span>
@@ -220,7 +224,12 @@ function jumpToLog() {
   .info-value {
     font-size: 13px;
     color: $color-text-primary;
+    word-break: break-all;
   }
+}
+
+.info-item-wide {
+  grid-column: 1 / -1;
 }
 
 .markdown-body {

@@ -1,0 +1,86 @@
+{
+  "index_patterns": ["soc-ai-*"],
+  "priority": 200,
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_replicas": 0,
+        "codec": "best_compression"
+      }
+    },
+    "mappings": {
+      "dynamic": true,
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "ai": {
+          "properties": {
+            "source_ip": { "type": "ip" },
+            "destination_ip": { "type": "ip" },
+            "soc_name": { "type": "keyword" },
+            "alert_signature": { "type": "text", "norms": false },
+            "attack_result": { "type": "keyword" },
+            "confidence": { "type": "float" },
+            "alert_timestamp": { "type": "date" },
+            "threat_verdict": { "type": "keyword" },
+            "source_alert_id": { "type": "keyword" },
+            "attack_chain": { "type": "text", "norms": false },
+            "handling_suggestion": { "type": "text", "norms": false },
+            "payload": { "type": "text", "norms": false }
+          }
+        }
+      },
+      "dynamic_templates": [
+        {
+          "no_index_string": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "index": false,
+              "doc_values": false
+            }
+          }
+        },
+        {
+          "no_index_long": {
+            "match_mapping_type": "long",
+            "mapping": {
+              "type": "long",
+              "index": false,
+              "doc_values": false
+            }
+          }
+        },
+        {
+          "no_index_double": {
+            "match_mapping_type": "double",
+            "mapping": {
+              "type": "double",
+              "index": false,
+              "doc_values": false
+            }
+          }
+        },
+        {
+          "no_index_boolean": {
+            "match_mapping_type": "boolean",
+            "mapping": {
+              "type": "boolean",
+              "index": false,
+              "doc_values": false
+            }
+          }
+        },
+        {
+          "no_index_date": {
+            "match_mapping_type": "date",
+            "mapping": {
+              "type": "date",
+              "index": false,
+              "doc_values": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

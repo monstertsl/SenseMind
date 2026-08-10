@@ -12,7 +12,9 @@ class SystemConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False, default=1)
 
     # 存储优化
-    es_retention_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
+    # ai_retention_days：分析日志保留天数，仅对 soc-ai-* 索引有效
+    # raw_log_retention_days：原始日志保留天数，仅对 soc-* 索引有效（logs 目录固定 3 天，不受此控制）
+    ai_retention_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
     raw_log_retention_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
     audit_log_retention_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
 

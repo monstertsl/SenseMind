@@ -1,25 +1,52 @@
 # SenseMind 原始日志轮转配置
 # 由 ai-analyzer 容器内的 scheduler.py 每日 02:00 调用 logrotate 执行
-# - copytruncate: 复制后截断原文件，无需重启 Suricata/Zeek
-# - dateext: 归档文件以日期为后缀（如 eve.json-20260705），mtime 固定
-# - find -mtime +N -delete 清理超过保留期的归档（在 scheduler.py 中执行）
-# - rotate 90 设置一个足够大的上限，实际保留天数由 raw_log_retention_days 控制
+# 统一管理 suricata + zeek 日志轮转，保留天数由 scheduler.py 按 raw_log_retention_days 清理。
 
 /data/suricata/logs/eve.json
-/data/suricata/logs/fast.log
-/data/suricata/logs/stats.log
-/data/suricata/logs/suricata.log
-/data/zeek/logs/*.log
 {
     daily
     rotate 90
     copytruncate
     compress
-    delaycompress
     missingok
     notifempty
     nocreate
     dateext
+    dateyesterday
     dateformat -%Y%m%d
     su root root
+}
+
+# fast.log/stats.log/suricata.log 仅保留当天活跃文件，轮转后归档直接删除（rotate 0）
+/data/suricata/logs/fast.log
+/data/suricata/logs/stats.log
+/data/suricata/logs/suricata.log
+{
+    daily
+    rotate 0
+    copytruncate
+    missingok
+    notifempty
+    nocreate
+    su root root
+}
+
+/data/zeek/logs/conn.log
+/data/zeek/logs/http.log
+{
+    daily
+    rotate 90
+    create 0644 root root
+    compress
+    missingok
+    notifempty
+    dateext
+    dateyesterday
+    dateformat -%Y%m%d
+    su root root
+    postrotate
+        # zeek 不支持 SIGHUP reopen，通过 docker socket API restart zeek 容器，
+        # restart:unless-stopped 策略确保拉起，zeek 重新打开新日志文件偏移归零。
+        curl -s --unix-socket /var/run/docker.sock -X POST "http://docker/containers/zeek/restart" > /dev/null 2>&1 || true
+    endscript
 }

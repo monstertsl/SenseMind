@@ -279,7 +279,7 @@ sudo bash remove.sh
 | Suricata / Zeek | latest |
 | AI 分析中心 | Python 3.12 + LangChain + FastAPI |
 | Web 前端 | Vue 3 + TypeScript + Pinia + Element Plus |
-| 数据存储 | PostgreSQL 16 + Redis 7 |
+| 数据存储 | PostgreSQL 16 |
 
 ## 贡献
 

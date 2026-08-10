@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Delete, Edit } from '@element-plus/icons-vue'
+import { Plus, Refresh, Delete, Edit, QuestionFilled } from '@element-plus/icons-vue'
 import {
   listBypassRules, createBypassRule, updateBypassRule, deleteBypassRule,
   type BypassRuleItem,
@@ -89,6 +89,7 @@ const createForm = reactive({
   dst_ip: '',
   dst_port: '',
   host: '',
+  threat_name: '',
   remark: '',
 })
 const createErrors = reactive({
@@ -100,7 +101,7 @@ const createErrors = reactive({
 })
 
 function openCreateDialog() {
-  Object.assign(createForm, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '', remark: '' })
+  Object.assign(createForm, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '', threat_name: '', remark: '' })
   Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
   createDialogVisible.value = true
 }
@@ -129,8 +130,8 @@ function validateCreateForm(): boolean {
     ok = false
   }
   // 全空校验
-  if (!createForm.src_ip && !createForm.src_port && !createForm.dst_ip && !createForm.dst_port && !createForm.host) {
-    ElMessage.warning('至少填写一个四元组字段或 Host')
+  if (!createForm.src_ip && !createForm.src_port && !createForm.dst_ip && !createForm.dst_port && !createForm.host && !createForm.threat_name) {
+    ElMessage.warning('至少填写一个匹配字段（IP/端口/Host/威胁名）')
     return false
   }
   return ok
@@ -145,6 +146,7 @@ async function handleCreate() {
       dst_ip: createForm.dst_ip,
       dst_port: createForm.dst_port ? parseInt(createForm.dst_port) : 0,
       host: createForm.host,
+      threat_name: createForm.threat_name,
       remark: createForm.remark,
     } as any)
     ElMessage.success('白名单规则已创建')
@@ -164,6 +166,7 @@ const editForm = ref<{
   dst_ip: string
   dst_port: string
   host: string
+  threat_name: string
   remark: string
 } | null>(null)
 const editErrors = reactive({
@@ -214,6 +217,7 @@ function openEditDialog(row: BypassRuleItem) {
     dst_ip: row.dst_ip,
     dst_port: row.dst_port ? String(row.dst_port) : '',
     host: row.host,
+    threat_name: row.threat_name,
     remark: row.remark,
   }
   Object.assign(editErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
@@ -244,8 +248,8 @@ function validateEditForm(): boolean {
     editErrors.host = '请输入正确的域名（如 example.com）'
     ok = false
   }
-  if (!editForm.value.src_ip && !editForm.value.src_port && !editForm.value.dst_ip && !editForm.value.dst_port && !editForm.value.host) {
-    ElMessage.warning('至少保留一个四元组字段或 Host')
+  if (!editForm.value.src_ip && !editForm.value.src_port && !editForm.value.dst_ip && !editForm.value.dst_port && !editForm.value.host && !editForm.value.threat_name) {
+    ElMessage.warning('至少保留一个匹配字段（IP/端口/Host/威胁名）')
     return false
   }
   return ok
@@ -260,6 +264,7 @@ async function handleEdit() {
       dst_ip: editForm.value.dst_ip,
       dst_port: editForm.value.dst_port ? parseInt(editForm.value.dst_port) : 0,
       host: editForm.value.host,
+      threat_name: editForm.value.threat_name,
       remark: editForm.value.remark,
     } as any)
     ElMessage.success('白名单规则已更新')
@@ -314,7 +319,7 @@ function formatTime(t: string | null): string {
       <div class="toolbar-left">
         <el-input
           v-model="keyword"
-          placeholder="按 IP / Host / 备注搜索"
+          placeholder="按 IP / Host / 威胁名 / 备注搜索"
           clearable
           class="search-input"
           @keyup.enter="handleSearch"
@@ -348,6 +353,11 @@ function formatTime(t: string | null): string {
       <el-table-column label="Host" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="font-mono">{{ formatHost(row.host) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="威胁名" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="font-mono">{{ row.threat_name || '*' }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
@@ -403,9 +413,34 @@ function formatTime(t: string | null): string {
           <el-input v-model="createForm.dst_port" placeholder="留空表示任意" />
           <div v-if="createErrors.dst_port" class="field-error">{{ createErrors.dst_port }}</div>
         </el-form-item>
-        <el-form-item label="Host">
-          <el-input v-model="createForm.host" placeholder="域名，如 example.com（匹配该域名及所有子域名，忽略端口）" />
+        <el-form-item>
+          <template #label>
+            <span class="label-with-help">Host
+              <el-tooltip placement="top" popper-class="bypass-field-tooltip">
+                <template #content>
+                  匹配该域名及所有子域名，忽略端口<br />
+                  示例：example.com 匹配 example.com、www.example.com 等
+                </template>
+                <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-input v-model="createForm.host" placeholder="域名，如 example.com" />
           <div v-if="createErrors.host" class="field-error">{{ createErrors.host }}</div>
+        </el-form-item>
+        <el-form-item>
+          <template #label>
+            <span class="label-with-help">威胁名
+              <el-tooltip placement="top" popper-class="bypass-field-tooltip">
+                <template #content>
+                  大小写不敏感，子串匹配<br />
+                  示例：Heartbleed 可匹配 ET INFO Heartbleed Bug 等
+                </template>
+                <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-input v-model="createForm.threat_name" placeholder="告警签名关键词，如 Heartbleed" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" placeholder="如：LLM API 流量" />
@@ -436,9 +471,34 @@ function formatTime(t: string | null): string {
           <el-input v-model="editForm.dst_port" placeholder="留空表示任意" />
           <div v-if="editErrors.dst_port" class="field-error">{{ editErrors.dst_port }}</div>
         </el-form-item>
-        <el-form-item label="Host">
-          <el-input v-model="editForm.host" placeholder="域名，如 example.com（匹配该域名及所有子域名，忽略端口）" />
+        <el-form-item>
+          <template #label>
+            <span class="label-with-help">Host
+              <el-tooltip placement="top" popper-class="bypass-field-tooltip">
+                <template #content>
+                  匹配该域名及所有子域名，忽略端口<br />
+                  示例：example.com 匹配 example.com、www.example.com 等
+                </template>
+                <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-input v-model="editForm.host" placeholder="域名，如 example.com" />
           <div v-if="editErrors.host" class="field-error">{{ editErrors.host }}</div>
+        </el-form-item>
+        <el-form-item>
+          <template #label>
+            <span class="label-with-help">威胁名
+              <el-tooltip placement="top" popper-class="bypass-field-tooltip">
+                <template #content>
+                  大小写不敏感，子串匹配<br />
+                  示例：Heartbleed 可匹配 ET INFO Heartbleed Bug 等
+                </template>
+                <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-input v-model="editForm.threat_name" placeholder="告警签名关键词，如 Heartbleed" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="editForm.remark" placeholder="如：LLM API 流量" />
@@ -521,6 +581,21 @@ function formatTime(t: string | null): string {
   font-family: $font-mono;
   color: #e6a23c;
 }
+
+.label-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.field-help-icon {
+  font-size: 14px;
+  color: #94a3b8;
+  cursor: help;
+  &:hover {
+    color: $color-primary;
+  }
+}
 </style>
 
 <!-- 非 scoped：el-dialog teleport 到 body，需全局样式 -->
@@ -544,5 +619,10 @@ function formatTime(t: string | null): string {
     font-feature-settings: 'tnum';
     font-weight: 600;
   }
+}
+
+.bypass-field-tooltip {
+  max-width: 300px;
+  line-height: 1.6;
 }
 </style>

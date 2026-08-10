@@ -171,22 +171,6 @@ services:
     networks:
       - elastic
 
-  redis:
-    <<: *default-logging
-    image: redis:7-alpine
-    container_name: redis
-    restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly no
-    ports:
-      - "127.0.0.1:6379:6379"
-    networks:
-      - elastic
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
   postgres:
     <<: *default-logging
     image: postgres:16-alpine
@@ -233,7 +217,6 @@ services:
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
       # 专用 API Key（只读，仅授权 soc-* / soc-ai-* 索引），查询 API 优先使用
       - ES_READER_API_KEY=${ES_READER_API_KEY}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       # PostgreSQL 连接（复用 ELASTIC_PASSWORD 作为 postgres 密码）
       - DATABASE_URL=postgresql+psycopg2://postgres:${ELASTIC_PASSWORD}@postgres:5432/sensemind
       # JWT 签名密钥（deploy.sh 生成，不可变更）
@@ -243,8 +226,6 @@ services:
 
     depends_on:
       elasticsearch:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       postgres:
         condition: service_healthy

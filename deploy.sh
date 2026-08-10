@@ -245,30 +245,33 @@ mkdir -p /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/s
 chmod 755 /data /data/suricata /data/zeek /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
 
 # 创建 Zeek 日志过滤脚本（仅保留 conn 做全流量记录，dns/http/ssl 不再输出）。
-# 注意：必须创建为“文件”，docker 才会把宿主机路径作为文件挂载到 /opt/zeek-log-filter.zeek；
-# 若此处漏建，docker 会自动用同名“空目录”挂载，导致 zeek 把目录当包加载而崩溃循环。
+# 注意：必须创建为"文件"，docker 才会把宿主机路径作为文件挂载到 /opt/zeek-log-filter.zeek；
+# 若此处漏建，docker 会自动用同名"空目录"挂载，导致 zeek 把目录当包加载而崩溃循环。
 if [ ! -f /data/zeek/zeek-log-filter.zeek ]; then
     cat > /data/zeek/zeek-log-filter.zeek <<'ZEEK_FILTER_EOF'
 # SenseMind Zeek 日志过滤脚本
-# 仅保留 conn 日志流做全流量记录；dns / http / ssl 不再输出（其余协议本就禁用）。
+# 保留 conn + http 日志；dns / ssl / packet_filter 不再输出。
 # 本脚本随 zeek 启动命令加载（未经过 site/local.zeek）。
 #
-# 实现：运行时遍历 Log::active_streams（priority=-10，在各协议脚本 zeek_init
-# 创建日志流之后执行）反向保留，其余一律 disable_stream。
-# 相比旧的逐个 @ifdef 点名禁用，此法可彻底规避两类问题：
-#   1) 漏项：新协议（kerberos/rdp/sip/pe/postgresql/ldap_search/mqtt_subscribe 等）
-#      无需逐个补充，凡不在保留集内一律禁用；
-#   2) 编译期命名空间不可见：@ifdef 会对 analyzer/mysql/quic 等判假跳过导致禁用失效，
-#      而遍历运行时已存在的 active_streams 不受此限制。
-# 注：conn 属 base 协议，命名空间始终可见，直接引用其 Log::ID 安全。
+# 实现：
+#   1. 运行时遍历 Log::active_streams 反向保留（priority=-10），禁用基础协议流
+#   2. PacketFilter::LOG 在 zeek_init &priority=5 创建（晚于 -10），且第一条记录在
+#      zeek_init 期间就写入，disable_stream 来不及。改用 hook PacketFilter::log_policy
+#      直接 break 否决所有写入，从根本上阻止 packet_filter.log 产生。
+#   注：zeek priority 数值越小越先执行。
+
+# Zeek 日志轮转统一由 logrotate 管理（create 模式 + postrotate docker restart zeek）。
+redef LogAscii::enable_leftover_log_rotation = T;
 
 module SenseMindFilter;
 
-# 保留的日志流：仅 conn（全流量记录）
+# 保留的日志流：conn（全流量记录）+ http（联合查询语义分析）
 const keep_streams: set[Log::ID] = {
     Conn::LOG,
+    HTTP::LOG,
 };
 
+# 禁用基础协议流（在默认 priority 的 zeek_init 之后执行）
 event zeek_init() &priority=-10
     {
     # 先收集待禁用的流，再统一禁用；避免在遍历 active_streams 的同时
@@ -283,13 +286,14 @@ event zeek_init() &priority=-10
         Log::disable_stream(sid);
     }
 
+# PacketFilter::LOG 在 zeek_init &priority=5 创建，第一条记录在 install() 里立即写入，
+# disable_stream（即使 priority=10）来不及拦截。直接 hook 其 log_policy 用 break 否决。
+hook PacketFilter::log_policy(rec: PacketFilter::Info, id: Log::ID, filter: Log::Filter)
+    {
+    break;
+    }
+
 # 减少 conn.log 体积：写盘前剔除与 SOC 分析冗余或纯噪音的连接。
-# 不丢安全价值——443/80/业务应用端口全部保留，供威胁狩猎与横向移动检测。
-# 排除项（基于实际流量分析）：
-#   - DNS(53)：DNS 连接噪音，conn 中冗余（约占 14%）
-#   - LLMNR(5355)/mDNS(5353)/SSDP(1900)/NetBIOS(137/138/139)：本地发现广播噪音
-#   - NTP(123)/DHCP(67/68)：无安全分析价值
-#   - 组播/广播目的地址（224.0.0.0/4，如 LLMNR 224.0.0.252）
 const conn_noise_ports: set[port] = {
     53/udp, 53/tcp,
     5355/udp, 5353/udp, 1900/udp,
@@ -536,6 +540,82 @@ chmod 600 "$ENV_FILE"
 
 echo "[+] ES Reader API Key 已写入 .env"
 
+# 3.5.5 初始化 ES 索引模板（索引优化：白名单字段建索引 + best_compression）
+# soc-* 模板（原始日志）：仅对搜索/过滤/排序字段建索引，其余 250+ 字段仅存储不索引
+# soc-ai-* 模板（AI 研判）：仅对搜索/聚合字段建索引
+# 模板永久注册在 ES 中，新索引自动套用，旧索引不受影响
+echo "[*] 3.5.5 正在初始化 ES 索引模板与索引优化..."
+ES_TMPL_DIR="$BASE_DIR/ai-analyzer/scripts"
+# 注意：curl 不带 -f 时 HTTP 4xx/5xx 仍返回退出码 0，必须用 -w 提取状态码判断注册是否成功
+TMPL_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    -u "elastic:${ELASTIC_PASSWORD}" \
+    -X PUT "https://localhost:9200/_index_template/soc-template" \
+    -H "Content-Type: application/json" \
+    -d @"$ES_TMPL_DIR/es_template_soc.json") || true
+if [ "$TMPL_CODE" != "200" ]; then
+    echo "[-] soc-template 注册失败 (HTTP ${TMPL_CODE:-000})，请检查 es_template_soc.json"
+    exit 1
+fi
+echo "[+] soc-template 已注册"
+
+TMPL_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    -u "elastic:${ELASTIC_PASSWORD}" \
+    -X PUT "https://localhost:9200/_index_template/soc-ai-template" \
+    -H "Content-Type: application/json" \
+    -d @"$ES_TMPL_DIR/es_template_soc_ai.json") || true
+if [ "$TMPL_CODE" != "200" ]; then
+    echo "[-] soc-ai-template 注册失败 (HTTP ${TMPL_CODE:-000})，请检查 es_template_soc_ai.json"
+    exit 1
+fi
+echo "[+] soc-ai-template 已注册"
+
+# 修正现有索引 replicas → 0（单节点无需副本），不影响新索引（模板已设 0）
+# 使用通配符幂等操作，多次执行无副作用
+curl -sk -u "elastic:${ELASTIC_PASSWORD}" \
+    -X PUT "https://localhost:9200/soc-*/_settings" \
+    -H "Content-Type: application/json" \
+    -d '{"index":{"number_of_replicas":0}}' >/dev/null 2>&1 || true
+curl -sk -u "elastic:${ELASTIC_PASSWORD}" \
+    -X PUT "https://localhost:9200/soc-ai-*/_settings" \
+    -H "Content-Type: application/json" \
+    -d '{"index":{"number_of_replicas":0}}' >/dev/null 2>&1 || true
+echo "[+] 索引 replicas 已设为 0（含已有索引）"
+
+# 3.5.5b 验证新索引可写入
+# PUT 模板成功（HTTP 200）≠ mapping 有效。若动态模板有误（如 match_mapping_type:"*" 误匹配
+# object 类型应用 doc_values:false），写入会整条 400 被拒，Logstash 直接 drop 导致 soc-* 静默丢数据。
+# 此处向临时索引（自动套用刚注册的模板）写入一条含嵌套对象的最小文档，验证通过后删除。
+verify_index_write() {
+    local prefix="$1"
+    local idx="${prefix}-verify-$(date +%s)"
+    local code
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+        -u "elastic:${ELASTIC_PASSWORD}" \
+        -X POST "https://localhost:9200/${idx}/_doc" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "@timestamp": "2026-08-14T00:00:00.000Z",
+          "event": {"dataset": "verify", "kind": "event"},
+          "network": {"community_id": "verify-test"},
+          "source": {"ip": "10.0.0.1", "port": 12345},
+          "some_nested_object": {"sub": "value"},
+          "some_long_field": 42
+        }') || true
+    curl -sk -u "elastic:${ELASTIC_PASSWORD}" \
+        -X DELETE "https://localhost:9200/${idx}" >/dev/null 2>&1 || true
+    if [ "$code" = "201" ] || [ "$code" = "200" ]; then
+        echo "[+] ${prefix}-template 写入验证通过 (HTTP $code)"
+        return 0
+    fi
+    echo "[-] ${prefix}-template 写入验证失败 (HTTP ${code:-000})"
+    echo "[-] 请检查 ai-analyzer/scripts/es_template_soc*.json 的动态模板配置"
+    return 1
+}
+
+echo "[*] 3.5.5b 验证新索引可写入..."
+verify_index_write "soc" || exit 1
+verify_index_write "soc-ai" || exit 1
+
 echo "[*] 3.5 正在生成 JWT 与加密密钥..."
 # SECRET_KEY: JWT 签名密钥（32 字节 hex），用于认证 token 签发与校验
 # ENCRYPT_KEY: TOTP secret 加密密钥，用于 Fernet/PBKDF2 派生
@@ -587,10 +667,17 @@ docker compose up -d --force-recreate ai-analyzer
 # jasonish/suricata 容器启动时会自动复制默认配置到挂载目录
 SURICATA_YAML="/data/suricata/etc/suricata.yaml"
 if [ -f "$SURICATA_YAML" ]; then
-    # 创建 local.rules 文件（AI 自动生成的本地规则）
+    # 复制项目中的 local.rules 作为初始本地规则，后续可直接编辑项目文件更新
     # 规则目录与 suricata.yaml 的 default-rule-path 一致: /var/lib/suricata/rules
-    touch /data/suricata/lib/rules/local.rules
-    chmod 666 /data/suricata/lib/rules/local.rules
+    if [ -f "$BASE_DIR/suricata/local.rules" ]; then
+        cp "$BASE_DIR/suricata/local.rules" /data/suricata/lib/rules/local.rules
+        chmod 644 /data/suricata/lib/rules/local.rules
+        echo "[+] local.rules 已从项目目录复制到 /data/suricata/lib/rules/"
+    else
+        echo "[!] 警告：$BASE_DIR/suricata/local.rules 不存在，创建空文件"
+        touch /data/suricata/lib/rules/local.rules
+        chmod 644 /data/suricata/lib/rules/local.rules
+    fi
 
     # 开启 alert 事件的 HTTP body 记录，供 AI 判断攻击是否成功
     # http-body: Base64 编码的完整响应体（保留中文），由 ai-analyzer 解码
@@ -604,10 +691,16 @@ if [ -f "$SURICATA_YAML" ]; then
       -e 's/http-body-inline: auto/http-body-inline: yes/' \
       "$SURICATA_YAML"
 
-    # 添加 local.rules 到 rule-files（相对于 default-rule-path，只需写文件名）
+    # 替换 suricata-update 的 suricata.rules 为 combined.rules（三个外部规则集合并）
+    # 保留 local.rules 用于自定义规则（AI 生成 + 手写）
     # suricata 8.x unix-command 默认 enabled: auto，无需额外配置
+    if grep -q 'suricata\.rules' "$SURICATA_YAML"; then
+        sed -i 's/- suricata\.rules/- combined.rules/' "$SURICATA_YAML"
+    fi
+    grep -q 'combined.rules' "$SURICATA_YAML" || \
+        sed -i '/^rule-files:/a\  - combined.rules' "$SURICATA_YAML"
     if ! grep -q 'local.rules' "$SURICATA_YAML"; then
-        sed -i '/- suricata\.rules/a\  - local.rules' "$SURICATA_YAML"
+        sed -i '/- combined\.rules/a\  - local.rules' "$SURICATA_YAML"
     fi
 
     # 源头禁用 eve-log 的 stats/flow/mdns/files/snmp/dcerpc（SOC 不入库，纯协议元数据噪音）
@@ -621,95 +714,127 @@ if [ -f "$SURICATA_YAML" ]; then
       -e 's/^([[:space:]]{8})- dcerpc$/# \1- dcerpc/' \
       "$SURICATA_YAML"
 
-    docker restart suricata
-    echo "[+] Suricata 配置已更新并重启（含 local.rules 加载，suricatasc 热加载就绪）"
+    echo "[+] Suricata 配置已更新（规则文件将随后加载）"
 else
     echo "[-] 警告：Suricata 配置文件 $SURICATA_YAML 未找到，跳过配置修改。"
 fi
 
-echo "[*] 4.3 部署 Suricata 规则抑制配置 disable.conf（按组禁用误报，重部署不复活）..."
-DISABLE_CONF="/data/suricata/lib/rules/disable.conf"
-SRC_DISABLE_CONF="$(dirname "$0")/suricata/disable.conf"
-if [ -f "$SRC_DISABLE_CONF" ]; then
-    cp -f "$SRC_DISABLE_CONF" "$DISABLE_CONF"
-    chmod 644 "$DISABLE_CONF"
-    echo "[+] disable.conf 已从仓库拷贝: $SRC_DISABLE_CONF -> $DISABLE_CONF"
-else
-    echo "[!] 警告：仓库 suricata/disable.conf 不存在，跳过（规则抑制将不生效）"
+echo "[*] 4.3 关闭所有 suricata-update 规则源并清空 legacy 规则..."
+# 先更新源列表，再全部禁用（抛弃 suricata-update 体系，改用自定义规则集）
+docker exec --user suricata suricata suricata-update update-sources 2>/dev/null || true
+docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{print \$2}' | while read src; do suricata-update disable-source \"\$src\" 2>/dev/null || true; done"
+# 清空 suricata-update 生成的旧规则文件（combined.rules 将取而代之）
+sudo bash -c 'echo "" > /data/suricata/lib/rules/suricata.rules' 2>/dev/null || true
+echo "[+] 所有 suricata-update 源已关闭，旧规则已清空"
+
+echo "[*] 5. 下载三个外部规则集并合并到 combined.rules..."
+COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
+: > "$COMBINED_RULES"  # 清空/创建 combined.rules
+
+TMP_RULES=$(mktemp -d)
+# 确保退出时清理临时目录
+cleanup_tmp() { rm -rf "$TMP_RULES"; }
+trap cleanup_tmp EXIT
+
+# 1. PT Rules (Positive Technologies) — 需要 User-Agent 否则 403
+echo "[*] 5.1 下载 PT Rules (Positive Technologies)..."
+PT_OK=false
+if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+    -O "$TMP_RULES/ptopen-all.rules.tar.gz" \
+    "https://rules.ptsecurity.com/files/ptopen-all.rules.tar.gz"; then
+    if [ -f "$TMP_RULES/ptopen-all.rules.tar.gz" ] && [ -s "$TMP_RULES/ptopen-all.rules.tar.gz" ]; then
+        mkdir -p "$TMP_RULES/ptrules"
+        tar -xzf "$TMP_RULES/ptopen-all.rules.tar.gz" -C "$TMP_RULES/ptrules" 2>/dev/null || true
+        PT_COUNT=$(find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+        find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+        PT_OK=true
+        echo "  PT Rules: 已提取 ${PT_COUNT} 条规则"
+    fi
+fi
+if [ "$PT_OK" != "true" ]; then
+    echo "  [!] PT Rules 下载失败或为空，跳过"
 fi
 
-echo "[*] 5. 更新 Suricata 规则 suricata-update (-f)，将显示实时输出："
+# 2. Stamus Lateral Movement Ruleset
+echo "[*] 5.2 下载 Stamus Lateral Movement Ruleset..."
+STAMUS_OK=false
+if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+    -O "$TMP_RULES/stamus-lateral-rules.tar.gz" \
+    "https://ti.stamus-networks.io/open/stamus-lateral-rules.tar.gz"; then
+    if [ -f "$TMP_RULES/stamus-lateral-rules.tar.gz" ] && [ -s "$TMP_RULES/stamus-lateral-rules.tar.gz" ]; then
+        mkdir -p "$TMP_RULES/stamus"
+        tar -xzf "$TMP_RULES/stamus-lateral-rules.tar.gz" -C "$TMP_RULES/stamus" 2>/dev/null || true
+        STAMUS_COUNT=$(find "$TMP_RULES/stamus" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+        find "$TMP_RULES/stamus" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+        STAMUS_OK=true
+        echo "  Stamus Lateral: 已提取 ${STAMUS_COUNT} 条规则"
+    fi
+fi
+if [ "$STAMUS_OK" != "true" ]; then
+    echo "  [!] Stamus Lateral Movement 下载失败或为空，跳过"
+fi
 
-docker exec --user suricata suricata suricata-update update-sources || true
+# 3. Snort Community Rules
+echo "[*] 5.3 下载 Snort Community Rules..."
+SNORT_OK=false
+if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+    -O "$TMP_RULES/community-rules.tar.gz" \
+    "https://www.snort.org/downloads/community/community-rules.tar.gz"; then
+    if [ -f "$TMP_RULES/community-rules.tar.gz" ] && [ -s "$TMP_RULES/community-rules.tar.gz" ]; then
+        mkdir -p "$TMP_RULES/snort"
+        tar -xzf "$TMP_RULES/community-rules.tar.gz" -C "$TMP_RULES/snort" 2>/dev/null || true
+        SNORT_COUNT=$(find "$TMP_RULES/snort" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+        find "$TMP_RULES/snort" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+        SNORT_OK=true
+        echo "  Snort Community: 已提取 ${SNORT_COUNT} 条规则"
+    fi
+fi
+if [ "$SNORT_OK" != "true" ]; then
+    echo "  [!] Snort Community 下载失败或为空，跳过"
+fi
 
-echo "[*] 正在启用免费 Suricata 规则源（排除低价值噪音源）..."
-# 永久排除的商业/低价值源（其余免费源保留启用）：oisf/trafficid、pawpatrules、julioliraup/antiphishing、
-# ipfire/dbl、aleksibovellan/nmap、tgreen/hunting（github 常超时+误报高）、the-hunters-ledger/open（THL 误报偏高）。
-ENABLED_MSG=$(docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | awk '/^Name:/{name=\$2} /^[[:space:]]+License:/{if(\$2!=\"Commercial\" && name!=\"oisf/trafficid\" && name!=\"pawpatrules\" && name!=\"julioliraup/antiphishing\" && name!=\"ipfire/dbl\" && name!=\"aleksibovellan/nmap\" && name!=\"tgreen/hunting\" && name!=\"the-hunters-ledger/open\") print name}' | tee /tmp/free_sources.txt | xargs -r -n1 suricata-update enable-source >/dev/null 2>&1; count=\$(wc -l < /tmp/free_sources.txt); rm -f /tmp/free_sources.txt; echo \"已启用 \${count} 个免费规则源（已永久排除 tgreen/hunting、the-hunters-ledger/open）\"")
-echo "$ENABLED_MSG"
+# 统计并设置权限
+TOTAL_COUNT=$(grep -c '^alert\|^drop\|^reject' "$COMBINED_RULES" 2>/dev/null || echo 0)
+chmod 644 "$COMBINED_RULES"
+echo "[+] combined.rules 已生成（${TOTAL_COUNT} 条规则），路径: $COMBINED_RULES"
 
-TMP_LOG=$(mktemp)
-set +e
-# 首次部署（零缓存）时，部分源可能无缓存且拉取超时 -> suricata-update 致命中断、不写规则、disable.conf 不生效。
-# 重试：每次成功的源会建立缓存，后续该源即用缓存继续，逐步逼近完整规则集并让 disable.conf 生效。
-MAX_RETRY=8
-RET=1
-for i in $(seq 1 $MAX_RETRY); do
-    docker exec --user suricata suricata suricata-update -f --disable-conf /var/lib/suricata/rules/disable.conf 2>&1 | tee "$TMP_LOG"
-    RET=${PIPESTATUS[0]}
-    if [ "$RET" -eq 0 ]; then
+# 规则文件在宿主机，suricata 容器通过 /var/lib/suricata/rules 挂载读取
+# 先用 suricata -T 校验规则语法，自动剔除 Snort 社区规则中不兼容的规则，通过后再重启加载
+echo "[*] 5.4 校验规则语法并自动修复不兼容规则 (suricata -T)..."
+MAX_FIX_RETRY=5
+for fix_i in $(seq 1 $MAX_FIX_RETRY); do
+    TEST_OUTPUT=$(docker exec suricata suricata -T -c /etc/suricata/suricata.yaml 2>&1) || true
+    TEST_RC=$?
+    echo "$TEST_OUTPUT" | grep -E "rule|Rule|error|Error|WARN|FAIL|loaded|FAILED" | tail -10
+    if [ "$TEST_RC" -eq 0 ]; then
+        echo "[+] 规则语法校验通过，重启 suricata 加载新规则..."
+        docker restart suricata
         break
     fi
-    echo "[-] 第 $i/$MAX_RETRY 次规则更新失败（部分源拉取超时），10s 后重试以累积缓存..." >&2
-    sleep 10
+    # 从错误输出中提取行号（如 "at line 5139"），删除对应规则行
+    ERR_LINE=$(echo "$TEST_OUTPUT" | grep -oP 'at line \K\d+' | head -1)
+    if [ -n "$ERR_LINE" ]; then
+        echo "  [!] 第 ${fix_i}/${MAX_FIX_RETRY} 次：删除 combined.rules 第 ${ERR_LINE} 行不兼容规则"
+        sed -i "${ERR_LINE}d" "$COMBINED_RULES"
+    else
+        echo "[!] 规则语法校验失败（${fix_i}/${MAX_FIX_RETRY}），且无法定位错误行号，跳过重启" >&2
+        break
+    fi
 done
-set -e
-
-if [ "$RET" -eq 0 ]; then
-    echo "[+] Suricata 规则已下载并重新加载。"
-    rm -f "$TMP_LOG"
-else
-    echo "[-] suricata-update 连续 $MAX_RETRY 次失败（退出码 $RET）" >&2
-    echo "[-] suricata-update 错误摘要：" >&2
-    grep -v "<Info>" "$TMP_LOG" | tail -n 30 >&2
-    rm -f "$TMP_LOG"
-
-    echo "[-] Suricata 引擎日志（最后 200 行）：" >&2
-    docker exec suricata sh -c 'tail -n 200 /var/log/suricata/suricata.log 2>/dev/null || true' >&2
-
-    # 兜底：用已建缓存离线生成规则并应用 disable.conf。
-    # 注：若仍有源“完全无缓存”（持续超时从未成功），--offline 会因该源缺失而致命，
-    # 此时 disable.conf 仅对成功加载的源生效；该源规则缺失，待网络恢复后手动补拉即可。
-    echo "[-] 尝试 --offline 兜底（用已有缓存生成规则并应用 disable.conf）..."
-    docker exec --user suricata suricata suricata-update -f --offline --disable-conf /var/lib/suricata/rules/disable.conf 2>&1 | tail -8
-    echo -e "\033[33m[-] 部分规则源可能仍因持续超时未加载。disable.conf 已对成功加载的源生效。网络恢复后可手动补拉：\033[36mdocker exec --user suricata suricata suricata-update -f --disable-conf /var/lib/suricata/rules/disable.conf\033[33m\033[0m" >&2
-fi
-
-# 规则抑制已统一由 suricata-update --disable-conf 处理（见上方生成的 disable.conf），
-# 不再用 sed 注释 suricata.rules（suricata-update -f 会重写规则，sed 会被覆盖）。
-docker restart suricata
 
 # 6. 阅后即焚：擦除 Shell 进程中的环境变量
 unset PUID PGID
-echo "[+] =============================================="
-echo "[+] SOC 堆栈已安全启动。当前 Shell 敏感凭据已全数清空！"
 
-# 7. 打印提示信息
-ENV_FILE=".env"
-if [ -f "$ENV_FILE" ]; then
-    ELASTIC_PASSWORD=$(grep '^ELASTIC_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)
-else
-    echo "❌ 未找到 $ENV_FILE 文件"
-    exit 1
-fi
-
+# 打印提示信息（密码从 .env 读取，方便部署者访问；<IP> 为固定占位符，无需动态获取）
+ENV_FILE="$BASE_DIR/.env"
+ELASTIC_PASSWORD=$(grep '^ELASTIC_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
 if [ -z "$ELASTIC_PASSWORD" ]; then
-    echo "❌ ELASTIC_PASSWORD 为空，请检查 $ENV_FILE"
+    echo "[-] 错误：ELASTIC_PASSWORD 为空，请检查 $ENV_FILE"
     exit 1
 fi
 
-# 打印提示信息（<IP> 为固定占位符，无需动态获取）
 echo "[+] =============================================="
-echo " 默认用户名/密码：admin/${ELASTIC_PASSWORD}"
-echo " 访问地址：https://<IP>:8080"
+echo "[+] SOC 堆栈已安全启动！"
+echo "[+] 访问地址：https://<IP>:8080"
+echo "[+] 默认用户名/密码：admin/${ELASTIC_PASSWORD}"
 echo "[+] =============================================="

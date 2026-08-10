@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
 
+# 清理任务在 02:00 Asia/Shanghai 调度，但容器为 UTC；日期类判断须用 UTC+8
+# 以对齐用户日历，否则 datetime.now() 取 UTC 会比用户日历晚一天、多留一天。
+_SHANGHAI_TZ = timezone(timedelta(hours=8))
+
 
 def _build_admin_es_client() -> Elasticsearch:
     """使用 elastic 超级用户凭据构建 ES 客户端（索引删除需要写权限）。"""
@@ -45,8 +49,13 @@ def _load_config(db) -> SystemConfig:
     return cfg
 
 
+# logs 目录（/data/suricata/logs、/data/zeek/logs）原始日志固定保留天数。
+# 不受 DB 参数控制：存储优化页的"原始日志保留天数"仅作用于 soc-* 索引。
+RAW_LOG_FILE_RETENTION_DAYS = 3
+
+
 def cleanup_raw_logs() -> None:
-    """清理 suricata / zeek 原始日志文件（保留 raw_log_retention_days 天）。
+    """清理 suricata / zeek 原始日志文件（logs 目录固定保留 3 天，不受参数控制）。
 
     两步走：
     1. 调用 logrotate 按 daily + copytruncate 模式轮转活跃日志：
@@ -58,18 +67,21 @@ def cleanup_raw_logs() -> None:
     日期即轮转当天。直接按文件名日期判断是否超过保留期，避免
     find -mtime +N 因归档 mtime 为轮转时刻而多留一天的语义陷阱
     （原实现导致保留 3 天时 16 号归档直到第 5 天才被删）。
+
+    仅当实际清理了归档文件时才记录系统日志（清理 0 条不记录）。
     """
-    with SessionLocal() as db:
-        cfg = _load_config(db)
-        days = cfg.raw_log_retention_days if cfg else 7
+    days = RAW_LOG_FILE_RETENTION_DAYS
 
     try:
-        # 1. logrotate 轮转（copytruncate 不重启 Suricata/Zeek）
-        #    -f 强制轮转，不依赖状态文件（scheduler 每天只调用一次，无需防重复）
+        # 1. logrotate 强制轮转（suricata copytruncate / zeek create+postrotate restart）
+        #    -f 强制轮转，不依赖 state 判断"今天是否轮转过"——scheduler 每天只跑一次，
+        #    到点即转，逻辑简单可靠。state 文件仍持久化到挂载目录（logrotate 内部需要）。
+        logrotate_state = "/data/suricata/logs/.logrotate.status"
         try:
             result = subprocess.run(
-                ["logrotate", "-f", "/etc/logrotate.d/sensemind-raw-logs"],
-                capture_output=True, text=True, timeout=1800,
+                ["logrotate", "-f", "-s", logrotate_state, "/etc/logrotate.d/sensemind-raw-logs"],
+                capture_output=True, text=True, timeout=7200,
+                env={**os.environ, "TZ": "Asia/Shanghai"},
             )
             if result.returncode != 0:
                 logger.warning("logrotate 返回非零: %s", result.stderr.strip())
@@ -80,21 +92,21 @@ def cleanup_raw_logs() -> None:
         except Exception as e:
             logger.warning("logrotate 调用失败: %s", e)
 
-        # 2. 按文件名日期清理过期归档（归档名含 YYYYMMDD 轮转日期）
-        #    只处理带日期后缀的归档（eve.json-* / *.log-*），不动活跃文件
-        #    （活跃文件 eve.json / conn.log / fast.log 等无日期后缀，自动跳过）
-        #    cutoff = 今天 - days，文件名日期 < cutoff 即超过保留期
+        # 2. 清理过期归档文件
+        #    suricata + zeek 统一由 logrotate 轮转，归档名均含 YYYYMMDD
+        #    （eve.json-20260724 / conn.log-20260724），按文件名日期统一判断。
+        #    cutoff 用 Asia/Shanghai(UTC+8)：任务在 02:00 UTC+8 调度，但容器为 UTC，
+        #    datetime.now() 取 UTC 会比用户日历晚一天导致多留一天（7/24 归档在 7/28 才删）。
         date_re = re.compile(r"-(\d{8})")
-        cutoff_date = (datetime.now() - timedelta(days=days)).date()
+        cutoff_date = (datetime.now(_SHANGHAI_TZ) - timedelta(days=days)).date()
         deleted_count = 0
         for log_dir in ("/data/suricata/logs", "/data/zeek/logs"):
             if not os.path.isdir(log_dir):
                 logger.warning("目录不存在，跳过: %s", log_dir)
                 continue
             for name in os.listdir(log_dir):
-                # 仅匹配带日期后缀的归档，跳过活跃文件
-                if not (name.startswith("eve.json-") or ".log-" in name):
-                    continue
+                path = os.path.join(log_dir, name)
+                # 归档文件含日期后缀（YYYYMMDD），活跃文件（无日期后缀）跳过
                 m = date_re.search(name)
                 if not m:
                     continue
@@ -102,24 +114,16 @@ def cleanup_raw_logs() -> None:
                     file_date = datetime.strptime(m.group(1), "%Y%m%d").date()
                 except ValueError:
                     continue
-                if file_date < cutoff_date:
-                    path = os.path.join(log_dir, name)
-                    try:
-                        os.remove(path)
-                        deleted_count += 1
-                        logger.info("删除过期原始日志归档: %s", path)
-                    except OSError as e:
-                        logger.warning("删除失败 %s: %s", path, e)
+                if file_date >= cutoff_date:
+                    continue
+                try:
+                    os.remove(path)
+                    deleted_count += 1
+                    logger.info("删除过期原始日志归档: %s", path)
+                except OSError as e:
+                    logger.warning("删除失败 %s: %s", path, e)
 
-        # 仅当实际清理了归档文件时才记录日志（清理 0 条不记录）
-        if deleted_count > 0:
-            with SessionLocal() as db:
-                write_system_log(
-                    db, action="cleanup_raw_log",
-                    target_type="system", target_id="raw-logs",
-                    detail=f"清理 {days} 天前原始日志归档 {deleted_count} 个（suricata/zeek）",
-                    operator="system",
-                )
+        # 文件清理成功不写系统日志（仅容器日志），只在失败时写日志
         logger.info("原始日志清理完成：删除 %d 个归档（保留 %s 天）", deleted_count, days)
     except Exception as e:
         logger.error("原始日志清理任务失败: %s", e, exc_info=True)
@@ -135,19 +139,21 @@ def cleanup_raw_logs() -> None:
             pass
 
 
-def cleanup_es_indices() -> None:
-    """删除超过 es_retention_days 的 soc-YYYY.MM.DD / soc-ai-YYYY.MM.DD 索引。"""
-    with SessionLocal() as db:
-        cfg = _load_config(db)
-        days = cfg.es_retention_days if cfg else 30
+def _cleanup_es_indices(pattern: str, days: int, action: str, log_action: str) -> None:
+    """删除超过 days 天的匹配 pattern 的 ES 索引。
 
+    仅当实际删除了索引时才记录系统日志（log_action，清理 0 条不记录）；
+    失败时也写系统日志（log_action）以便排障。
+    """
     try:
         es = _build_admin_es_client()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        resp = es.indices.get(index="soc-*,soc-ai-*", expand_wildcards=["open", "closed"])
+        # ignore_unavailable：模式无匹配索引时 ES 返回 404，必须忽略，
+        # 否则（如 soc-ai-* 暂无索引）每天任务都会误报失败并写系统日志
+        resp = es.indices.get(index=pattern, expand_wildcards=["open", "closed"],
+                              ignore_unavailable=True)
         to_delete = []
         for index_name in resp.keys():
-            # 解析索引名末尾日期：soc-2026.07.02 / soc-ai-2026.07.02
             # 索引名格式：soc-2026.07.17 / soc-ai-2026.07.17
             # 以最后一个 "-" 切分，后半段即 "YYYY.MM.DD"
             date_part = index_name.rsplit("-", 1)[-1]
@@ -160,29 +166,48 @@ def cleanup_es_indices() -> None:
 
         if to_delete:
             es.indices.delete(index=",".join(to_delete), ignore_unavailable=True)
-
-        # 仅当实际删除了索引时才记录日志（清理 0 条不记录）
-        if to_delete:
+            # 仅当实际删除了索引时才记录系统日志（清理 0 条不记录）
             with SessionLocal() as db:
                 write_system_log(
-                    db, action="cleanup_es_log",
+                    db, action=log_action,
                     target_type="system", target_id="es-indices",
-                    detail=f"删除 {len(to_delete)} 个超过 {days} 天的 ES 索引: {','.join(to_delete[:10])}{'...' if len(to_delete) > 10 else ''}",
+                    detail=f"{action}：删除 {len(to_delete)} 个超过 {days} 天的索引: "
+                           f"{','.join(to_delete[:10])}{'...' if len(to_delete) > 10 else ''}",
                     operator="system",
                 )
-        logger.info("ES 索引清理完成：删除 %d 个（保留 %s 天）", len(to_delete), days)
+        logger.info("%s 索引清理完成：删除 %d 个（保留 %s 天）", action, len(to_delete), days)
     except Exception as e:
-        logger.error("ES 索引清理任务失败: %s", e, exc_info=True)
+        logger.error("%s 索引清理任务失败: %s", action, e, exc_info=True)
         try:
             with SessionLocal() as db:
                 write_system_log(
-                    db, action="cleanup_es_log",
+                    db, action=log_action,
                     target_type="system", target_id="es-indices",
-                detail=f"清理失败: {e}",
-                operator="system",
-            )
+                    detail=f"{action} 清理失败: {e}",
+                    operator="system",
+                )
         except Exception:
             pass
+
+
+def cleanup_raw_es_indices() -> None:
+    """删除超过 raw_log_retention_days 的 soc-YYYY.MM.DD 原始日志索引。
+
+    pattern 用 "soc-*,-soc-ai-*"：ES 通配符 soc-* 会匹配 soc-ai-*，
+    须用 "-" 排除语法将分析日志索引排除，避免被原始日志策略误删。
+    """
+    with SessionLocal() as db:
+        cfg = _load_config(db)
+        days = cfg.raw_log_retention_days if cfg else 7
+    _cleanup_es_indices("soc-*,-soc-ai-*", days, "soc-* 原始日志", "cleanup_raw_es_log")
+
+
+def cleanup_ai_es_indices() -> None:
+    """删除超过 ai_retention_days 的 soc-ai-YYYY.MM.DD 分析日志索引。"""
+    with SessionLocal() as db:
+        cfg = _load_config(db)
+        days = cfg.ai_retention_days if cfg else 180
+    _cleanup_es_indices("soc-ai-*", days, "soc-ai-* 分析日志", "cleanup_ai_es_log")
 
 
 def deactivate_inactive_users() -> None:
@@ -280,11 +305,12 @@ def start_scheduler() -> None:
         return
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     _scheduler.add_job(cleanup_raw_logs, "cron", hour=2, minute=0, id="cleanup_raw_logs")
-    _scheduler.add_job(cleanup_es_indices, "cron", hour=2, minute=30, id="cleanup_es_indices")
+    _scheduler.add_job(cleanup_raw_es_indices, "cron", hour=2, minute=30, id="cleanup_raw_es_indices")
+    _scheduler.add_job(cleanup_ai_es_indices, "cron", hour=2, minute=32, id="cleanup_ai_es_indices")
     _scheduler.add_job(cleanup_audit_logs, "cron", hour=2, minute=45, id="cleanup_audit_logs")
     _scheduler.add_job(deactivate_inactive_users, "cron", hour=3, minute=0, id="deactivate_inactive_users")
     _scheduler.start()
-    logger.info("定时任务已启动（02:00 原始日志 / 02:30 ES索引 / 02:45 审计日志 / 03:00 未登录禁用）")
+    logger.info("定时任务已启动（02:00 原始日志 / 02:30 soc索引 / 02:32 soc-ai索引 / 02:45 审计日志 / 03:00 未登录禁用）")
 
 
 def shutdown_scheduler() -> None:

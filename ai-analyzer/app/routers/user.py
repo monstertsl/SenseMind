@@ -15,7 +15,6 @@ from ..core.auth import (
 )
 from ..core.security import encrypt_data, decrypt_data
 from ..core.audit import write_system_log
-from ..core.rate_limit import invalidate_user_status
 from ..db_models.user import User
 from ..schemas import ApiResponse
 
@@ -145,7 +144,6 @@ def update_user(user_id: int, body: UserUpdate, request: Request, db: Session = 
         user.is_active = body.is_active
     db.commit()
     db.refresh(user)
-    invalidate_user_status(user_id)
 
     if changes:
         write_system_log(db, action="update", target_type="user", target_id=str(user_id),
@@ -166,7 +164,6 @@ def delete_user(user_id: int, request: Request, db: Session = Depends(get_db),
     username = user.username
     db.delete(user)
     db.commit()
-    invalidate_user_status(user_id)
     write_system_log(db, action="delete", target_type="user", target_id=str(user_id),
                      detail=f"删除用户 {username}",
                      operator=current_user.username, ip_address=_client_ip(request))
@@ -187,7 +184,6 @@ def change_password(user_id: int, body: PasswordUpdate, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="新密码至少 8 位")
     user.password_hash = hash_password(body.new_password)
     db.commit()
-    invalidate_user_status(user_id)
     return ApiResponse(code=0, message="ok", data={"message": "密码已修改"}, request_id=str(uuid.uuid4()))
 
 
@@ -201,7 +197,6 @@ def admin_reset_password(user_id: int, body: AdminPasswordReset, request: Reques
         raise HTTPException(status_code=400, detail="新密码至少 8 位")
     user.password_hash = hash_password(body.new_password)
     db.commit()
-    invalidate_user_status(user_id)
     write_system_log(db, action="reset_password", target_type="user", target_id=str(user_id),
                      detail=f"重置用户 {user.username} 的密码",
                      operator=current_user.username, ip_address=_client_ip(request))
@@ -221,7 +216,6 @@ def enable_totp(user_id: int, db: Session = Depends(get_db),
     user.auth_mode = "PASSWORD_AND_TOTP"
     db.commit()
     db.refresh(user)
-    invalidate_user_status(user_id)
     uri = get_totp_uri(secret, user.username)
     return ApiResponse(code=0, message="ok", data={"secret": secret, "uri": uri}, request_id=str(uuid.uuid4()))
 
@@ -246,7 +240,6 @@ def disable_totp(user_id: int, body: TOTPVerifyRequest, db: Session = Depends(ge
     user.totp_secret_encrypted = None
     user.auth_mode = "PASSWORD_ONLY"
     db.commit()
-    invalidate_user_status(user_id)
     return ApiResponse(code=0, message="ok", data={"message": "TOTP 已禁用"}, request_id=str(uuid.uuid4()))
 
 
@@ -262,7 +255,6 @@ def reset_totp(user_id: int, db: Session = Depends(get_db),
         user.auth_mode = "PASSWORD_AND_TOTP"
     db.commit()
     db.refresh(user)
-    invalidate_user_status(user_id)
     uri = get_totp_uri(secret, user.username)
     return ApiResponse(code=0, message="ok", data={"secret": secret, "uri": uri}, request_id=str(uuid.uuid4()))
 
