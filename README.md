@@ -284,3 +284,7 @@ sudo bash remove.sh
 ## 贡献
 
 欢迎提交Issue/PR
+
+## 许可证
+
+本项目采用 MIT License。详细内容见 [LICENSE](LICENSE)
