@@ -36,29 +36,29 @@ class QueryService:
         must.append({"range": {"ai.alert_timestamp": {"gte": time_from, "lte": time_to}}})
 
         if params.source_ip:
-            must.append({"term": {"ai.source_ip.keyword": params.source_ip}})
+            must.append({"term": {"ai.source_ip": params.source_ip}})
         if params.destination_ip:
-            must.append({"term": {"ai.destination_ip.keyword": params.destination_ip}})
+            must.append({"term": {"ai.destination_ip": params.destination_ip}})
         if params.soc_name:
             names = [s.strip() for s in params.soc_name.split(",") if s.strip()]
             if len(names) == 1:
-                must.append({"term": {"ai.soc_name.keyword": names[0]}})
+                must.append({"term": {"ai.soc_name": names[0]}})
             else:
-                must.append({"terms": {"ai.soc_name.keyword": names}})
+                must.append({"terms": {"ai.soc_name": names}})
         if params.confidence is not None:
             must.append({"term": {"ai.confidence": params.confidence}})
         if params.alert_signature:
             must.append({"match_phrase": {"ai.alert_signature": params.alert_signature}})
         if params.source_alert_id:
-            must.append({"term": {"ai.source_alert_id.keyword": params.source_alert_id}})
+            must.append({"term": {"ai.source_alert_id": params.source_alert_id}})
         if params.attack_result:
-            must.append({"term": {"ai.attack_result.keyword": params.attack_result}})
+            must.append({"term": {"ai.attack_result": params.attack_result}})
 
         # 排除条件（! 前缀）
         if params.exclude_source_ip:
-            must_not.append({"term": {"ai.source_ip.keyword": params.exclude_source_ip}})
+            must_not.append({"term": {"ai.source_ip": params.exclude_source_ip}})
         if params.exclude_destination_ip:
-            must_not.append({"term": {"ai.destination_ip.keyword": params.exclude_destination_ip}})
+            must_not.append({"term": {"ai.destination_ip": params.exclude_destination_ip}})
         if params.exclude_alert_signature:
             must_not.append({"match_phrase": {"ai.alert_signature": params.exclude_alert_signature}})
 

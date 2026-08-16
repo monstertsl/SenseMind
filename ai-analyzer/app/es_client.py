@@ -118,11 +118,9 @@ class ESClient:
             query = {
                 "query": {
                     "bool": {
-                        "should": [
-                            {"term": {"network.community_id.keyword": community_id}},
-                            {"term": {"suricata.eve.community_id.keyword": community_id}},
-                        ],
-                        "minimum_should_match": 1,
+                        "must": [
+                            {"term": {"network.community_id": community_id}}
+                        ]
                     }
                 },
                 "size": 1000,
@@ -161,23 +159,42 @@ class ESClient:
                     ip_should.append({"term": {"source.ip": ip}})
                     ip_should.append({"term": {"destination.ip": ip}})
 
+                # IP 时间窗口关联：用 function_score 给 HTTP/DNS/TLS 事件加权，
+                # 让攻击类日志排在 connection/flow 前面，避免被 size 截断（漏报检测只关心这些）
+                should_ip = {"bool": {"should": ip_should, "minimum_should_match": 1}}
+                boost_filters = [
+                    {"term": {"event.dataset": "zeek.http"}},
+                    {"term": {"event.dataset": "zeek.dns"}},
+                    {"term": {"event.dataset": "zeek.ssl"}},
+                    {"term": {"suricata.eve.event_type": "http"}},
+                    {"term": {"suricata.eve.event_type": "dns"}},
+                    {"term": {"suricata.eve.event_type": "tls"}},
+                ]
+                functions = [{"filter": bf, "weight": 100} for bf in boost_filters]
+                # function_score 加权 + 时间排序，保证 HTTP/DNS/TLS 优先但时间有序
                 query = {
                     "query": {
-                        "bool": {
-                            "must": [
-                                {
-                                    "bool": {
-                                        "should": ip_should,
-                                        "minimum_should_match": 1,
-                                    }
-                                },
-                                {"range": {"@timestamp": {"gte": time_from, "lte": time_to}}},
-                            ]
+                        "function_score": {
+                            "query": {
+                                "bool": {
+                                    "must": [
+                                        {"range": {"@timestamp": {"gte": time_from, "lte": time_to}}},
+                                        should_ip,
+                                    ]
+                                }
+                            },
+                            "functions": functions,
+                            "boost_mode": "sum",
+                            "score_mode": "sum",
                         }
                     },
-                    "size": max_logs * 2,
-                    "sort": [{"@timestamp": "asc"}],
+                    "sort": [
+                        {"_score": "desc"},
+                        {"@timestamp": "asc"},
+                    ],
+                    "size": max_logs * 5,
                     "_source": self._RELATED_SOURCE_FIELDS,
+                    "track_scores": True,
                 }
                 resp = self.client.search(index=self.alert_index, body=query)
                 hits = resp["hits"]["hits"]
@@ -195,8 +212,9 @@ class ESClient:
             except Exception as e:
                 logger.warning("IP+时间窗口查询失败: %s", e)
 
-        # 按时间排序，不截断（community_id 全量日志对漏报检测至关重要）
-        results.sort(key=lambda x: x.get("@timestamp", ""))
+        # 不截断（community_id 全量日志对漏报检测至关重要）。
+        # 保留查询返回顺序：community_id 日志（时间序）+ IP 关联日志（_score 加权，HTTP/DNS/TLS 优先），
+        # 确保攻击类日志不被 connection/flow 挤到 size 之外导致漏报检测失效。
         return results
 
     def find_original_alert(self, community_id: str, signature_id: int,
@@ -227,16 +245,12 @@ class ESClient:
                     "must": [
                         {"term": {"event.kind": "alert"}},
                         {"term": {"suricata.eve.alert.signature_id": signature_id}},
+                        {"term": {"network.community_id": community_id}},
                         {"range": {"@timestamp": {
                             "gte": timestamp,
                             "lte": timestamp,
                         }}},
-                    ],
-                    "should": [
-                        {"term": {"network.community_id.keyword": community_id}},
-                        {"term": {"suricata.eve.community_id.keyword": community_id}},
-                    ],
-                    "minimum_should_match": 1,
+                    ]
                 }
             },
             "size": 1,
@@ -259,12 +273,8 @@ class ESClient:
                     "must": [
                         {"term": {"event.kind": "alert"}},
                         {"term": {"suricata.eve.alert.signature_id": signature_id}},
-                    ],
-                    "should": [
-                        {"term": {"network.community_id.keyword": community_id}},
-                        {"term": {"suricata.eve.community_id.keyword": community_id}},
-                    ],
-                    "minimum_should_match": 1,
+                        {"term": {"network.community_id": community_id}},
+                    ]
                 }
             },
             "size": 1,
@@ -370,8 +380,8 @@ class ESClient:
             "query": {
                 "bool": {
                     "filter": [
-                        {"term": {"ai.community_id.keyword": community_id}},
-                        {"term": {"ai.analysis_source.keyword": "alert_triage"}},
+                        {"term": {"ai.community_id": community_id}},
+                        {"term": {"ai.analysis_source": "alert_triage"}},
                     ],
                 }
             },

@@ -59,24 +59,21 @@ class LogService:
         self.es = get_es_reader()
         self.cache = get_cache()
 
-    # text 类型字段集合：text 类型在 ES 中被分词器处理，
-    # term/terms/wildcard 精确匹配必须走 .keyword 子字段才能命中
-    _TEXT_FIELDS_WITH_KEYWORD = {
-        "ai.soc_name", "ai.alert_signature", "ai.attack_chain",
-        "ai.handling_suggestion", "ai.payload", "ai.source_alert_id",
-        "ai.threat_verdict", "ai.attack_result", "ai.attack_technique",
-        "ai.mitre_id", "ai.protocol",
-        "network.community_id",
+    # text 类型字段集合：这些字段在 ES 中无 .keyword 子字段（模板未配置），
+    # 精确匹配必须用 match_phrase/match（text 分词），不能用 term 或 .keyword。
+    _TEXT_FIELDS = {
+        "ai.alert_signature", "ai.attack_chain",
+        "ai.handling_suggestion", "ai.payload",
     }
 
     def _resolve_field(self, field: str, op: str) -> str:
-        """对 ai.* text 字段的 eq/ne/in/like 操作改用 .keyword 子字段。
+        """对字段的 eq/ne/in/like 操作选择正确的查询字段。
 
-        - IP/数值/date 字段维持原字段（ES 标准类型支持 term 查询）
-        - like 操作对长文本字段用 match_phrase 更合理，对短文本用 wildcard+.keyword
+        - text 字段（无 .keyword 子字段）：精确匹配走 match_phrase，不能加 .keyword
+        - keyword/ip/数值/date 字段：直接用原字段（ES 标准类型支持 term 查询）
         """
-        if field in self._TEXT_FIELDS_WITH_KEYWORD and op in ("eq", "ne", "in"):
-            return f"{field}.keyword"
+        if field in self._TEXT_FIELDS and op in ("eq", "ne", "in"):
+            return field
         return field
 
     def _condition_to_query(self, condition) -> dict:
@@ -96,20 +93,23 @@ class LogService:
                 return {"terms": {"_id": values}}
 
         if op == "eq":
-            f = self._resolve_field(field, "eq")
-            return {"term": {f: value}}
-        if op == "ne":
-            f = self._resolve_field(field, "ne")
-            return {"bool": {"must_not": [{"term": {f: value}}]}}
-        if op == "like":
-            # 对 text 字段用 match_phrase 模糊匹配；对 keyword 类字段用 wildcard
-            if field in self._TEXT_FIELDS_WITH_KEYWORD:
+            if field in self._TEXT_FIELDS:
                 return {"match_phrase": {field: str(value)}}
-            return {"wildcard": {f"{field}.keyword": f"*{value}*"}}
+            return {"term": {field: value}}
+        if op == "ne":
+            if field in self._TEXT_FIELDS:
+                return {"bool": {"must_not": [{"match_phrase": {field: str(value)}}]}}
+            return {"bool": {"must_not": [{"term": {field: value}}]}}
+        if op == "like":
+            # 对 text 字段用 match_phrase 模糊匹配；对 keyword/ip 等短值字段用 wildcard
+            if field in self._TEXT_FIELDS:
+                return {"match_phrase": {field: str(value)}}
+            return {"wildcard": {field: f"*{value}*"}}
         if op == "in":
-            f = self._resolve_field(field, "in")
             values = value if isinstance(value, list) else [v.strip() for v in str(value).split(",") if v.strip()]
-            return {"terms": {f: values}}
+            if field in self._TEXT_FIELDS:
+                return {"bool": {"should": [{"match_phrase": {field: str(v)}} for v in values], "minimum_should_match": 1}}
+            return {"terms": {field: values}}
         if op == "gte":
             return {"range": {field: {"gte": value}}}
         if op == "lte":

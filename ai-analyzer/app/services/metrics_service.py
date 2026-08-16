@@ -71,13 +71,13 @@ class MetricsService:
             "size": 0,
             "query": time_filter,
             "aggs": {
-                "victim_assets": {"cardinality": {"field": "ai.destination_ip.keyword"}},
-                "attacker_ips": {"cardinality": {"field": "ai.source_ip.keyword"}},
+                "victim_assets": {"cardinality": {"field": "ai.destination_ip"}},
+                "attacker_ips": {"cardinality": {"field": "ai.source_ip"}},
                 "avg_confidence": {"avg": {"field": "ai.confidence"}},
-                "soc_dist": {"terms": {"field": "ai.soc_name.keyword", "size": 14}},
-                "verdict": {"terms": {"field": "ai.threat_verdict.keyword", "size": 10}},
-                "source": {"terms": {"field": "ai.analysis_source.keyword", "size": 10}},
-                "attack_result": {"terms": {"field": "ai.attack_result.keyword", "size": 5}},
+                "soc_dist": {"terms": {"field": "ai.soc_name", "size": 14}},
+                "verdict": {"terms": {"field": "ai.threat_verdict", "size": 10}},
+                "source": {"terms": {"field": "ai.analysis_source", "size": 10}},
+                "attack_result": {"terms": {"field": "ai.attack_result", "size": 5}},
             },
         }
         resp = self.es.client.search(index=self.es.ai_index, body=body)

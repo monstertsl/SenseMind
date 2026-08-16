@@ -47,7 +47,13 @@
                 "event_type": { "type": "keyword" },
                 "alert": {
                   "properties": {
-                    "signature": { "type": "text", "norms": false }
+                    "signature": { "type": "text", "norms": false },
+                    "signature_id": { "type": "long" },
+                    "gid": { "type": "long" },
+                    "rev": { "type": "long" },
+                    "severity": { "type": "long" },
+                    "category": { "type": "keyword" },
+                    "action": { "type": "keyword" }
                   }
                 }
               }
@@ -58,6 +64,129 @@
         "ai_doc_id": { "type": "keyword" }
       },
       "dynamic_templates": [
+        {
+          "searchable_url_text": {
+            "match_mapping_type": "string",
+            "path_match": "url.*",
+            "mapping": {
+              "type": "text",
+              "norms": false,
+              "index_options": "docs",
+              "fields": {
+                "keyword": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        {
+          "searchable_user_agent": {
+            "match_mapping_type": "string",
+            "path_match": "user_agent.*",
+            "mapping": {
+              "type": "text",
+              "norms": false,
+              "index_options": "docs",
+              "fields": {
+                "keyword": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        {
+          "searchable_suricata_http": {
+            "match_mapping_type": "string",
+            "path_match": "suricata.eve.http.*",
+            "mapping": {
+              "type": "text",
+              "norms": false,
+              "index_options": "docs",
+              "fields": {
+                "keyword": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        {
+          "searchable_payload": {
+            "match_mapping_type": "string",
+            "path_match": "suricata.eve.payload_printable",
+            "mapping": {
+              "type": "text",
+              "norms": false,
+              "index_options": "docs",
+              "fields": {
+                "keyword": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        {
+          "searchable_dns": {
+            "match_mapping_type": "string",
+            "path_match": "suricata.eve.dns.queries.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
+        {
+          "searchable_tls": {
+            "match_mapping_type": "string",
+            "path_match": "suricata.eve.tls.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
+        {
+          "searchable_files": {
+            "match_mapping_type": "string",
+            "path_match": "suricata.eve.files.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
+        {
+          "searchable_zeek_http": {
+            "match_mapping_type": "string",
+            "path_match": "zeek.http.*",
+            "mapping": {
+              "type": "text",
+              "norms": false,
+              "fields": {
+                "keyword": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        {
+          "searchable_meta": {
+            "match_mapping_type": "string",
+            "path_match": "event.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
+        {
+          "searchable_soc": {
+            "match_mapping_type": "string",
+            "path_match": "soc.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
+        {
+          "searchable_network": {
+            "match_mapping_type": "string",
+            "path_match": "network.*",
+            "mapping": {
+              "type": "keyword"
+            }
+          }
+        },
         {
           "no_index_string": {
             "match_mapping_type": "string",

@@ -47,7 +47,10 @@ class AlertContext(BaseModel):
 
     @classmethod
     def from_alert(cls, alert: dict) -> "AlertContext":
-        """从原始告警 JSON 提取标准字段"""
+        """从原始告警 JSON 提取标准字段
+
+        兼容 Suricata（suricata.eve.*）与 Zeek（ECS: url.* / http.* / user_agent.*）两种结构。
+        """
         eve = alert.get("suricata", {}).get("eve", {})
         alert_info = eve.get("alert", {})
         src = alert.get("source", {})
@@ -57,6 +60,13 @@ class AlertContext(BaseModel):
         tls = eve.get("tls", {})
         soc = alert.get("soc", {})
         payload = eve.get("payload_printable", "")
+        # Zeek/ECS 结构字段（zeek.http 日志无 suricata.eve.* 结构）
+        ecs_http = alert.get("http", {})
+        ecs_url = alert.get("url", {})
+        ecs_ua = alert.get("user_agent", {})
+        zeek = alert.get("zeek", {})
+        zeek_http = zeek.get("http", {})
+        zeek_conn = zeek.get("conn", {})
         # 优先使用 Base64 版本（http-body: yes），保留中文；
         # 回退到 printable 版本（中文被替换为.）
         response_body = decode_http_body(http, "http_response_body")
@@ -73,6 +83,13 @@ class AlertContext(BaseModel):
                 # 用请求头 + 解码后的请求体 重建 payload
                 payload = payload[:header_end + 4] + request_body
 
+        # 字段提取，Suricata 结构优先，Zeek/ECS 结构回退
+        http_method = http.get("http_method", "") or ecs_http.get("request", {}).get("method", "") or zeek_http.get("method", "")
+        http_url = http.get("url", "") or ecs_url.get("original", "") or zeek_http.get("uri", "")
+        http_host = http.get("hostname", "") or ecs_url.get("domain", "") or zeek_http.get("host", "")
+        http_user_agent = http.get("http_user_agent", "") or ecs_ua.get("original", "") or zeek_http.get("user_agent", "")
+        http_status = http.get("status", 0) or ecs_http.get("response", {}).get("status_code", 0) or zeek_http.get("status_code", 0)
+
         return cls(
             timestamp=alert.get("@timestamp", ""),
             signature=alert_info.get("signature", ""),
@@ -83,19 +100,20 @@ class AlertContext(BaseModel):
             src_port=src.get("port", 0),
             dst_ip=dst.get("ip", ""),
             dst_port=dst.get("port", 0),
-            protocol=network.get("transport", ""),
+            protocol=network.get("transport", "") or network.get("protocol", ""),
             community_id=network.get("community_id", ""),
             soc_category=soc.get("category", ""),
             soc_name=soc.get("name", ""),
             mitre_id=soc.get("mitre_id", ""),
             attack_stage=soc.get("stage", ""),
-            http_method=http.get("http_method", ""),
-            http_url=http.get("url", ""),
-            http_host=http.get("hostname", ""),
-            http_user_agent=http.get("http_user_agent", ""),
+            http_method=http_method,
+            http_url=http_url,
+            http_host=http_host,
+            http_user_agent=http_user_agent,
+            http_status=http_status,
             tls_sni=tls.get("sni", ""),
-            payload=payload[:4000] if payload else "",
-            response_body=response_body[:4000] if response_body else "",
+            payload=payload[:8000] if payload else "",
+            response_body=response_body[:8000] if response_body else "",
             raw_alert=alert,
         )
 
@@ -118,9 +136,9 @@ class AlertContext(BaseModel):
         if self.tls_sni:
             lines.append(f"- TLS SNI: {self.tls_sni}")
         if self.payload:
-            lines.append(f"- Payload:\n{self.payload[:1000]}")
+            lines.append(f"- Payload:\n{self.payload[:4000]}")
         if self.response_body:
-            lines.append(f"- 响应体:\n{self.response_body[:2000]}")
+            lines.append(f"- 响应体:\n{self.response_body[:4000]}")
         return "\n".join(lines)
 
 
