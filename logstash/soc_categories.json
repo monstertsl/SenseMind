@@ -117,7 +117,17 @@
         "session attack",
         "cookie attack",
         "jwt",
-        "mfa bypass"
+        "mfa bypass",
+        "auth bypass",
+        "unauthorized",
+        "unauth",
+        "access bypass",
+        "privilege",
+        "password reset",
+        "任意用户登录",
+        "认证绕过",
+        "登录绕过",
+        "任意用户"
       ],
       "soc_category": "02_auth_attack",
       "soc_name": "身份认证攻击",
