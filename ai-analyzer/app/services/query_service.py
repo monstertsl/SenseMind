@@ -68,11 +68,17 @@ class QueryService:
         return {"query": {"bool": bool_clause}}
 
     def list_alerts(self, params) -> AlertListData:
-        """分页查询告警列表（后端连续聚合后分页）
+        """分页查询告警列表（后端聚合后分页）
 
-        流程：ES PIT + search_after 分批拉取全量已排序数据 → Python 连续聚合
-        （相邻相同告警合并）→ 按页截取。
-        total 返回聚合后的组数，不受 page_size 影响。
+        流程：ES PIT + search_after 分批拉取全量数据（固定按 @timestamp desc，
+        保证每组"最新分析"排最前）→ 以 source_ip + destination_ip + alert_signature
+        为 key 聚合（每组代表 = 最新分析）→ 按用户 sort_field 对组排序 → 按页截取。
+
+        关键设计（分离两个排序）：
+        1. ES 拉取固定 @timestamp desc（分析生成时间，每条必不同），使 dict 聚合时
+           每组首次插入即"最新分析"，与用户排序字段无关。
+        2. 聚合完成后按用户 sort_field（默认 ai.alert_timestamp 原始日志时间）对组排序，
+           保证前端"原始日志时间"列有序。
         """
         cache_key = f"alerts:list:{_hash_query(params.model_dump(by_alias=True))}"
         cached = self.cache.get(cache_key)
@@ -85,9 +91,11 @@ class QueryService:
         page = max(params.page, 1)
         page_size = min(max(params.page_size, 1), 200)
 
-        # 排序：业务字段 + _shard_doc 作为 tiebreaker（PIT 分页需要确定性排序）
+        # 聚合阶段固定按 @timestamp desc（分析生成时间，每条必不同）排序：
+        # 保证同一条原始日志的多次分析中"最新一次"排最前，相邻聚合时每组代表即最新分析。
+        # 用户的 sort_field 仅在聚合完成后对"组"做展示排序，不影响每组代表。
         body["sort"] = [
-            {sort_field: {"order": sort_order}},
+            {"@timestamp": {"order": "desc"}},
             {"_shard_doc": "desc"},
         ]
         body["size"] = 10000
@@ -124,21 +132,37 @@ class QueryService:
                 except Exception:
                     pass
 
-        # 连续聚合：相邻的相同告警（source_ip + destination_ip + alert_signature）合并
-        merged = []
+        # 基于 key 聚合：source_ip + destination_ip + alert_signature 相同的记录合并为一组。
+        # all_hits 已按 @timestamp desc 排序，dict 首次插入的记录（每组最新分析）即代表。
+        # 用 dict 而非"相邻合并"，避免同一条原始日志的多次分析被其他告警穿插时被拆成多组。
+        merged_map = {}
         for h in all_hits:
             ai = h["_source"].get("ai", {})
-            prev = merged[-1] if merged else None
-            cur_key = f"{ai.get('source_ip', '')}|{ai.get('destination_ip', '')}|{ai.get('alert_signature', '')}"
-            prev_key = (
-                f"{prev.ai.get('source_ip', '')}|{prev.ai.get('destination_ip', '')}|{prev.ai.get('alert_signature', '')}"
-                if prev else ""
-            )
-            if prev and cur_key == prev_key:
-                prev.ai["alert_count"] = prev.ai.get("alert_count", 1) + 1
+            key = f"{ai.get('source_ip', '')}|{ai.get('destination_ip', '')}|{ai.get('alert_signature', '')}"
+            if key in merged_map:
+                merged_map[key].ai["alert_count"] = merged_map[key].ai.get("alert_count", 1) + 1
             else:
                 ai["alert_count"] = 1
-                merged.append(AlertItemData(_id=h["_id"], _index=h["_index"], ai=ai))
+                merged_map[key] = AlertItemData(_id=h["_id"], _index=h["_index"], ai=ai)
+
+        merged = list(merged_map.values())
+
+        # 聚合完成后，按用户指定 sort_field 对"组"做展示排序（不影响每组代表）。
+        # 默认按 ai.alert_timestamp（原始日志时间）排序，保证前端时间列有序。
+        key_name = sort_field.removeprefix("ai.")
+
+        def _sort_key(item: AlertItemData):
+            val = item.ai.get(key_name)
+            if val is None:
+                val = item.ai.get(sort_field)
+            return val
+
+        reverse = sort_order == "desc"
+        try:
+            merged.sort(key=lambda it: (_sort_key(it) is None, _sort_key(it)), reverse=reverse)
+        except TypeError:
+            # 混合类型无法比较时，退化为字符串比较
+            merged.sort(key=lambda it: str(_sort_key(it)), reverse=reverse)
 
         total = len(merged)
         start = (page - 1) * page_size

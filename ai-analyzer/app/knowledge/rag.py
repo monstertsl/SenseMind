@@ -50,6 +50,12 @@ class KnowledgeRetriever:
 
         snippets = []
 
+        # 0. 固定注入：端口/协议语义 + payload 结构识别 + 时间戳错位判断
+        #    这是溯源分析的基础知识，与具体告警无关，始终注入。
+        port_services = self._load_file("port-services.md")
+        if port_services:
+            snippets.append(f"### 端口服务语义与溯源判断\n{port_services}")
+
         # 1. 按 MITRE ID 检索技术说明
         mitre_id = getattr(ctx, "mitre_id", "")
         if mitre_id:

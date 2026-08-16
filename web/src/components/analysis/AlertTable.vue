@@ -78,6 +78,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
       size="small"
       style="width: 100%"
       :header-cell-style="{ background: '#eef1f6', color: '#475569', fontWeight: 600 }"
+      :default-sort="{ prop: 'ai.alert_timestamp', order: 'descending' }"
       @row-click="emit('rowClick', $event as any)"
       @sort-change="onSortChange"
     >

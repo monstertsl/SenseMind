@@ -13,6 +13,7 @@ import time
 import re
 import os
 import threading
+from datetime import datetime, timezone
 from langchain_openai import ChatOpenAI
 from .config import Config
 from .models import AlertContext, TriageResult
@@ -87,7 +88,7 @@ class AlertAnalyzer:
             base_url=llm_cfg.get("base_url", ""),
             model=llm_cfg.get("model", ""),
             temperature=llm_cfg.get("temperature", 0.1),
-            max_tokens=llm_cfg.get("max_tokens", 4000),
+            max_tokens=llm_cfg.get("max_tokens", 8000),
             max_retries=0,
             timeout=llm_cfg.get("timeout", 60),
             model_kwargs={"extra_body": extra_body} if extra_body else {},
@@ -371,7 +372,13 @@ class AlertAnalyzer:
             except Exception as e:
                 logger.warning("查询同会话 AI 分析记录失败，基线将不含 alert 失败样本: %s", e)
 
+        logger.info("漏报检测: 关联日志 %d 条，其中 zeek.http %d 条、suricata.http %d 条、含 passwd %d 条",
+                    len(related_logs),
+                    sum(1 for l in related_logs if l.get("event", {}).get("dataset") == "zeek.http"),
+                    sum(1 for l in related_logs if l.get("suricata", {}).get("eve", {}).get("event_type") == "http"),
+                    sum(1 for l in related_logs if "passwd" in str(l.get("url", {}).get("original", "")) + str(l.get("suricata", {}).get("eve", {}).get("http", {}).get("url", ""))))
         unalerted = find_unalerted_attacks(related_logs, ai_analyses)
+        logger.info("漏报检测 find_unalerted_attacks 返回 %d 条", len(unalerted))
         if not unalerted:
             return []
 
@@ -575,7 +582,7 @@ class AlertAnalyzer:
             # 而非触发分析的主告警（triggered_by_alert 已记录主AI记录）
             "source_alert_id": item.get("log_id", ""),
             "source_alert_index": item.get("log_index", ""),
-            "payload": (item["payload"] or item["url"] or "")[:4000],
+            "payload": (item["payload"] or item["url"] or "")[:8000],
         }
 
         # 协议特定字段
@@ -584,7 +591,7 @@ class AlertAnalyzer:
             if item.get("http_status"):
                 record["http_status"] = item["http_status"]
             if item.get("response_body"):
-                record["response_body"] = item["response_body"][:4000]
+                record["response_body"] = item["response_body"][:8000]
             # 动态基线预判字段（仅 HTTP 漏报攻击）
             if item.get("baseline_length"):
                 record["baseline_length"] = item["baseline_length"]
@@ -791,7 +798,9 @@ class AlertAnalyzer:
         analysis["alert_signature_id"] = ctx.signature_id
         analysis["alert_category"] = ctx.category
         analysis["alert_severity"] = ctx.severity
-        analysis["alert_timestamp"] = ctx.timestamp
+        # alert_timestamp 为 date 类型，空字符串会触发 ES 400（cannot parse empty datetime），
+        # 告警无 @timestamp 时回退为当前时间
+        analysis["alert_timestamp"] = ctx.timestamp or datetime.now(timezone.utc).isoformat()
         analysis["related_log_count"] = len(related_logs)
 
         # 原始告警 ES 文档 ID
@@ -854,11 +863,11 @@ class AlertAnalyzer:
         if ctx.tls_sni:
             analysis["tls_sni"] = ctx.tls_sni
         if ctx.payload:
-            analysis["payload"] = ctx.payload[:4000]
+            analysis["payload"] = ctx.payload[:8000]
         if ctx.http_status:
             analysis["http_status"] = ctx.http_status
         if ctx.response_body:
-            analysis["response_body"] = ctx.response_body[:4000]
+            analysis["response_body"] = ctx.response_body[:8000]
 
     def _fallback_result(self, ctx: AlertContext, error: str) -> dict:
         """分析失败降级结果"""

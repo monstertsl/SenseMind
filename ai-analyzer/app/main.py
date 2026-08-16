@@ -356,14 +356,19 @@ async def analyze_alert(request: Request):
                 related_logs = bg_context["related_logs"]
 
                 # Stage 6: 规则生成（主路径，含同步热加载）
-                rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
-                if rule_result:
-                    analysis["generated_rule"] = rule_result
-                    # 更新 ES 文档，补写 generated_rule 字段（首次写入时无此字段）
-                    try:
-                        es.update_analysis(doc_id, {"generated_rule": rule_result})
-                    except Exception as e:
-                        logger.warning("更新 ES generated_rule 失败: %s", e)
+                # 注意：规则生成失败（如 LLM Connection error）不能中断后续漏报检测，
+                # 因此单独 try/except，失败只记日志、继续执行漏报处理
+                try:
+                    rule_result = analyzer._generate_main_rule(ctx, analysis, related_logs)
+                    if rule_result:
+                        analysis["generated_rule"] = rule_result
+                        # 更新 ES 文档，补写 generated_rule 字段（首次写入时无此字段）
+                        try:
+                            es.update_analysis(doc_id, {"generated_rule": rule_result})
+                        except Exception as e:
+                            logger.warning("更新 ES generated_rule 失败: %s", e)
+                except Exception as e:
+                    logger.error("主规则生成失败（不影响漏报检测）: %s", e)
 
                 # 漏报攻击处理
                 unalerted_records = analyzer._process_unalerted_attacks(
