@@ -147,7 +147,14 @@ def _cleanup_es_indices(pattern: str, days: int, action: str, log_action: str) -
     """
     try:
         es = _build_admin_es_client()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        # cutoff = 北京时间"今天 00:00"往前推 (days-1) 天。
+        # 语义："保留 days 天" = 保留今天 + 前 (days-1) 天，共 days 个自然日，
+        # 删除更早的索引。索引按北京时间日历日生成（logstash soc-%{+YYYY.MM.dd}），
+        # 必须用 UTC+8 对齐，且以"当天 00:00"对齐时刻，避免
+        # 原实现 now - timedelta(days) 带时刻 + UTC 时区导致多保留 1 天（off-by-one）。
+        now_sh = datetime.now(_SHANGHAI_TZ)
+        today_sh = now_sh.replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = today_sh - timedelta(days=days - 1)
         # ignore_unavailable：模式无匹配索引时 ES 返回 404，必须忽略，
         # 否则（如 soc-ai-* 暂无索引）每天任务都会误报失败并写系统日志
         resp = es.indices.get(index=pattern, expand_wildcards=["open", "closed"],
@@ -158,7 +165,8 @@ def _cleanup_es_indices(pattern: str, days: int, action: str, log_action: str) -
             # 以最后一个 "-" 切分，后半段即 "YYYY.MM.DD"
             date_part = index_name.rsplit("-", 1)[-1]
             try:
-                idx_date = datetime.strptime(date_part, "%Y.%m.%d").replace(tzinfo=timezone.utc)
+                # 索引日期即"北京时间当天"，与 cutoff（UTC+8 当天 00:00）同基准比较
+                idx_date = datetime.strptime(date_part, "%Y.%m.%d").replace(tzinfo=_SHANGHAI_TZ)
             except ValueError:
                 continue
             if idx_date < cutoff:

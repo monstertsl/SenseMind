@@ -87,7 +87,7 @@ onMounted(() => {
   <div class="log-explorer">
     <LogConditionBuilder @search="handleSearch" @reset="handleReset" />
 
-    <div class="list-section" v-loading="loading && !list.length">
+    <div class="list-section" v-loading="loading">
       <div class="list-toolbar">
         <span class="result-count">
           共 <b class="font-mono">{{ total }}</b> 条日志

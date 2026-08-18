@@ -667,17 +667,15 @@ docker compose up -d --force-recreate ai-analyzer
 # jasonish/suricata 容器启动时会自动复制默认配置到挂载目录
 SURICATA_YAML="/data/suricata/etc/suricata.yaml"
 if [ -f "$SURICATA_YAML" ]; then
-    # 复制项目中的 local.rules 作为初始本地规则，后续可直接编辑项目文件更新
-    # 规则目录与 suricata.yaml 的 default-rule-path 一致: /var/lib/suricata/rules
-    if [ -f "$BASE_DIR/suricata/local.rules" ]; then
-        cp "$BASE_DIR/suricata/local.rules" /data/suricata/lib/rules/local.rules
-        chmod 644 /data/suricata/lib/rules/local.rules
-        echo "[+] local.rules 已从项目目录复制到 /data/suricata/lib/rules/"
-    else
-        echo "[!] 警告：$BASE_DIR/suricata/local.rules 不存在，创建空文件"
-        touch /data/suricata/lib/rules/local.rules
-        chmod 644 /data/suricata/lib/rules/local.rules
-    fi
+    # 初始化两个规则文件（规则目录与 suricata.yaml 的 default-rule-path 一致: /var/lib/suricata/rules）
+    # - local.rules：只存放系统(AI)自动生成的规则，初始化时创建空文件
+    # - combined.rules：初始规则 + 外部规则集，初始化时创建空文件（内容在第 5 步填充）
+    LOCAL_RULES="/data/suricata/lib/rules/local.rules"
+    COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
+    : > "$LOCAL_RULES"   # 清空/创建 local.rules
+    : > "$COMBINED_RULES"  # 清空/创建 combined.rules
+    chmod 644 "$LOCAL_RULES" "$COMBINED_RULES"
+    echo "[+] 已初始化空 local.rules（仅供 AI 自动生成规则写入）与 combined.rules"
 
     # 开启 alert 事件的 HTTP body 记录，供 AI 判断攻击是否成功
     # http-body: Base64 编码的完整响应体（保留中文），由 ai-analyzer 解码
@@ -691,8 +689,7 @@ if [ -f "$SURICATA_YAML" ]; then
       -e 's/http-body-inline: auto/http-body-inline: yes/' \
       "$SURICATA_YAML"
 
-    # 替换 suricata-update 的 suricata.rules 为 combined.rules（三个外部规则集合并）
-    # 保留 local.rules 用于自定义规则（AI 生成 + 手写）
+    # 保留 local.rules 仅用于 AI 自动生成规则
     # suricata 8.x unix-command 默认 enabled: auto，无需额外配置
     if grep -q 'suricata\.rules' "$SURICATA_YAML"; then
         sed -i 's/- suricata\.rules/- combined.rules/' "$SURICATA_YAML"
@@ -738,8 +735,18 @@ sudo bash -c 'echo "" > /data/suricata/lib/rules/suricata.rules' 2>/dev/null || 
 echo "[+] 所有 suricata-update 源已关闭，旧规则已清空"
 
 echo "[*] 5. 下载三个外部规则集并合并到 combined.rules..."
+# 兜底：SURICATA_YAML 不存在时上面 if 块未定义此变量，这里重新声明；同时清空重置（重复运行时避免重复追加）
 COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
-: > "$COMBINED_RULES"  # 清空/创建 combined.rules
+: > "$COMBINED_RULES"  # 清空 combined.rules，准备重新合并
+
+# 先写入项目内的初始规则（combined.rules，sid 已偏移到 90001 起，避开 AI 自动生成的 9000001 起区间）
+# 手写规则在前，外部三集追加在后
+if [ -f "$BASE_DIR/suricata/combined.rules" ]; then
+    cat "$BASE_DIR/suricata/combined.rules" >> "$COMBINED_RULES"
+    echo "[+] 初始规则已写入 combined.rules 头部"
+else
+    echo "[!] 警告：$BASE_DIR/suricata/combined.rules 不存在，跳过初始规则"
+fi
 
 TMP_RULES=$(mktemp -d)
 # 确保退出时清理临时目录

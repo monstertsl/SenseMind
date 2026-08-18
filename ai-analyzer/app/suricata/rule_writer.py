@@ -91,10 +91,42 @@ class RuleWriter:
             logger.warning("加载已有规则失败: %s", e)
 
     def _next_sid(self) -> int:
-        """获取下一个可用 SID"""
+        """获取下一个可用 SID（分配前重扫文件，防止与外部追加规则冲突）"""
+        # 外部可能直接修改 local.rules（如手动追加规则），内存快照会过期。
+        # 分配前重扫文件提取最新 SID 水位，确保 AI 自动生成永不与外部规则重复。
+        self._refresh_sids_from_file()
         if self._existing_sids:
             return max(self._existing_sids) + 1
         return self.SID_MIN
+
+    def _refresh_sids_from_file(self):
+        """从规则文件重新提取全部 SID 并合并到内存集合
+
+        仅做轻量 SID 提取（不做 content 指纹计算），开销小、写入频率低，
+        可接受每次分配前重扫。合并而非覆盖，删除的 SID 最多导致跳过几个
+        编号，不会造成重复。
+        """
+        try:
+            with open(self.rules_file, "r") as f:
+                file_sids = set()
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "sid:" in line:
+                        sid_start = line.index("sid:") + 4
+                        sid_str = ""
+                        for c in line[sid_start:]:
+                            if c.isdigit():
+                                sid_str += c
+                            else:
+                                break
+                        if sid_str:
+                            file_sids.add(int(sid_str))
+            if file_sids:
+                self._existing_sids |= file_sids
+        except Exception as e:
+            logger.warning("刷新 SID 水位失败: %s", e)
 
     def _is_duplicate(self, rule: str) -> bool:
         """检查规则是否与已有规则检测同一攻击特征
