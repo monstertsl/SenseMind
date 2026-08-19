@@ -90,7 +90,7 @@ class AlertAnalyzer:
             temperature=llm_cfg.get("temperature", 0.1),
             max_tokens=llm_cfg.get("max_tokens", 8000),
             max_retries=0,
-            timeout=llm_cfg.get("timeout", 60),
+            timeout=llm_cfg.get("timeout", 300),
             model_kwargs={"extra_body": extra_body} if extra_body else {},
         )
         self.model_name = llm_cfg.get("model", "未配置")
