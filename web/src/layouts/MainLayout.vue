@@ -5,7 +5,7 @@ import { WarningFilled, User, ArrowDown, Monitor, Aim, Document, Setting } from 
 import { ElMessage } from 'element-plus'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { useAuthStore } from '@/stores/auth'
-import { getConfig } from '@/api/systemConfig'
+import { getConfig, getLLMConfig } from '@/api/systemConfig'
 import { changePassword } from '@/api/user'
 import type { TimeRange, RefreshInterval } from '@/types'
 
@@ -13,6 +13,7 @@ const route = useRoute()
 const router = useRouter()
 const globalStore = useGlobalFilterStore()
 const authStore = useAuthStore()
+const llmConfigMissing = ref(false)
 
 const baseMenus = [
   { path: '/monitor/dashboard', title: '监测中心', icon: Monitor },
@@ -141,15 +142,32 @@ async function loadIdleTimeout() {
   resetIdleTimer()
 }
 
+async function loadLLMConfig() {
+  if (!authStore.isAdmin) return
+  try {
+    const config = await getLLMConfig()
+    llmConfigMissing.value = !config.model?.trim()
+  } catch {
+    llmConfigMissing.value = false
+  }
+}
+
+function handleLLMConfigUpdated() {
+  loadLLMConfig()
+}
+
 const idleEvents = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart']
 
 onMounted(() => {
   idleEvents.forEach((evt) => window.addEventListener(evt, resetIdleTimer, { passive: true }))
+  window.addEventListener('llm-config-updated', handleLLMConfigUpdated)
   loadIdleTimeout()
+  loadLLMConfig()
 })
 
 onUnmounted(() => {
   idleEvents.forEach((evt) => window.removeEventListener(evt, resetIdleTimer))
+  window.removeEventListener('llm-config-updated', handleLLMConfigUpdated)
   if (idleTimer) clearTimeout(idleTimer)
 })
 </script>
@@ -188,6 +206,19 @@ onUnmounted(() => {
         >
           <el-icon><WarningFilled /></el-icon>
           字段映射缺失 {{ globalStore.missingFields.length }} 项
+        </el-tag>
+        <el-tag
+          v-if="authStore.isAdmin && llmConfigMissing"
+          type="warning"
+          size="small"
+          class="mapping-warn llm-warn"
+          role="button"
+          tabindex="0"
+          @click="router.push({ path: '/system/settings', query: { llm: 'configure' } })"
+          @keydown.enter="router.push({ path: '/system/settings', query: { llm: 'configure' } })"
+        >
+          <el-icon><WarningFilled /></el-icon>
+          LLM 模型未配置
         </el-tag>
         <span class="time-label">刷新间隔</span>
         <el-select
@@ -386,6 +417,9 @@ onUnmounted(() => {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    cursor: pointer;
+    font-family: $font-mono;
+    font-feature-settings: 'tnum';
   }
 
   .time-label {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { getConfig, updateConfig, type SystemConfig } from '@/api/systemConfig'
@@ -14,6 +15,9 @@ import {
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
 import AiBypassManage from '@/pages/AiBypassManage.vue'
+
+const route = useRoute()
+const router = useRouter()
 
 // ---- 集成配置 ----
 const configLoading = ref(false)
@@ -189,6 +193,7 @@ async function handleSaveLLM() {
       timeout: llmForm.timeout,
     })
     Object.assign(llmSaved, llmForm)
+    window.dispatchEvent(new Event('llm-config-updated'))
     ElMessage.success('LLM 配置已保存并生效')
     llmDialogVisible.value = false
   } catch (e: any) {
@@ -306,14 +311,25 @@ function onMediaChange() {
   isNarrow.value = mql.matches
 }
 
-onMounted(() => {
+function handleLLMQuery() {
+  if (route.query.llm !== 'configure') return
+  openLLMDialog()
+  const query = { ...route.query }
+  delete query.llm
+  router.replace({ path: route.path, query })
+}
+
+onMounted(async () => {
   isNarrow.value = mql.matches
   mql.addEventListener('change', onMediaChange)
   fetchConfig()
-  fetchLLMConfig()
+  await fetchLLMConfig()
+  handleLLMQuery()
   fetchCurrentIp()
   fetchSystemLogs()
 })
+
+watch(() => route.query.llm, handleLLMQuery)
 
 onBeforeUnmount(() => {
   mql.removeEventListener('change', onMediaChange)
