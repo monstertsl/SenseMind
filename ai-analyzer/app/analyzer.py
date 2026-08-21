@@ -158,12 +158,15 @@ class AlertAnalyzer:
         self._reload_thread = t
         logger.info("后台规则热加载线程已启动 (30s 检查间隔)")
 
-    def analyze(self, alert: dict, related_logs: list = None) -> dict:
+    def analyze(self, alert: dict, related_logs: list = None,
+                is_manual: bool = False) -> dict:
         """执行 5 阶段分析流水线
 
         Args:
             alert: 主告警事件（Logstash 推送或 ES 查询）
             related_logs: 外部预查的关联日志（可选，None 则由 Triage 决定是否查询）
+            is_manual: 是否手动触发分析（前端「AI 研判」按钮），
+                       用于在原始告警无签名时做「复用已有威胁名 / 手动分析兜底」命名
 
         Returns:
             分析结果 dict
@@ -284,7 +287,7 @@ class AlertAnalyzer:
             analysis = self._fallback_result(ctx, str(e))
 
         # 补充元数据
-        self._enrich_metadata(analysis, ctx, alert, related_logs)
+        self._enrich_metadata(analysis, ctx, alert, related_logs, is_manual=is_manual)
 
         # 标记分析来源
         analysis["analysis_source"] = "alert_triage"
@@ -545,10 +548,14 @@ class AlertAnalyzer:
             "mitre_id": "", "technique": attack_type,
         })
 
+        # AI 生成的精炼威胁名优先，回退到固定映射的中文名
+        ai_threat_name = str(llm_data.get("threat_name", "") or "").strip()
+        technique = ai_threat_name or mapping["technique"]
+
         record = {
             "analysis_source": "semantic_unalerted",
             "threat_verdict": "确认威胁",
-            "attack_technique": mapping["technique"],
+            "attack_technique": technique,
             "attack_stage": ctx.attack_stage,
             "impact_scope": llm_data.get("impact_scope", "N/A"),
             "confidence": llm_data.get("confidence", 0.7),
@@ -571,8 +578,8 @@ class AlertAnalyzer:
             "destination_port": ctx.dst_port,
             "protocol": ctx.protocol,
             "community_id": ctx.community_id,
-            # 漏报事件无原始告警签名
-            "alert_signature": f"语义检测:{mapping['technique']}",
+            # 漏报事件无原始告警签名，优先用 AI 生成的精炼威胁名
+            "alert_signature": f"语义检测:{technique}",
             "alert_signature_id": 0,
             "alert_category": "语义检测",
             "alert_severity": 2,
@@ -777,8 +784,12 @@ class AlertAnalyzer:
         return ctx
 
     def _enrich_metadata(self, analysis: dict, ctx: AlertContext,
-                         alert: dict, related_logs: list):
-        """补充元数据到分析结果"""
+                         alert: dict, related_logs: list, is_manual: bool = False):
+        """补充元数据到分析结果
+
+        is_manual: 是否手动触发分析。手动分析且原始告警无签名时，
+                  按「复用已有威胁名 → 手动分析兜底」填充 alert_signature。
+        """
         analysis["model"] = self.model_name
         analysis["soc_category"] = ctx.soc_category
         analysis["soc_name"] = ctx.soc_name
@@ -794,6 +805,8 @@ class AlertAnalyzer:
         analysis["community_id"] = ctx.community_id
 
         # 告警信息
+        # alert_signature（威胁名）先填原始签名，稍后在 source_alert_id 确定后
+        # 再对「手动分析 + 无签名」场景做复用/兜底解析（见下方 _resolve_alert_signature）。
         analysis["alert_signature"] = ctx.signature
         analysis["alert_signature_id"] = ctx.signature_id
         analysis["alert_category"] = ctx.category
@@ -854,6 +867,13 @@ class AlertAnalyzer:
         analysis["source_alert_id"] = source_alert_id
         analysis["source_alert_index"] = source_alert_index
 
+        # 手动分析 + 原始无签名：source_alert_id 已确定，此时做「复用已有威胁名 →
+        # 手动分析兜底」解析，覆盖上面的空 alert_signature。
+        if is_manual and not ctx.signature:
+            analysis["alert_signature"] = self._resolve_alert_signature(
+                ctx, analysis, is_manual
+            )
+
         # HTTP/TLS
         if ctx.http_method:
             analysis["http_method"] = ctx.http_method
@@ -864,10 +884,81 @@ class AlertAnalyzer:
             analysis["tls_sni"] = ctx.tls_sni
         if ctx.payload:
             analysis["payload"] = ctx.payload[:8000]
+        elif is_manual and source_alert_id:
+            # 手动分析 + 原始日志无 payload（Zeek http/dns 等无 payload_printable）：
+            # 复用同一原始日志已有语义检测记录的 payload，避免详情展示时 payload 缺失。
+            reused_payload = self._resolve_ai_field(analysis, "payload")
+            if reused_payload:
+                analysis["payload"] = reused_payload[:8000]
+                logger.info("复用已有 payload: source_alert_id=%s -> %d 字符",
+                            source_alert_id, len(reused_payload))
         if ctx.http_status:
             analysis["http_status"] = ctx.http_status
         if ctx.response_body:
             analysis["response_body"] = ctx.response_body[:8000]
+
+    def _resolve_alert_signature(self, ctx: AlertContext, analysis: dict,
+                                 is_manual: bool) -> str:
+        """解析主分析记录的 alert_signature（威胁名）
+
+        取值优先级：
+        1. 原始告警自带签名 → 直接用（普通 Suricata alert 场景）
+        2. 原始无签名且为手动分析 → 按原始日志 _id 查 soc-ai-* 已有记录的
+           alert_signature 复用（通常是 semantic_unalerted 记录的「语义检测:xxx」）
+        3. 都查不到 → 手动分析兜底：「手动分析:」+ attack_technique
+        非手动分析且原始无签名时，保持空（不额外处理）。
+        """
+        # 1. 原始签名优先
+        if ctx.signature:
+            return ctx.signature
+
+        # 非手动分析：保持原样（空）
+        if not is_manual:
+            return ctx.signature
+
+        # 2. 手动分析 + 原始无签名：按原始日志 _id 复用已有威胁名
+        source_alert_id = analysis.get("source_alert_id", "")
+        if source_alert_id:
+            try:
+                es = ESClient()
+                reused = es.find_alert_signature_by_source_alert_id(source_alert_id)
+                if reused:
+                    logger.info("复用已有威胁名: source_alert_id=%s -> %s",
+                                source_alert_id, reused)
+                    return reused
+            except Exception as e:
+                logger.warning("复用已有威胁名查询失败: %s", e)
+
+        # 3. 兜底：手动分析前缀 + attack_technique（AI 输出的攻击手法/正常流量描述）
+        technique = analysis.get("attack_technique", "")
+        fallback = f"手动分析:{technique}" if technique else "手动分析"
+        logger.info("手动分析兜底命名: %s", fallback)
+        return fallback
+
+    def _resolve_ai_field(self, analysis: dict, field: str) -> str:
+        """手动分析时，按 source_alert_id 复用已有 AI 分析记录的指定字段
+
+        与 _resolve_alert_signature 的复用机制一致，用于 payload 等字段：
+        原始日志（Zeek http/dns 等）无 payload_printable 时，同一原始日志可能已有
+        semantic_unalerted 记录（带 payload），按 @timestamp 倒序取第一条非空值复用。
+
+        Args:
+            analysis: 主分析结果 dict（需已填充 source_alert_id）
+            field: 要复用的 ai 子字段名，如 payload / response_body
+
+        Returns:
+            非空的字段值，未找到则返回空字符串
+        """
+        source_alert_id = analysis.get("source_alert_id", "")
+        if not source_alert_id:
+            return ""
+        try:
+            es = ESClient()
+            return es.find_ai_field_by_source_alert_id(source_alert_id, field)
+        except Exception as e:
+            logger.warning("复用已有字段失败: source_alert_id=%s, field=%s, err=%s",
+                           source_alert_id, field, e)
+            return ""
 
     def _fallback_result(self, ctx: AlertContext, error: str) -> dict:
         """分析失败降级结果"""

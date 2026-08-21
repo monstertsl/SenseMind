@@ -406,6 +406,65 @@ class ESClient:
             logger.warning("查询 AI 分析记录失败: %s", e)
             return {}
 
+    def find_alert_signature_by_source_alert_id(self, source_alert_id: str) -> str:
+        """按原始日志 _id 复用已有 AI 分析记录的威胁名（alert_signature）
+
+        用于手动分析「原始无签名」的日志时：同一原始日志可能已有 semantic_unalerted
+        记录（带「语义检测:xxx」威胁名）或之前分析的 alert_triage 记录，直接复用其
+        非空的 alert_signature，避免主记录因空签名在列表聚合时被错误折叠。
+
+        Args:
+            source_alert_id: 原始日志（soc-*）的 _id
+
+        Returns:
+            非空的 alert_signature，未找到则返回空字符串
+        """
+        return self.find_ai_field_by_source_alert_id(source_alert_id, "alert_signature")
+
+    def find_ai_field_by_source_alert_id(self, source_alert_id: str,
+                                         field: str) -> str:
+        """按原始日志 _id 复用已有 AI 分析记录的指定字段
+
+        用于手动分析「原始日志缺字段」的场景（如 Zeek 日志无 Suricata 签名、
+        无 payload_printable）：同一原始日志可能已有 semantic_unalerted 记录
+        （带「语义检测:xxx」威胁名 / payload），直接复用其非空值，避免主记录
+        因空字段在详情展示时缺失。
+
+        Args:
+            source_alert_id: 原始日志（soc-*）的 _id
+            field: 要复用的 ai 子字段名，如 alert_signature / payload
+
+        Returns:
+            非空的字段值，未找到则返回空字符串
+        """
+        if not source_alert_id:
+            return ""
+
+        ai_field = f"ai.{field}"
+        query = {
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"ai.source_alert_id": source_alert_id}},
+                        {"exists": {"field": ai_field}},
+                    ],
+                }
+            },
+            "size": 10,
+            "sort": [{"@timestamp": "desc"}],
+            "_source": [ai_field],
+        }
+        try:
+            resp = self.client.search(index="soc-ai-*", body=query)
+            for h in resp["hits"]["hits"]:
+                val = h["_source"].get("ai", {}).get(field, "")
+                if val:
+                    return val
+        except Exception as e:
+            logger.warning("复用已有字段查询失败: source_alert_id=%s, field=%s, err=%s",
+                           source_alert_id, field, e)
+        return ""
+
     def write_analysis(self, analysis: dict) -> str:
         """将 AI 分析结果写入 ES"""
         cfg = Config()

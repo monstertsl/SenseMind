@@ -57,6 +57,7 @@ UNALERTED_SYSTEM_PROMPT = """你是一个专业的 SOC（安全运营中心）�
 - handling_suggestion: 处置建议
 - impact_scope: 影响范围评估
 - reasoning: 简要分析推理（如有基线预判，需说明如何参考）
+- threat_name: 根据实际 payload/URL 特征生成的精炼威胁名（20 字以内，命名风格要像入侵检测签名那样简短专业，例如"PHP代码执行"、"Webshell利用"、"命令注入"、"SQL注入"、"目录遍历"；不要套用输入里的固定类别标签，要结合具体攻击行为，也不要加"执行""攻击"等冗余动词；无明确攻击行为时输出"无明确攻击手法"）
 
 严格按以下 JSON 数组格式输出，每个元素对应一个漏报攻击，顺序与输入一致，不要输出其他内容：
 ```json
@@ -67,7 +68,8 @@ UNALERTED_SYSTEM_PROMPT = """你是一个专业的 SOC（安全运营中心）�
     "attack_chain": "攻击链描述",
     "handling_suggestion": "处置建议",
     "impact_scope": "影响范围",
-    "reasoning": "分析推理"
+    "reasoning": "分析推理",
+    "threat_name": "PHP代码执行"
   }
 ]
 ```"""
@@ -116,6 +118,8 @@ def create_unalerted_analysis_chain(llm: ChatOpenAI):
                 item["confidence"] = 0.7
             if "attack_result" not in item:
                 item["attack_result"] = "未知"
+            if "threat_name" not in item or not str(item.get("threat_name", "")).strip():
+                item["threat_name"] = ""
             results.append(item)
         return results
 

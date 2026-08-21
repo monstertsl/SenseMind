@@ -436,8 +436,9 @@ async def analyze_es_alert(doc_id: str):
         raise HTTPException(status_code=404, detail=f"告警查询失败: {e}")
 
     # AI 分析（6阶段 Chain 编排，内部由 Triage 决定是否查询关联日志）
+    # is_manual=True：手动触发分析，原始无签名时做「复用已有威胁名 / 手动分析兜底」命名
     analyzer = get_analyzer()
-    analysis = await asyncio.to_thread(analyzer.analyze, alert)
+    analysis = await asyncio.to_thread(analyzer.analyze, alert, None, True)
 
     # 提取后台上下文（规则生成 + 漏报处理），不写入 ES
     bg_context = analysis.pop("_bg_context", None)
