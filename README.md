@@ -11,9 +11,9 @@
 - **双探针流量采集**：Suricata（告警/事件 + payload）与 Zeek（协议元数据）并行运行，Community ID 跨探针关联。
 - **Elastic 全栈一体化**：Filebeat → Logstash（字段裁剪 + ECS 转换 + SOC 分类）→ Elasticsearch → SenseMind Web 可视化。
 - **SOC 14 大类分类**：Logstash 实时匹配 Suricata 告警，映射 MITRE ATT&CK 战术阶段，命中重点告警自动推送 AI。
-- **6 阶段 AI 研判**：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 最终分析 → 规则生成，AI 自主决策，结构化输出。
+- **5 阶段 AI 研判**：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 最终分析，确认攻击后自动生成规则，AI 自主决策，结构化输出。
 - **三层联合查询**：Community ID 精确关联（同会话全量日志，跨 Suricata + Zeek 探针）+ 源/目的 IP 时间窗口关联（覆盖多连接、横向移动）+ IP 历史告警查询（24h），结果去重合并。
-- **类语义检测引擎**：关键词匹配（13 类攻击特征）+ 递归解码（5 层 URL/HTML/Base64/Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），零 LLM 调用捕获编码绕过和变形攻击。
+- **类语义检测引擎**：关键词匹配（14 类攻击特征）+ 递归解码（5 层 URL/HTML/Base64/Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），零 LLM 调用捕获编码绕过和变形攻击。
 - **AI 自学习闭环**：确认攻击后自动生成 Suricata 规则写入 `local.rules` 并热加载，采用 HTTP sticky buffer 精确匹配 + 动态地址组，持续积累检测能力。
 - **告警去重**：同一 `community_id` + `signature_id`、同一 `source_ip` + `signature_id`，以及同一 `community_id`（流级别，不论触发哪条规则）在时间窗口内只分析一次。
 - **一键部署**：证书生成、密码引导、规则更新、全栈启动全流程自动化。
@@ -30,7 +30,7 @@
 ### 部署
 
 ```bash
-sudo bash deploy.sh <interface>   # 如 ens192、eth0
+sudo bash deploy.sh <interface>   # 流量监听接口 如 eno1np0、ns192
 ```
 
 ### 访问
@@ -68,7 +68,7 @@ cat .env | grep ELASTIC_PASSWORD
    成         │         │
    │       全量→ES   matched→AI推送管道
    │       soc-*       │
-   │             AI 分析中心 (6阶段 Chain)
+   │             AI 分析中心 (5阶段 Chain)
    └──────────────结果回写 ES (soc-ai-*)
                        │
                   SenseMind Web 可视化
@@ -87,10 +87,12 @@ SenseMind/
 │   ├── logstash.conf            # 主管道
 │   ├── ai-push.conf             # AI 推送管道
 │   └── soc_categories.json      # SOC 分类映射
+├── suricata/
+│   └── combined.rules           # 自定义规则
 ├── ai-analyzer/
 │   ├── config.yaml              # LLM/ES/知识库/Suricata/去重 配置
 │   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
-│   └── app/                     # FastAPI + LangChain 6阶段 Chain
+│   └── app/                     # FastAPI + LangChain 5阶段 Chain
 └── web/                         # Vue 3 前端（监控中心/分析中心/日志中心/系统设置）
 ```
 `ai-analyzer/knowledge`仅有基础RAG知识，需对其进行维护提高检测准确性
@@ -126,11 +128,8 @@ sudo docker exec suricata suricatasc -c reload-rules
 # 查看 AI 生成的规则
 cat /data/suricata/lib/rules/local.rules
 
-# 重启 AI 分析中心（修改 config.yaml 后）
-docker restart ai-analyzer
-
 # 手动触发某条告警分析
-curl -X POST http://localhost:9090/api/analyze/<doc_id>
+curl -X POST http://localhost:9090/api/v1/analyze/<doc_id>
 ```
 
 ### 故障恢复
