@@ -873,6 +873,10 @@ class AlertAnalyzer:
             analysis["alert_signature"] = self._resolve_alert_signature(
                 ctx, analysis, is_manual
             )
+            # 手动分析的完全新日志无告警类型（soc_name 为空），用「手动分析」承载，
+            # 避免告警类型列空白。
+            if not analysis.get("soc_name"):
+                analysis["soc_name"] = "手动分析"
 
         # HTTP/TLS
         if ctx.http_method:
@@ -905,7 +909,8 @@ class AlertAnalyzer:
         1. 原始告警自带签名 → 直接用（普通 Suricata alert 场景）
         2. 原始无签名且为手动分析 → 按原始日志 _id 查 soc-ai-* 已有记录的
            alert_signature 复用（通常是 semantic_unalerted 记录的「语义检测:xxx」）
-        3. 都查不到 → 手动分析兜底：「手动分析:」+ attack_technique
+        3. 都查不到 → 手动分析兜底：attack_technique（「手动分析」前缀改由
+           soc_name 告警类型承载）
         非手动分析且原始无签名时，保持空（不额外处理）。
         """
         # 1. 原始签名优先
@@ -929,9 +934,10 @@ class AlertAnalyzer:
             except Exception as e:
                 logger.warning("复用已有威胁名查询失败: %s", e)
 
-        # 3. 兜底：手动分析前缀 + attack_technique（AI 输出的攻击手法/正常流量描述）
+        # 3. 兜底：attack_technique（AI 输出的攻击手法/正常流量描述）
+        # 去掉「手动分析」前缀，前缀改由 soc_name（告警类型）承载
         technique = analysis.get("attack_technique", "")
-        fallback = f"手动分析:{technique}" if technique else "手动分析"
+        fallback = technique if technique else "手动分析"
         logger.info("手动分析兜底命名: %s", fallback)
         return fallback
 

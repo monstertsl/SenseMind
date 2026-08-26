@@ -7,7 +7,7 @@ import type { AlertItem, AlertDetail, AlertQuery, AggregationBucket, TimeRange }
 
 export function useAlertList() {
   const globalStore = useGlobalFilterStore()
-  const { timeRange } = storeToRefs(globalStore)
+  const { timeRange, customTime } = storeToRefs(globalStore)
 
   const list = ref<AlertItem[]>([])
   const total = ref(0)
@@ -25,6 +25,14 @@ export function useAlertList() {
 
   function syncTimeRange() {
     query.time_range = timeRange.value as TimeRange
+    // 自定义时间范围：把起止时间传给后端
+    if (timeRange.value === 'custom' && customTime.value.start && customTime.value.end) {
+      query.time_from = customTime.value.start
+      query.time_to = customTime.value.end
+    } else {
+      query.time_from = undefined
+      query.time_to = undefined
+    }
   }
 
   const retry = createAutoRetry(async () => {
@@ -42,7 +50,13 @@ export function useAlertList() {
 
   async function fetchAggregations() {
     try {
-      const res = await getAlertAggregations('ai.soc_name', timeRange.value)
+      const isCustom = timeRange.value === 'custom'
+      const res = await getAlertAggregations(
+        'ai.soc_name',
+        timeRange.value,
+        isCustom ? customTime.value.start || undefined : undefined,
+        isCustom ? customTime.value.end || undefined : undefined,
+      )
       socNameBuckets.value = res.buckets
     } catch {
       // 静默失败
@@ -94,6 +108,19 @@ export function useAlertList() {
     fetch()
     fetchAggregations()
   })
+
+  // 自定义时间范围确认后，若当前已是 custom 粒度则立即刷新
+  watch(
+    customTime,
+    () => {
+      if (timeRange.value === 'custom') {
+        query.page = 1
+        fetch()
+        fetchAggregations()
+      }
+    },
+    { deep: true },
+  )
 
   onBeforeUnmount(() => {
     retry.clear()

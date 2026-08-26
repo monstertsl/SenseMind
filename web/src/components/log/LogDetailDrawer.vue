@@ -134,6 +134,32 @@ function isExpanded(n: TreeNode): boolean {
   return expandedPaths.value.has(n.path || 'root')
 }
 
+// 收集所有有子节点的 path（用于一键展开/折叠）
+function collectExpandablePaths(n: TreeNode, acc: Set<string>) {
+  if (n.children?.length) {
+    acc.add(n.path || 'root')
+    n.children.forEach((c) => collectExpandablePaths(c, acc))
+  }
+}
+
+const allExpanded = computed(() => {
+  if (!root.value) return false
+  const paths = new Set<string>()
+  collectExpandablePaths(root.value, paths)
+  return paths.size > 0 && [...paths].every((p) => expandedPaths.value.has(p))
+})
+
+function expandAll() {
+  if (!root.value) return
+  const paths = new Set<string>(['root'])
+  collectExpandablePaths(root.value, paths)
+  expandedPaths.value = paths
+}
+
+function collapseAll() {
+  expandedPaths.value = new Set<string>(['root'])
+}
+
 const flatNodes = computed<TreeNode[]>(() => {
   const result: TreeNode[] = []
   if (!root.value) return result
@@ -214,6 +240,16 @@ function onContextField(n: TreeNode) {
 
         <!-- JSON 树形视图 -->
         <div class="json-tree">
+          <div class="json-toolbar">
+            <el-button
+              size="small"
+              plain
+              class="expand-toggle-btn"
+              @click="allExpanded ? collapseAll() : expandAll()"
+            >
+              {{ allExpanded ? '全部折叠' : '全部展开' }}
+            </el-button>
+          </div>
           <div
             v-for="n in flatNodes"
             :key="n.path || 'root'"
@@ -289,6 +325,23 @@ function onContextField(n: TreeNode) {
   font-size: 12px;
   max-height: 60vh;
   overflow: auto;
+}
+
+.json-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: $space-xs;
+  .expand-toggle-btn {
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.35);
+    background: transparent;
+    &:hover,
+    &:focus {
+      color: #ffffff;
+      border-color: #ffffff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+  }
 }
 
 .json-node {

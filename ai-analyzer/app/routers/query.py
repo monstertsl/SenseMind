@@ -54,10 +54,12 @@ def list_alerts(
 def aggregations(
     field: str = Query(...),
     time_range: str = Query("7d"),
+    time_from: str = Query(None),
+    time_to: str = Query(None),
     current_user: AuthContext = Depends(get_current_user),
 ):
     service = get_query_service()
-    data = service.aggregations(field, time_range)
+    data = service.aggregations(field, time_range, time_from, time_to)
     return ApiResponse(
         code=0, message="ok", data=data.model_dump(), request_id=str(uuid.uuid4())
     )

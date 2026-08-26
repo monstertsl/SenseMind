@@ -17,6 +17,18 @@ def _hash_query(params: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:16]
 
 
+def _signature_wildcard(field: str, value: str) -> dict:
+    """威胁名模糊匹配：将用户输入转成子串通配查询。
+
+    text 字段用 standard 分词后，log4 这类前缀在倒排索引里不存在独立 token，
+    无法用 match/match_phrase 命中 log4j、log4shell 等。改用 wildcard 包裹
+    子串（*log4*），并转义用户输入中的通配符避免误匹配。
+    """
+    # 转义用户输入里的 ES 通配符，仅保留首尾包裹的 *
+    escaped = value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
+    return {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
+
+
 class QueryService:
     """告警查询服务"""
 
@@ -48,7 +60,7 @@ class QueryService:
         if params.confidence is not None:
             must.append({"term": {"ai.confidence": params.confidence}})
         if params.alert_signature:
-            must.append({"match_phrase": {"ai.alert_signature": params.alert_signature}})
+            must.append(_signature_wildcard("ai.alert_signature", params.alert_signature))
         if params.source_alert_id:
             must.append({"term": {"ai.source_alert_id": params.source_alert_id}})
         if params.attack_result:
@@ -60,7 +72,7 @@ class QueryService:
         if params.exclude_destination_ip:
             must_not.append({"term": {"ai.destination_ip": params.exclude_destination_ip}})
         if params.exclude_alert_signature:
-            must_not.append({"match_phrase": {"ai.alert_signature": params.exclude_alert_signature}})
+            must_not.append(_signature_wildcard("ai.alert_signature", params.exclude_alert_signature))
 
         bool_clause = {"must": must}
         if must_not:
@@ -211,14 +223,19 @@ class QueryService:
         self.cache.set(cache_key, result, ttl=60)
         return result
 
-    def aggregations(self, field: str, time_range: str) -> AggregationData:
+    def aggregations(self, field: str, time_range: str, time_from: str = None, time_to: str = None) -> AggregationData:
         """列内筛选项聚合"""
-        cache_key = f"aggregations:{field}:{time_range}"
+        cache_key = f"aggregations:{field}:{time_range}:{time_from}:{time_to}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return AggregationData(**cached)
 
-        time_from, time_to = self.es.time_range_to_iso(time_range)
+        range_from, range_to = self.es.time_range_to_iso(time_range)
+        if time_from:
+            range_from = time_from
+        if time_to:
+            range_to = time_to
+        time_from, time_to = range_from, range_to
         body = {
             "size": 0,
             "query": {"range": {"ai.alert_timestamp": {"gte": time_from, "lte": time_to}}},
