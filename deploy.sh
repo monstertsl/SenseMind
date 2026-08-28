@@ -714,11 +714,13 @@ if [ -f "$SURICATA_YAML" ]; then
     # af-packet 抓包优化：命令行 -i ${INTERFACE} 会绕过 af-packet 块默认参数，
     # 默认 ring-size 过小在高流量镜像口下内核丢包严重（实测 12.5%），攻击流量被随机丢弃。
     # 修复：interface 用 default 通配符（实际接口仍由 -i 传入，兼容不同设备网卡名），
-    # threads/cluster-type/ring-size 显式优化。
+    # threads/ring-size 显式优化；cluster-type 保持 Suricata 默认 cluster_flow（
+    # 实测 cluster_flow + ring-size 65536 既不打散流（pkt_on_wrong_thread=0）也不丢包，
+    # 优于 cluster_cpu——cluster_cpu 会把同一 TCP 流打散到多线程导致流重组失败、漏检攻击）。
     # 注意：sed 地址范围 /^af-packet:/,/^[a-z][a-z-]*:/ 限定只在 af-packet 块内替换，
     # 避免误伤 pcap/netmap/ebpf 等其它模块的 interface/threads 配置。
     sed -i -E \
-      '/^af-packet:/,/^[a-z][a-z-]*:/ { s/^([[:space:]]*)- interface: .*$/\1- interface: default/; s/^([[:space:]]*)#?threads: .*$/\1threads: 16/; s/^([[:space:]]*)cluster-type: .*$/\1cluster-type: cluster_cpu/; s/^([[:space:]]*)#?ring-size: .*$/\1ring-size: 65536/; }' \
+      '/^af-packet:/,/^[a-z][a-z-]*:/ { s/^([[:space:]]*)- interface: .*$/\1- interface: default/; s/^([[:space:]]*)#?threads: .*$/\1threads: 16/; s/^([[:space:]]*)#?ring-size: .*$/\1ring-size: 65536/; }' \
       "$SURICATA_YAML"
 
     echo "[+] Suricata 配置已更新（规则文件将随后加载）"
