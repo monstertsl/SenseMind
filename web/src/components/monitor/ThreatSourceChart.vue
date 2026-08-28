@@ -31,6 +31,8 @@ const option = computed(() => buildThreatSourceOption(props.data))
   box-shadow: $shadow-card;
   padding: $space-lg $space-xl $space-md;
   height: 100%;
+  min-width: 0; // grid 子项允许收缩，避免 F12 开关后图表撑破容器
+  overflow: hidden;
 }
 .chart-header {
   display: flex;

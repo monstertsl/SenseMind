@@ -46,6 +46,13 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     except Exception as e:
         logger.error("定时任务启动失败: %s", e, exc_info=True)
+    # 系统资源时序采集（5 秒粒度，独立后台线程）
+    try:
+        from .services.metric_collector import start_collector
+        start_collector()
+        logger.info("系统资源采集器已启动")
+    except Exception as e:
+        logger.error("系统资源采集器启动失败: %s", e, exc_info=True)
     yield
     # 关闭：停止定时任务
     shutdown_scheduler()

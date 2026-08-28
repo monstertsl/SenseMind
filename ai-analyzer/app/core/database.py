@@ -41,6 +41,7 @@ def init_db() -> None:
     from ..db_models.system_config import SystemConfig  # noqa
     from ..db_models.audit_log import SystemLog  # noqa
     from ..db_models.ai_bypass_rule import AiBypassRule  # noqa
+    from ..db_models.system_metric import SystemMetric  # noqa
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)
@@ -53,6 +54,17 @@ def init_db() -> None:
             ))
     except Exception as e:  # noqa: BLE001
         logger.warning("ai_bypass_rules.host 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
+
+    # 迁移：为已存在的 system_config 表补充 metric_retention_days 字段（幂等）
+    # 注意：create_all 只会建新表，不会给已存在的表加列；system_config 是单行配置表，
+    # 缺列会导致所有读取配置的请求（含登录鉴权）500。
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS metric_retention_days INTEGER NOT NULL DEFAULT 30"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("system_config.metric_retention_days 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
 
     with SessionLocal() as db:
         # 初始化 admin 用户

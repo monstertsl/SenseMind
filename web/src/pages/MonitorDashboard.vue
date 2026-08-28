@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import MetricCard from '@/components/monitor/MetricCard.vue'
 import AiOverviewCard from '@/components/monitor/AiOverviewCard.vue'
 import SocAttackChart from '@/components/monitor/SocAttackChart.vue'
 import ThreatVerdictChart from '@/components/monitor/ThreatVerdictChart.vue'
 import ThreatSourceChart from '@/components/monitor/ThreatSourceChart.vue'
-import SystemInfoChart from '@/components/monitor/SystemInfoChart.vue'
+import ResourceTrendChart from '@/components/monitor/ResourceTrendChart.vue'
+import TrafficTrendChart from '@/components/monitor/TrafficTrendChart.vue'
+import DiskGaugeCard from '@/components/monitor/DiskGaugeCard.vue'
 import SkeletonCard from '@/components/common/SkeletonCard.vue'
 import { useAiMetrics } from '@/composables/useAiMetrics'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
@@ -13,12 +15,43 @@ import { useAnalysisRouter } from '@/composables/useAnalysisRouter'
 import { storeToRefs } from 'pinia'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { RISK_LABEL_MAP, RISK_COLOR_MAP } from '@/constants/esFieldMapping'
+import type { MetricRange } from '@/types'
+
+/** 资源趋势图独立时间档位（不跟随全局时间，localStorage 持久化） */
+const METRIC_RANGE_KEY = 'sensemind_metricRange'
+const METRIC_RANGES: Array<{ label: string; value: MetricRange }> = [
+  { label: '最近1小时', value: '1h' },
+  { label: '最近24小时', value: '24h' },
+  { label: '最近7天', value: '7d' },
+]
+function loadMetricRange(): MetricRange {
+  const raw = localStorage.getItem(METRIC_RANGE_KEY)
+  if (raw === '1h' || raw === '24h' || raw === '7d') return raw
+  return '24h'
+}
+const metricRange = ref<MetricRange>(loadMetricRange())
+watch(metricRange, (v) => localStorage.setItem(METRIC_RANGE_KEY, v))
+
+// 趋势图随全局刷新间隔自动更新（用 tick 触发子组件重新拉取）
+const { refreshInterval } = storeToRefs(useGlobalFilterStore())
+const refreshTick = ref(0)
+let _tickTimer: ReturnType<typeof setInterval> | null = null
+function setupTick() {
+  if (_tickTimer) clearInterval(_tickTimer)
+  const map: Record<string, number> = { '5s': 5000, '10s': 10000, '30s': 30000, '1m': 60000, '2m': 120000 }
+  const ms = map[refreshInterval.value]
+  if (ms) _tickTimer = setInterval(() => (refreshTick.value += 1), ms)
+}
+watch(refreshInterval, setupTick, { immediate: true })
+onBeforeUnmount(() => {
+  if (_tickTimer) clearInterval(_tickTimer)
+})
 
 const { data, loading, fetch } = useAiMetrics()
 const { goFromMetricCard } = useAnalysisRouter()
 const { timeRange } = storeToRefs(useGlobalFilterStore())
 
-// 系统资源监控（SystemInfoChart）自带 5s 刷新，此处仅刷新核心指标数据
+// 核心指标区数据刷新
 useAutoRefresh(fetch)
 
 const confidenceTip = computed(() => {
@@ -110,11 +143,26 @@ const riskColor = computed(() =>
       </div>
     </section>
 
-    <!-- 3. 系统资源监控区 -->
-    <section class="section system-section">
-      <div class="section-title">系统资源监控</div>
-      <div class="system-grid">
-        <SystemInfoChart />
+    <!-- 3. 资源趋势监控区（趋势图 + 磁盘，独立时间档位） -->
+    <section class="section trend-section">
+      <div class="trend-header">
+        <div class="section-title">资源趋势监控</div>
+        <div class="range-switch">
+          <button
+            v-for="r in METRIC_RANGES"
+            :key="r.value"
+            class="range-btn"
+            :class="{ active: metricRange === r.value }"
+            @click="metricRange = r.value"
+          >
+            {{ r.label }}
+          </button>
+        </div>
+      </div>
+      <div class="trend-grid">
+        <ResourceTrendChart :range="metricRange" :refresh-key="refreshTick" />
+        <TrafficTrendChart :range="metricRange" :refresh-key="refreshTick" />
+        <DiskGaugeCard :refresh-key="refreshTick" />
       </div>
     </section>
   </div>
@@ -153,10 +201,50 @@ const riskColor = computed(() =>
   gap: 16px;
 }
 
-.system-grid {
+// ---- 资源趋势监控区 ----
+.trend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.range-switch {
+  display: flex;
+  gap: 4px;
+  background: $color-bg-soft;
+  padding: 3px;
+  border-radius: 6px;
+}
+
+.range-btn {
+  border: none;
+  background: transparent;
+  color: $color-text-secondary;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+
+  &:hover {
+    color: $color-text-regular;
+  }
+
+  &.active {
+    background: #fff;
+    color: $color-primary;
+    font-weight: 600;
+    box-shadow: $shadow-sm;
+  }
+}
+
+.trend-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
+  align-items: stretch;
 }
 
 .risk-badge-large {
@@ -177,18 +265,23 @@ const riskColor = computed(() =>
   .charts-grid {
     grid-template-columns: 1fr 1fr;
   }
+  .trend-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 1024px) {
   .metrics-grid,
-  .charts-grid {
+  .charts-grid,
+  .trend-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (max-width: 768px) {
   .metrics-grid,
-  .charts-grid {
+  .charts-grid,
+  .trend-grid {
     grid-template-columns: 1fr;
   }
 }

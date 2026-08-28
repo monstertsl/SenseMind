@@ -17,6 +17,8 @@ class SystemConfig(Base):
     ai_retention_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
     raw_log_retention_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
     audit_log_retention_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
+    # 系统资源时序数据（system_metrics 表）保留天数，默认 30 天
+    metric_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
 
     # 安全策略
     login_fail_limit: Mapped[int] = mapped_column(Integer, default=5, nullable=False)

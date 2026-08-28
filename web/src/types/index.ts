@@ -43,16 +43,29 @@ export interface MetricsOverview {
   }
 }
 
-// ---- 系统信息 ----
+// ---- 系统信息（仅磁盘，CPU/内存已由时序接口提供）----
 export interface SystemInfo {
-  cpu_percent: number
-  cpu_count: number
-  memory_percent: number
-  memory_total: number
-  memory_used: number
   disk_percent: number
   disk_total: number
   disk_used: number
+}
+
+// ---- 系统资源时序（趋势图）----
+export type MetricRange = '1h' | '24h' | '7d'
+
+export interface MetricPoint {
+  ts: string
+  cpu_percent: number
+  memory_percent: number
+  traffic_mbps: number
+  /** 丢包增量（该桶内 SUM 合计） */
+  drops: number
+}
+
+export interface SystemMetrics {
+  range: MetricRange
+  bucket_seconds: number
+  points: MetricPoint[]
 }
 
 // ---- 分析中心 ----

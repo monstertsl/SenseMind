@@ -20,6 +20,7 @@ from .core.audit import write_system_log
 from .db_models.system_config import SystemConfig
 from .db_models.user import User
 from .db_models.audit_log import SystemLog
+from .db_models.system_metric import SystemMetric
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,29 @@ def cleanup_ai_es_indices() -> None:
     _cleanup_es_indices("soc-ai-*", days, "soc-ai-* 分析日志", "cleanup_ai_es_log")
 
 
+def cleanup_system_metrics() -> None:
+    """清理超过 metric_retention_days 的系统资源时序数据（system_metrics 表）。
+
+    created_at 由 default=datetime.utcnow 写入（UTC naive），故 cutoff 也用
+    datetime.utcnow() 保持一致；若用北京时间 aware datetime 会差 8 小时提前删。
+    """
+    with SessionLocal() as db:
+        cfg = _load_config(db)
+        days = getattr(cfg, "metric_retention_days", 30) if cfg else 30
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    try:
+        with SessionLocal() as db:
+            deleted = db.execute(
+                SystemMetric.__table__.delete().where(SystemMetric.created_at < cutoff)
+            ).rowcount
+            db.commit()
+            if deleted > 0:
+                logger.info("系统资源时序数据清理完成：删除 %d 条（保留 %s 天）", deleted, days)
+    except Exception as e:
+        logger.error("系统资源时序数据清理失败: %s", e, exc_info=True)
+
+
 def deactivate_inactive_users() -> None:
     """禁用长期未登录的非 admin 用户（超过 inactive_days_limit 天）。"""
     with SessionLocal() as db:
@@ -316,6 +340,7 @@ def start_scheduler() -> None:
     _scheduler.add_job(cleanup_raw_es_indices, "cron", hour=2, minute=30, id="cleanup_raw_es_indices")
     _scheduler.add_job(cleanup_ai_es_indices, "cron", hour=2, minute=32, id="cleanup_ai_es_indices")
     _scheduler.add_job(cleanup_audit_logs, "cron", hour=2, minute=45, id="cleanup_audit_logs")
+    _scheduler.add_job(cleanup_system_metrics, "cron", hour=2, minute=50, id="cleanup_system_metrics")
     _scheduler.add_job(deactivate_inactive_users, "cron", hour=3, minute=0, id="deactivate_inactive_users")
     _scheduler.start()
     logger.info("定时任务已启动（02:00 原始日志 / 02:30 soc索引 / 02:32 soc-ai索引 / 02:45 审计日志 / 03:00 未登录禁用）")
