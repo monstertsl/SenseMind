@@ -20,6 +20,8 @@ const props = defineProps<{
 
 const data = ref<SystemMetrics | null>(null)
 const loading = ref(true)
+/** 切档位标记：range 变化时先清空旧图（旧的不要），新数据到后再 notMerge 重建展开 */
+const switching = ref(false)
 
 const C_FLOW = '#c4e383'
 const C_DROP = '#f7916a'
@@ -29,7 +31,10 @@ const C_GRID = '#e2e8f0'
 
 async function load() {
   try {
-    data.value = await getSystemMetrics(props.range)
+    const d = await getSystemMetrics(props.range)
+    // 若加载期间档位又变了（快速连点），丢弃过期响应，避免旧档数据覆盖
+    if (d.range !== props.range) return
+    data.value = d
   } catch (e) {
     // 保留旧数据，但输出日志便于排查（此前静默吞错导致无数据时难以定位）
     console.error('[TrafficTrendChart] 加载失败', props.range, e)
@@ -38,9 +43,20 @@ async function load() {
   }
 }
 
+let prevRange: MetricRange | undefined = undefined
 watch(
   () => [props.range, props.refreshKey],
-  () => {
+  ([range]) => {
+    // 切档位（非单纯刷新）：立即清空旧数据，图表瞬间归空，不做形变过渡
+    if (prevRange !== undefined && range !== prevRange) {
+      switching.value = true
+      data.value = null
+      // 关键：真正把旧曲线从图表上「撤下」，让 series 进入空状态。
+      // 之后新数据到位时 ECharts 才会识别为「从空到有」触发入场 clip 划线动画；
+      // 否则 notMerge 重建被当作「更新」走 animationDurationUpdate(=0) 瞬间跳变。
+      chartRef.value?.clearSeries()
+    }
+    prevRange = range as MetricRange
     loading.value = true
     load()
   },
@@ -62,20 +78,48 @@ function movingAvg(arr: number[], window: number): number[] {
   return result
 }
 
-/** 流量平滑窗口：统一 60 秒均值（10 秒采样 × 6 个点） */
-const trafficWindow = 6
+/**
+ * 流量滑动平均窗口：
+ * - 1h 档：后端返回 10 秒原始点，需滑动平均（窗口 6 = 60 秒）消除抖动
+ * - 24h/7d 档：后端已按 10 分钟/1 小时桶聚合（均值），无需再平滑
+ */
+const trafficWindow = computed(() => (props.range === '1h' ? 6 : 1))
 
-const trafficData = computed(() =>
-  movingAvg(points.value.map((p) => p.traffic_mbps), trafficWindow),
-)
+/** 滑动平均后的流量，带时间戳（time 轴需 [时间戳, 数值] 二维数组） */
+const trafficData = computed(() => {
+  const smoothed = movingAvg(points.value.map((p) => p.traffic_mbps), trafficWindow.value)
+  return points.value.map((p, i) => [new Date(p.ts).getTime(), smoothed[i]])
+})
 
 // 数据就绪后显式重绘：仅依赖 watch(props.option) 可能因 chart 尚未初始化而漏渲染
 const chartRef = ref<InstanceType<typeof BaseChart> | null>(null)
+/** 图表外层容器：用于播放「从左往右揭开」的纯 CSS 展开动画 */
+const wrapRef = ref<HTMLDivElement | null>(null)
+
+/**
+ * 重播展开动画：移除 class → 强制重排 → 重新加上。
+ * 用纯 CSS clip-path 实现，不依赖 ECharts 内部动画机制（稳定可控）。
+ */
+function playReveal() {
+  const el = wrapRef.value
+  if (!el) return
+  el.classList.remove('reveal')
+  void el.offsetWidth // 强制重排，确保动画重新播放（否则同名 class 不会重启）
+  el.classList.add('reveal')
+}
+
 watch(
   points,
   async (pts) => {
     await nextTick()
-    if (pts.length > 0) {
+    if (pts.length === 0) return
+    if (switching.value) {
+      // 切档位场景：旧曲线已清空，喂新数据的同时播放从左往右展开动画
+      switching.value = false
+      chartRef.value?.setChartOption(option.value)
+      playReveal()
+    } else {
+      // 数据刷新（range 不变）走合并，平滑，不播动画
       chartRef.value?.setChartOption(option.value)
     }
   },
@@ -90,11 +134,16 @@ function fmtTime(iso: string): string {
 
 const option = computed<EChartsOption>(() => {
   const pts = points.value
-  const times = pts.map((p) => p.ts)
   return {
     color: [C_FLOW, C_DROP],
     // 全局文字样式：Canvas 渲染不继承页面字体，必须显式指定
     textStyle: { fontFamily: CHART_FONT_FAMILY },
+    // 动画策略：切档位的「从左往右展开」效果由外层 .chart-reveal 的纯 CSS clip-path
+    // 动画实现（见样式段），不依赖 ECharts 内部动画——后者会被 resize 打断且触发条件苛刻。
+    // 此处整体关闭 ECharts 动画，避免其内部过渡（轴张开、点对点形变）与 CSS 动画打架。
+    // universalTransition 是 SERIES 级配置（见各 series 的 universalTransition:false），
+    // 写顶层无效！它默认开启，切档位时把旧点形变到新位置造成"从右滑出"。
+    animation: false,
     grid: { left: 58, right: 52, top: 16, bottom: 32 },
     tooltip: {
       trigger: 'axis', // Shared Tooltip
@@ -108,23 +157,30 @@ const option = computed<EChartsOption>(() => {
       textStyle: { color: C_TEXT, fontSize: 12 },
       // 双轴必须自定义 formatter 带单位，否则数值分不清是哪个轴的
       formatter: (params: unknown) => {
-        const arr = params as Array<{ axisValue: string; seriesName: string; value: number; marker: string }>
+        // time 轴下 value 为 [时间戳, 数值]，axisValue 为时间戳数值
+        const arr = params as Array<{
+          axisValue: number
+          value: [number, number]
+          seriesName: string
+          marker: string
+        }>
         if (!arr?.length) return ''
-        const head = `<div style="font-size:12px;color:#64748b;margin-bottom:4px">${fmtTime(arr[0].axisValue)}</div>`
+        const head = `<div style="font-size:12px;color:#64748b;margin-bottom:4px">${fmtTime(new Date(arr[0].axisValue).toISOString())}</div>`
         const rows = arr.map((p) => {
+          const v = Array.isArray(p.value) ? p.value[1] : p.value
           const unit = p.seriesName === '丢包' ? '包' : 'Mbps'
           const warn =
-            p.seriesName === '丢包' && p.value > 0
+            p.seriesName === '丢包' && v > 0
               ? ';color:#d97706;font-weight:700'
               : ';font-weight:600'
-          return `${p.marker}${p.seriesName}<span style="float:right;margin-left:20px${warn}">${p.value.toLocaleString()} ${unit}</span>`
+          return `${p.marker}${p.seriesName}<span style="float:right;margin-left:20px${warn}">${Number(v).toLocaleString()} ${unit}</span>`
         })
         return head + rows.join('<br/>')
       },
     },
     xAxis: {
-      type: 'category',
-      data: times,
+      // 时间轴：切换档位时点按真实时间戳插值移动，产生收缩/张开的缩放过渡
+      type: 'time',
       boundaryGap: false,
       axisLine: { lineStyle: { color: C_GRID } },
       axisTick: { show: false },
@@ -132,7 +188,7 @@ const option = computed<EChartsOption>(() => {
         color: C_SUB,
         fontSize: 10,
         hideOverlap: true,
-        formatter: (value: string) => {
+        formatter: (value: number) => {
           const d = new Date(value)
           const p = (n: number) => String(n).padStart(2, '0')
           if (props.range === '1h' || props.range === '24h') return `${p(d.getHours())}:${p(d.getMinutes())}`
@@ -169,8 +225,13 @@ const option = computed<EChartsOption>(() => {
       {
         name: '流量',
         type: 'line',
+        // 关键：universalTransition 是 series 级配置，必须写在这里才能生效！
+        // 它默认开启，切档位时会把旧点形变到新位置（X 轴跨度变化 24 倍），
+        // 造成整条线从右侧滑出的「拉屎」效果。1h↔24h 点数相同(360)会完美配对
+        // 触发形变，7d(336)点数不同配对失败反而正常。
+        universalTransition: false,
         yAxisIndex: 0,
-        data: trafficData.value, // 滑动平均后的流量，消除梳子状抖动
+        data: trafficData.value, // 滑动平均后的流量（带时间戳），消除梳子状抖动
         smooth: 0.3,
         showSymbol: false,
         emphasis: { disabled: true }, // 去掉 hover 高亮
@@ -180,8 +241,9 @@ const option = computed<EChartsOption>(() => {
       {
         name: '丢包',
         type: 'line',
+        universalTransition: false,
         yAxisIndex: 1,
-        data: pts.map((p) => p.drops),
+        data: pts.map((p) => [new Date(p.ts).getTime(), p.drops]),
         // 丢包是整数事件量，不做平滑（平滑会产生 0.几 的小数插值）
         smooth: false,
         showSymbol: false,
@@ -207,7 +269,9 @@ defineExpose({ load })
         <i class="dot" :style="{ background: C_DROP }"></i>丢包
       </span>
     </div>
-    <BaseChart ref="chartRef" :option="option" :loading="loading" height="260px" />
+    <div ref="wrapRef" class="chart-reveal">
+      <BaseChart ref="chartRef" :option="option" :loading="loading" height="260px" :auto-update="false" />
+    </div>
   </div>
 </template>
 
@@ -250,5 +314,18 @@ defineExpose({ load })
   border-radius: 2px;
   margin-right: 4px;
   vertical-align: middle;
+}
+// 切档位展开动画：clip-path 从左往右揭开，纯 CSS 实现，
+// 不依赖 ECharts 内部动画（其入场动画会被 resize 等打断，不可靠）
+.chart-reveal.reveal {
+  animation: chart-reveal 800ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+@keyframes chart-reveal {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
 }
 </style>

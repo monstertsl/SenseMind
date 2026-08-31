@@ -28,10 +28,11 @@ logger = logging.getLogger(__name__)
 _SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 # 档位 → (跨度秒数, 桶大小秒数)；桶大小 0 表示不聚合
+# 方案 A：各档位点数接近（约 300+ 点），视觉密度一致
 RANGES = {
-    "1h": (3600, 0),
-    "24h": (86400, 120),
-    "7d": (604800, 1800),
+    "1h": (3600, 10),       # 10 秒桶 → 360 点
+    "24h": (86400, 240),    # 4 分钟桶 → 360 点
+    "7d": (604800, 1800),   # 30 分钟桶 → 336 点
 }
 
 
@@ -89,9 +90,12 @@ def query_metrics(range_key: str = "24h") -> dict:
             ]
         else:
             # 按固定时间桶聚合（Postgres）：
-            # EXTRACT(EPOCH FROM created_at) 取整 → 整除桶大小 → 对齐桶边界
+            # EXTRACT(EPOCH FROM created_at) 取整 → 整除桶大小 → 对齐桶边界。
+            # 注意：SQLAlchemy 会把 bucket(int) 转成 NUMERIC，导致 BIGINT/NUMERIC 返回
+            # 带小数、整除对齐失效（每个点各成一组）。必须对除法结果显式 cast 回整数
+            # （cast 会截断小数，等效 floor）。
             ts_sec = func.cast(func.extract("epoch", SystemMetric.created_at), BigInteger)
-            bucket_expr = (ts_sec / bucket) * bucket
+            bucket_expr = func.cast(ts_sec / bucket, BigInteger) * bucket
 
             rows = db.execute(
                 select(
