@@ -62,6 +62,7 @@
         "file upload",
         "webshell",
         "path traversal",
+        "path_traversal",
         "directory traversal",
         "lfi",
         "rfi",
@@ -183,6 +184,7 @@
         "apache vuln",
         "nginx vuln",
         "cve-",
+        "exploit",
         "exploit attempt",
         "exploit kit",
         "exploit activity",
@@ -359,7 +361,8 @@
         "access key",
         "secret key",
         "token leak",
-        "password leak"
+        "password leak",
+        "info leak"
       ],
       "soc_category": "13_info_leak",
       "soc_name": "信息泄露",
