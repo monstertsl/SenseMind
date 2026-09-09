@@ -139,6 +139,14 @@ def collect_once() -> bool:
             _prev_kernel_drops = drops_now
             _prev_decoder_bytes = bytes_now
             _last_change_ts = now_ts
+        elif bytes_now < _prev_decoder_bytes or drops_now < _prev_kernel_drops:
+            logger.warning(
+                "Suricata 计数器回退，重建基线: bytes %s->%s, drops %s->%s",
+                _prev_decoder_bytes, bytes_now, _prev_kernel_drops, drops_now,
+            )
+            _prev_kernel_drops = drops_now
+            _prev_decoder_bytes = bytes_now
+            _last_change_ts = now_ts
         elif bytes_now > _prev_decoder_bytes:
             # 计数器已刷新：按实际经过时间折算速率
             elapsed = max(now_ts - (_last_change_ts or now_ts), 1.0)

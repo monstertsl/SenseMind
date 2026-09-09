@@ -111,7 +111,8 @@ const option = computed<EChartsOption>(() => {
     // universalTransition 是 SERIES 级配置（见各 series 的 universalTransition:false），
     // 写顶层无效！它默认开启，切档位时把旧点形变到新位置造成"从右滑出"。
     animation: false,
-    grid: { left: 48, right: 20, top: 16, bottom: 32 },
+    // bottom 需容纳倾斜后的标签（45° 投影高度），否则被卡片 overflow:hidden 裁掉
+    grid: { left: 48, right: 20, top: 16, bottom: 56 },
     tooltip: {
       trigger: 'axis', // Shared Tooltip：一次显示该时刻所有序列
       axisPointer: {
@@ -152,6 +153,7 @@ const option = computed<EChartsOption>(() => {
         color: C_SUB,
         fontSize: 10,
         hideOverlap: true,
+        rotate: 45,
         formatter: (value: number) => {
           const d = new Date(value)
           const p2 = (n: number) => String(n).padStart(2, '0')
