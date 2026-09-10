@@ -677,51 +677,11 @@ if [ -f "$SURICATA_YAML" ]; then
     chmod 644 "$LOCAL_RULES" "$COMBINED_RULES"
     echo "[+] 已初始化空 local.rules（仅供 AI 自动生成规则写入）与 combined.rules"
 
-    # 开启 alert 事件的 HTTP body 记录，供 AI 判断攻击是否成功
-    # http-body: Base64 编码的完整响应体（保留中文），由 ai-analyzer 解码
-    # http-body-printable: 可打印格式（中文被替换为.），作为回退
-    # 两者都是 - alert: 部分的选项，需要 metadata 启用才会生效
-    # 同时清理 - http: 部分下旧版误加的非注释 http-body-printable 行
-    sed -i -E \
-      -e 's/community-id: false/community-id: true/' \
-      -e '/- alert:/,/- frame:/ { s/# *(payload-buffer-size:)/\1/; s/# *(payload-printable:)/\1/; s/# *(http-body-printable:)/\1/; s/# *(http-body: yes)/\1/ }' \
-      -e '/^[[:space:]]*- http:/,/^[[:space:]]*- [a-z]/ { /^[[:space:]]*http-body-printable:/d }' \
-      -e 's/http-body-inline: auto/http-body-inline: yes/' \
-      "$SURICATA_YAML"
-
-    # 保留 local.rules 仅用于 AI 自动生成规则
-    # suricata 8.x unix-command 默认 enabled: auto，无需额外配置
-    if grep -q 'suricata\.rules' "$SURICATA_YAML"; then
-        sed -i 's/- suricata\.rules/- combined.rules/' "$SURICATA_YAML"
-    fi
-    grep -q 'combined.rules' "$SURICATA_YAML" || \
-        sed -i '/^rule-files:/a\  - combined.rules' "$SURICATA_YAML"
-    if ! grep -q 'local.rules' "$SURICATA_YAML"; then
-        sed -i '/- combined\.rules/a\  - local.rules' "$SURICATA_YAML"
-    fi
-
-    # 源头禁用 eve-log 的 stats/flow/mdns/files/snmp/dcerpc（SOC 不入库，纯协议元数据噪音）
-    sed -i -E \
-      -e '/^[[:space:]]{8}- stats:/,/^[[:space:]]*# bi-directional flows/ s/^/# /' \
-      -e 's/^([[:space:]]{8})- flow$/# \1- flow/' \
-      -e 's/^([[:space:]]{8})- mdns:$/# \1- mdns:/' \
-      -e 's/^([[:space:]]{8})- files:$/# \1- files:/' \
-      -e 's/^([[:space:]]{12})force-magic: no.*$/# \1force-magic: no/' \
-      -e 's/^([[:space:]]{8})- snmp$/# \1- snmp/' \
-      -e 's/^([[:space:]]{8})- dcerpc$/# \1- dcerpc/' \
-      "$SURICATA_YAML"
-
-    # af-packet 抓包优化：命令行 -i ${INTERFACE} 会绕过 af-packet 块默认参数，
-    # 默认 ring-size 过小在高流量镜像口下内核丢包严重（实测 12.5%），攻击流量被随机丢弃。
-    # 修复：interface 用 default 通配符（实际接口仍由 -i 传入，兼容不同设备网卡名），
-    # threads/ring-size 显式优化；cluster-type 保持 Suricata 默认 cluster_flow（
-    # 实测 cluster_flow + ring-size 65536 既不打散流（pkt_on_wrong_thread=0）也不丢包，
-    # 优于 cluster_cpu——cluster_cpu 会把同一 TCP 流打散到多线程导致流重组失败、漏检攻击）。
-    # 注意：sed 地址范围 /^af-packet:/,/^[a-z][a-z-]*:/ 限定只在 af-packet 块内替换，
-    # 避免误伤 pcap/netmap/ebpf 等其它模块的 interface/threads 配置。
-    sed -i -E \
-      '/^af-packet:/,/^[a-z][a-z-]*:/ { s/^([[:space:]]*)- interface: .*$/\1- interface: default/; s/^([[:space:]]*)#?threads: .*$/\1threads: 16/; s/^([[:space:]]*)#?ring-size: .*$/\1ring-size: 65536/; }' \
-      "$SURICATA_YAML"
+    # 所有 yaml 参数修改统一由 suricata/patch_yaml.py 完成：
+    python3 "$BASE_DIR/suricata/patch_yaml.py" "$SURICATA_YAML" || {
+        echo "[-] 错误：Suricata 配置补丁未成功应用，请检查 yaml 结构"
+        exit 1
+    }
 
     echo "[+] Suricata 配置已更新（规则文件将随后加载）"
 else
