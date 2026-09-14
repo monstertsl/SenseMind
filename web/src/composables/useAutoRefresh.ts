@@ -1,4 +1,4 @@
-import { watch, onBeforeUnmount } from 'vue'
+import { watch, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import type { RefreshInterval } from '@/types'
@@ -36,5 +36,8 @@ export function useAutoRefresh(callback: () => void) {
   }
 
   watch(refreshInterval, setup, { immediate: true })
+  // keep-alive 缓存的页面：离开时暂停轮询、返回时恢复；未缓存的组件不触发这两个钩子
+  onActivated(setup)
+  onDeactivated(clear)
   onBeforeUnmount(clear)
 }

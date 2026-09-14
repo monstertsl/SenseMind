@@ -69,6 +69,9 @@ class MetricsService:
         # 一次性聚合：总数 + cardinality（受害资产/攻击者）+ 可信度均值 + SOC 分布 + 判定/来源/攻击结果分布
         body = {
             "size": 0,
+            # ES 默认 track_total_hits=10000，不加此项 hits.total 会截断为 10000(gte)，
+            # 聚合桶不受影响 → 表现为"总数卡 10000 而各分布正常"
+            "track_total_hits": True,
             "query": time_filter,
             "aggs": {
                 "victim_assets": {"cardinality": {"field": "ai.destination_ip"}},

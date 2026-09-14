@@ -14,7 +14,7 @@ import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
-from ..json_utils import extract_json_list
+from ..json_utils import extract_json_list, normalize_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +114,7 @@ def create_unalerted_analysis_chain(llm: ChatOpenAI):
             for field in ["attack_chain", "handling_suggestion", "impact_scope", "reasoning"]:
                 if field not in item:
                     item[field] = "N/A"
-            if "confidence" not in item or not isinstance(item.get("confidence"), (int, float)):
-                item["confidence"] = 0.7
+            item["confidence"] = normalize_confidence(item.get("confidence"), default=0.7)
             if "attack_result" not in item:
                 item["attack_result"] = "未知"
             if "threat_name" not in item or not str(item.get("threat_name", "")).strip():

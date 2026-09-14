@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 from ..models import AnalysisResult
-from ..json_utils import extract_json
+from ..json_utils import extract_json, normalize_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +200,8 @@ def create_analysis_chain(llm: ChatOpenAI):
                       "attack_stage", "impact_scope", "attack_chain",
                       "handling_suggestion", "reasoning"]:
             if field not in data:
-                data[field] = "N/A" if field != "confidence" else 0.3
-        if "confidence" not in data or not isinstance(data.get("confidence"), (int, float)):
-            data["confidence"] = 0.3
+                data[field] = "N/A"
+        data["confidence"] = normalize_confidence(data.get("confidence"), default=0.3)
 
         return AnalysisResult(**data)
 

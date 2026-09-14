@@ -21,6 +21,9 @@ const baseMenus = [
   { path: '/log/explorer', title: '日志中心', icon: Document },
 ]
 
+// 缓存页面（组件 name）：切回时复用已有数据与筛选状态，不重新请求
+const keepAlivePages = ['AnalysisAlerts']
+
 const adminMenus = [
   { path: '/system/settings', title: '系统设置', icon: Setting },
 ]
@@ -280,7 +283,9 @@ onUnmounted(() => {
     <main class="layout-content">
       <router-view v-slot="{ Component }">
         <transition name="fade" mode="out-in">
-          <component :is="Component" />
+          <keep-alive :include="keepAlivePages">
+            <component :is="Component" />
+          </keep-alive>
         </transition>
       </router-view>
     </main>

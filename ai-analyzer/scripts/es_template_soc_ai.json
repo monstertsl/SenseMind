@@ -18,7 +18,11 @@
             "destination_ip": { "type": "ip" },
             "soc_name": { "type": "keyword" },
             "soc_category": { "type": "keyword" },
-            "alert_signature": { "type": "text", "norms": false },
+            "alert_signature": {
+              "type": "text",
+              "norms": false,
+              "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+            },
             "alert_signature_id": { "type": "long" },
             "attack_result": { "type": "keyword" },
             "confidence": { "type": "float" },

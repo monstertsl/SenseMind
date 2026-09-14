@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AlertSearchBar from '@/components/analysis/AlertSearchBar.vue'
 import AlertTable from '@/components/analysis/AlertTable.vue'
@@ -8,6 +8,9 @@ import { useAlertList } from '@/composables/useAlertList'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import type { AlertQuery } from '@/types'
+
+// 组件名用于 MainLayout 的 keep-alive include 匹配
+defineOptions({ name: 'AnalysisAlerts' })
 
 const route = useRoute()
 const globalStore = useGlobalFilterStore()
@@ -89,21 +92,38 @@ function handleIpClick(ip: string) {
   fetch()
 }
 
-// 接收跨页面跳转带来的筛选
-onMounted(() => {
+// 已处理过的跳转日志ID，避免复活时重复应用同一 query
+let handledAlertId = ''
+
+// 进入页面时决定是否拉取：只有真正消费到跨页面跳转的筛选条件、或当前无数据时才请求，
+// 其余情况复用已有数据，避免每次从其他页面切回都重新加载
+function ensureLoaded() {
   const pending = globalStore.consumePendingAlertFilter()
-  const q = route.query
   // 优先消费 store 中的 pending filter（监测中心跳转）
   if (pending && Object.keys(pending).length) {
+    handledAlertId = ''
     applyFilter(pending)
-  } else if (q.source_alert_id) {
-    query.source_alert_id = q.source_alert_id as string
-    fetch()
-  } else {
-    fetch()
+    fetchAggregations()
+    return
   }
-  fetchAggregations()
-})
+  const alertId = (route.query.source_alert_id as string) || ''
+  if (alertId && alertId !== handledAlertId) {
+    handledAlertId = alertId
+    query.source_alert_id = alertId
+    query.page = 1
+    fetch()
+    fetchAggregations()
+    return
+  }
+  // loading 中说明请求已在进行（首次挂载时 onMounted 与 onActivated 会先后触发）
+  if (!list.value.length && !loading.value) {
+    fetch()
+    fetchAggregations()
+  }
+}
+
+onMounted(ensureLoaded)
+onActivated(ensureLoaded)
 </script>
 
 <template>

@@ -6,9 +6,11 @@
 - JSON 前后有多余文字
 - JSON 字段值带换行
 - 部分 AI 会输出思考过程再输出 JSON
+- 数值字段（confidence 等）的归一化清洗
 """
 
 import json
+import math
 import re
 import logging
 
@@ -313,3 +315,29 @@ def safe_parse_llm_response(text: str, fallback: dict = None) -> dict:
     if result is not None:
         return result
     return fallback if fallback is not None else {}
+
+
+def normalize_confidence(value, default: float = 0.7) -> float:
+    """把 LLM 输出的 confidence 归一到 [0, 1]
+
+    模型偶尔输出百分制（90 表示 90%）、越界值或数字字符串，直接落库会污染
+    均值统计（少量 90 能把 0.89 的均值抬到 0.99）。规则：可解析为数值 →
+    大于 1 时按百分制除以 100 → 裁剪到 [0,1]；无法解析则用 default。
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        num = float(value)
+    elif isinstance(value, str):
+        try:
+            num = float(value.strip().rstrip("%").strip())
+        except ValueError:
+            return default
+    else:
+        return default
+
+    if math.isnan(num):
+        return default
+    if num > 1:
+        num /= 100.0
+    return min(max(num, 0.0), 1.0)

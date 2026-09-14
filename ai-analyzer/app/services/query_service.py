@@ -79,18 +79,159 @@ class QueryService:
             bool_clause["must_not"] = must_not
         return {"query": {"bool": bool_clause}}
 
+    # 分组键字段：威胁名需走 text 的 keyword 子字段，才能在 ES 侧完成
+    # (源IP, 目的IP, 威胁名) 分组；组代表 = 组内 @timestamp 最新的分析记录。
+    _SIG_KW = "ai.alert_signature.keyword"
+    _GROUP_SOURCES = [
+        {"s": {"terms": {"field": "ai.source_ip", "missing_bucket": True}}},
+        {"d": {"terms": {"field": "ai.destination_ip", "missing_bucket": True}}},
+        {"g": {"terms": {"field": _SIG_KW, "missing_bucket": True}}},
+    ]
+
+    @staticmethod
+    def _group_key(source_ip, destination_ip, signature) -> str:
+        return f"{source_ip or ''}|{destination_ip or ''}|{signature or ''}"
+
     def list_alerts(self, params) -> AlertListData:
-        """分页查询告警列表（后端聚合后分页）
+        """分页查询告警列表：ES 侧分组聚合 + 只取当前页代表文档
+
+        旧实现全量拉取数万篇分析记录再在 Python 分组，耗时瓶颈是 _source 的解压与解析
+        （实测 2~3s，收窄字段也省不下来）。改为两步：
+        1. composite 聚合在 ES 侧分组，只回传分组键、组内条数、代表记录时间；
+        2. 仅对本页的组取代表文档（page_size 条 _source）。
+        排序字段不是"原始日志时间"（其余字段无 doc_values）或聚合异常时回退全量扫描。
+        """
+        if (params.sort_field or "ai.alert_timestamp") != "ai.alert_timestamp":
+            return self._list_alerts_scan(params)
+        try:
+            return self._list_alerts_grouped(params)
+        except Exception as e:
+            logger.warning("聚合分组查询不可用，回退全量扫描: %s", e)
+            return self._list_alerts_scan(params)
+
+    def _list_alerts_grouped(self, params) -> AlertListData:
+        body = self._build_alert_query(params)
+        page = max(params.page, 1)
+        page_size = min(max(params.page_size, 1), 200)
+        reverse = (params.sort_order or "desc") == "desc"
+
+        # 组列表只与筛选条件有关、与翻页排序无关 → 缓存后翻页/排序近乎零成本
+        filter_key = _hash_query({**params.model_dump(by_alias=True),
+                                  "page": None, "page_size": None,
+                                  "sort_field": None, "sort_order": None})
+        cache_key = f"alerts:groups:{filter_key}"
+        groups = self.cache.get(cache_key)
+        if groups is None:
+            groups = self._fetch_groups(body)
+            self.cache.set(cache_key, groups, ttl=15)
+
+        # 按 (代表记录的原始日志时间, 分析时间) 排序，与旧实现的组顺序一致
+        ordered = sorted(list(groups),
+                         key=lambda g: (g["alert_timestamp"] is None,
+                                        g["alert_timestamp"] or "",
+                                        g["analysis_timestamp"] or ""),
+                         reverse=reverse)
+        total = len(ordered)
+        start = (page - 1) * page_size
+        page_groups = ordered[start:start + page_size]
+        if not page_groups:
+            return AlertListData(total=total, page=page, page_size=page_size, items=[])
+
+        reps = self._fetch_group_reps(body, page_groups)
+        items = []
+        for g in page_groups:
+            key = self._group_key(g["source_ip"], g["destination_ip"], g["alert_signature"])
+            hit = reps.get(key)
+            if hit is None:
+                # 分组键与文档字段不一致（如子字段未回填）→ 回退全量扫描保证结果正确
+                raise RuntimeError(f"分组代表文档缺失: {key}")
+            ai = dict(hit["_source"].get("ai", {}))
+            ai["alert_count"] = g["alert_count"]
+            items.append(AlertItemData(_id=hit["_id"], _index=hit["_index"], ai=ai))
+        return AlertListData(total=total, page=page, page_size=page_size, items=items)
+
+    def _fetch_groups(self, query: dict) -> list:
+        """composite 聚合取全部组：分组键 + 组内条数 + 代表记录时间
+
+        composite 单次上限 10000 组，需要 after_key 翻页；top_metrics 只读 doc_values，
+        比 top_hits 轻得多（实测 top_hits 每万组要 2s+）。
+        """
+        groups = []
+        after = None
+        while True:
+            composite = {"size": 10000, "sources": self._GROUP_SOURCES}
+            if after:
+                composite["after"] = after
+            body = {
+                "size": 0,
+                "query": query["query"],
+                "aggs": {"groups": {
+                    "composite": composite,
+                    "aggs": {"rep": {"top_metrics": {
+                        "metrics": [{"field": "ai.alert_timestamp"}, {"field": "@timestamp"}],
+                        "sort": {"@timestamp": "desc"},
+                    }}},
+                }},
+            }
+            resp = self.es.client.search(index=self.es.ai_index, body=body)
+            agg = resp["aggregations"]["groups"]
+            for bucket in agg["buckets"]:
+                metrics = ((bucket.get("rep") or {}).get("top") or [{}])[0].get("metrics", {})
+                groups.append({
+                    "source_ip": bucket["key"].get("s") or "",
+                    "destination_ip": bucket["key"].get("d") or "",
+                    "alert_signature": bucket["key"].get("g") or "",
+                    "alert_count": bucket["doc_count"],
+                    "alert_timestamp": metrics.get("ai.alert_timestamp"),
+                    "analysis_timestamp": metrics.get("@timestamp"),
+                })
+            after = agg.get("after_key")
+            if not after:
+                break
+        return groups
+
+    def _fetch_group_reps(self, query: dict, groups: list) -> dict:
+        """取本页各组的代表文档（组内 @timestamp 最新）
+
+        查询用"本页各组"的条件收窄，参与聚合的文档只有这些组的数据，top_hits 开销可忽略。
+        空的分组键不参与条件（字段缺失的文档无法用 term 命中），靠整组键回查结果。
+        """
+        should = []
+        for g in groups:
+            filters = []
+            if g["source_ip"]:
+                filters.append({"term": {"ai.source_ip": g["source_ip"]}})
+            if g["destination_ip"]:
+                filters.append({"term": {"ai.destination_ip": g["destination_ip"]}})
+            if g["alert_signature"]:
+                filters.append({"term": {self._SIG_KW: g["alert_signature"]}})
+            should.append({"bool": {"filter": filters}})
+
+        body = {
+            "size": 0,
+            "query": {"bool": {"filter": [query["query"]],
+                               "should": should, "minimum_should_match": 1}},
+            "aggs": {"groups": {
+                "composite": {"size": 10000, "sources": self._GROUP_SOURCES},
+                "aggs": {"rep": {"top_hits": {"size": 1, "sort": [{"@timestamp": "desc"}]}}},
+            }},
+        }
+        resp = self.es.client.search(index=self.es.ai_index, body=body)
+        reps = {}
+        for bucket in resp["aggregations"]["groups"]["buckets"]:
+            hits = bucket["rep"]["hits"]["hits"]
+            if not hits:
+                continue
+            key = self._group_key(bucket["key"].get("s"), bucket["key"].get("d"), bucket["key"].get("g"))
+            reps[key] = hits[0]
+        return reps
+
+    def _list_alerts_scan(self, params) -> AlertListData:
+        """全量扫描兜底（旧实现）
 
         流程：ES PIT + search_after 分批拉取全量数据（固定按 @timestamp desc，
         保证每组"最新分析"排最前）→ 以 source_ip + destination_ip + alert_signature
         为 key 聚合（每组代表 = 最新分析）→ 按用户 sort_field 对组排序 → 按页截取。
-
-        关键设计（分离两个排序）：
-        1. ES 拉取固定 @timestamp desc（分析生成时间，每条必不同），使 dict 聚合时
-           每组首次插入即"最新分析"，与用户排序字段无关。
-        2. 聚合完成后按用户 sort_field（默认 ai.alert_timestamp 原始日志时间）对组排序，
-           保证前端"原始日志时间"列有序。
         """
         cache_key = f"alerts:list:{_hash_query(params.model_dump(by_alias=True))}"
         cached = self.cache.get(cache_key)

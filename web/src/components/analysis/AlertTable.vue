@@ -72,7 +72,7 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   <div class="alert-table-wrap">
     <el-table
       :data="data"
-      v-loading="loading"
+      v-loading="loading && data.length > 0"
       :border="false"
       stripe
       size="small"
