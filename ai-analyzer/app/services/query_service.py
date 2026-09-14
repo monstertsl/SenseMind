@@ -60,7 +60,7 @@ class QueryService:
         if params.confidence is not None:
             must.append({"term": {"ai.confidence": params.confidence}})
         if params.alert_signature:
-            must.append(_signature_wildcard("ai.alert_signature", params.alert_signature))
+            must.append(_signature_wildcard("ai.alert_signature.keyword", params.alert_signature))
         if params.source_alert_id:
             must.append({"term": {"ai.source_alert_id": params.source_alert_id}})
         if params.attack_result:
@@ -72,7 +72,7 @@ class QueryService:
         if params.exclude_destination_ip:
             must_not.append({"term": {"ai.destination_ip": params.exclude_destination_ip}})
         if params.exclude_alert_signature:
-            must_not.append(_signature_wildcard("ai.alert_signature", params.exclude_alert_signature))
+            must_not.append(_signature_wildcard("ai.alert_signature.keyword", params.exclude_alert_signature))
 
         bool_clause = {"must": must}
         if must_not:
