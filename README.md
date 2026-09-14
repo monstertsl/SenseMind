@@ -89,6 +89,8 @@ SenseMind/
 │   └── soc_categories.json      # SOC 分类映射
 ├── suricata/
 │   └── combined.rules           # 自定义规则
+├── scripts/
+│   └── suri_monitor.py          # 排错脚本：采样监控
 ├── ai-analyzer/
 │   ├── config.yaml              # LLM/ES/知识库/Suricata/去重 配置
 │   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
@@ -131,6 +133,18 @@ cat /data/suricata/lib/rules/local.rules
 # 手动触发某条告警分析
 curl -X POST http://localhost:9090/api/v1/analyze/<doc_id>
 ```
+
+### 采样排错
+
+```bash
+# -i 指定监听接口（与部署时一致），默认 120s 采样一次
+sudo python3 scripts/suri_monitor.py -i eno1np0
+
+# 指定间隔与输出目录（默认 /tmp/sensemind-monitor/）
+sudo python3 scripts/suri_monitor.py -i eno1np0 60 /tmp/suri-mon
+```
+
+输出目录下的 `suri_monitor.csv` 与同名 `.md`（可直接预览），采样间隔建议 ≥60s。
 
 ### 故障恢复
 
