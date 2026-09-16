@@ -334,6 +334,96 @@ class RuleWriter:
 
         return False
 
+    # 模板占位符定界符：Vue/Jinja2 {{ }}、JSP/FreeMarker ${ }、
+    # MyBatis/Thymeleaf #{ }、Thymeleaf 表达式 *{ }
+    PLACEHOLDER_DELIMITER_RE = re.compile(r'\{\{|\$\{|#\{|\*\{|\}\}')
+
+    # 成对占位符（{{body}} / ${body} / #{body} / *{body}）
+    _FULL_PLACEHOLDER_RE = re.compile(r'(\{\{|\$\{|#\{|\*\{)([^{}]*)\}')
+
+    # 前缀占位符（content 截断于占位符内部，如 "{{vm.getCAsrc"）
+    _PREFIX_PLACEHOLDER_RE = re.compile(r'(?:\{\{|\$\{|#\{|\*\{)([^{}]*)$')
+
+    # 占位符 body 允许的"非求值"字符：标识符、属性链、方法调用与字符串参数；
+    # 含运算符/路径/协议/赋值等字符（* : / = < 等）即视为求值特征
+    _PLACEHOLDER_BODY_RE = re.compile(r"^[a-z0-9_.'\",()\[\]\s-]*$")
+
+    # 路径/URL 结构字符（/ ? & = 等）：是规则匹配的上下文，但不是求值语义；
+    # 与占位符组合（"/service/html/" + "{{"）仍是必误报形态
+    _PATH_STRUCTURAL_RE = re.compile(r"^[a-z0-9_./\\?&=-]*$")
+
+    # 模板引擎求值/JSP EL 隐式对象等攻击特征：content 含这些子串则不视为纯占位符
+    PLACEHOLDER_ATTACK_INDICATORS = (
+        "freemarker", "velocity", "thymeleaf", "ognl", "jndi", "runtime",
+        "getclass", "constructor", "processbuilder", "templatesimpl",
+        "template.utility", "java.lang", "javax", "pagecontext",
+        "servletcontext", "servletrequest", "requestscope", "httpsession",
+        "getenv", "exec", "script", "system.", "__",
+    )
+
+    def _is_template_placeholder_rule(self, rule: str) -> bool:
+        """检查规则是否仅匹配模板占位符（无求值语义）
+
+        前端未渲染的模板占位符（{{xxx}}/${xxx}/#{xxx}）会被浏览器当作
+        资源路径请求，仅匹配占位符的规则对本环境是纯误报（SSTI 误报
+        正反馈的主要来源）。真实 SSTI 探测必带求值特征（{{7*7}}、
+        ${jndi:、freemarker、__${}__ 等），受攻击特征指示词与 body
+        字符集双重保护，不会被本拦截误伤。
+
+        逐个 content 递归解码后分类（content 含攻击特征指示词的规则直接放行）：
+        - 残留含求值字符（运算符/协议/比较符等）→ 有真实攻击特征，放行
+        - 剥离后残留为空/标识符链：占位符材料；body 非空（{{qrCode}}、
+          {{vm.getCAsrc）→ 占位符即规则核心特征，拦截
+        - 残留仅为路径/URL 结构字符（/ ? & = 等）→ 上下文而非求值特征，
+          不单独构成放行理由（"/service/html/" + "{{" 仍是必误报形态）
+        仅裸定界符（{{、}}、${）不定罪；但规则内所有 content 均无求值特征
+        时整体拦截（如 content:"{{" + content:"}}"、"/Error/" + "%7B%7B"）。
+        """
+        contents = self._extract_contents(rule)
+        if not contents:
+            return False
+
+        # 先解 Suricata 管道十六进制（|7b 7b| → {{），防 hex 编码绕过
+        decoded = [self._normalize_content(self._decode_hex_content(c)) for c in contents]
+        if not any(self.PLACEHOLDER_DELIMITER_RE.search(c) for c in decoded):
+            return False
+        if any(ind in c for c in decoded for ind in self.PLACEHOLDER_ATTACK_INDICATORS):
+            return False
+
+        saw_evaluation = saw_placeholder_feature = False
+        for c in decoded:
+            had_body = False
+
+            def _strip_full(m):
+                nonlocal had_body
+                if m.group(2) and self._PLACEHOLDER_BODY_RE.fullmatch(m.group(2)):
+                    had_body = True
+                    return ""
+                return m.group(0)
+
+            def _strip_prefix(m):
+                nonlocal had_body
+                if m.group(1) and self._PLACEHOLDER_BODY_RE.fullmatch(m.group(1)):
+                    had_body = True
+                    return ""
+                return m.group(0)
+
+            c = self._FULL_PLACEHOLDER_RE.sub(_strip_full, c)
+            c = self._PREFIX_PLACEHOLDER_RE.sub(_strip_prefix, c)
+            c = re.sub(r"[{}]", "", c)
+
+            if not c:
+                # 残留为空：纯占位符（body 非空）或裸定界符
+                saw_placeholder_feature = saw_placeholder_feature or had_body
+            elif self._PLACEHOLDER_BODY_RE.fullmatch(c):
+                # 残留为标识符链：占位符材料（如 "item{{name}}" 的 "item"）
+                saw_placeholder_feature = True
+            elif not self._PATH_STRUCTURAL_RE.fullmatch(c):
+                # 残留含求值字符（运算符/协议/比较符等）→ 真实攻击特征
+                saw_evaluation = True
+
+        return saw_placeholder_feature or not saw_evaluation
+
     # 高误报攻击类型 / 协议类关键词（msg 中含这些词则禁止写入 local.rules）
     # - 高误报攻击类型：C2 回调 / SMB / RPC / DNS（正常业务心跳、域认证、内网
     #   RPC、DNS 解析极易命中，且语义检测层已覆盖对应检测）
@@ -523,6 +613,12 @@ class RuleWriter:
             # 域名白名单拦截：AI 常将正常 CDN/更新服务误判为 C2
             if self._is_benign_domain_rule(rule):
                 logger.warning("规则匹配已知正常域名/CDN，跳过写入: %s", rule[:80])
+                return False
+
+            # 模板占位符拦截：未渲染的前端占位符无求值语义，仅匹配它们的
+            # 规则是 SSTI 误报正反馈的主要来源
+            if self._is_template_placeholder_rule(rule):
+                logger.warning("规则仅匹配模板占位符（无求值语义），跳过写入: %s", rule[:80])
                 return False
 
             # 始终用唯一 SID 覆盖 AI 提供的 SID（AI 常照抄示例中的 9000001）
