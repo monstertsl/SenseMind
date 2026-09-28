@@ -8,6 +8,8 @@ import { ElMessage } from 'element-plus'
 import type { AlertDetail } from '@/types'
 import { formatDateTime, formatEmpty, formatPort, copyToClipboard } from '@/utils/format'
 import { maskPayload } from '@/utils/desensitize'
+import { renderHighlighted } from '@/utils/highlight'
+import { getRuleContents } from '@/api/alerts'
 import { useCrossPageRouter } from '@/composables/useCrossPageRouter'
 
 const props = defineProps<{
@@ -44,14 +46,44 @@ const handlingSuggestionHtml = computed(() => {
   return text ? md.render(text) : ''
 })
 
-const payloadLang = computed(() => {
-  const p = props.detail?.ai?.payload || ''
-  if (/^(GET|POST|PUT|DELETE|HEAD|OPTIONS) \//.test(p)) return 'http'
-  if (/^\s*{/.test(p) || /^\s*\[/.test(p)) return 'json'
-  return 'plaintext'
-})
+// 命中片段 = 规则 content 字面量在 payload 中的落点（Suricata 不记录命中偏移）
+const ruleContents = ref<string[]>([])
+const ruleCaseInsensitive = ref(false)
+
+watch(
+  () => props.detail?.ai?.alert_signature_id ?? 0,
+  async (sid) => {
+    ruleContents.value = []
+    ruleCaseInsensitive.value = false
+    if (!sid) return
+    try {
+      const res = await getRuleContents(sid)
+      // 响应返回时详情可能已切换，丢弃过期结果
+      if ((props.detail?.ai?.alert_signature_id ?? 0) !== sid) return
+      ruleContents.value = res?.contents || []
+      ruleCaseInsensitive.value = !!res?.nocase
+    } catch {
+      // 取不到规则字面量时退化为不高亮，不影响详情展示
+    }
+  },
+  { immediate: true },
+)
+
+const payloadHtml = computed(() =>
+  renderHighlighted(maskPayload(props.detail?.ai?.payload || ''), ruleContents.value, ruleCaseInsensitive.value),
+)
+
+const responseBodyHtml = computed(() =>
+  renderHighlighted(maskPayload(props.detail?.ai?.response_body || ''), ruleContents.value, ruleCaseInsensitive.value),
+)
 
 const { goToLogExplorer } = useCrossPageRouter()
+
+// 语义检测（无对应规则）的 alert_signature_id 为 0，此时不展示 sid 前缀
+const signatureSid = computed(() => {
+  const sid = props.detail?.ai?.alert_signature_id
+  return sid ? sid : null
+})
 
 async function copyPayload() {
   if (!props.detail?.ai?.payload) return
@@ -89,7 +121,7 @@ function jumpToLog() {
             </div>
             <div class="info-item info-item-wide">
               <span class="info-label">威胁名</span>
-              <span class="info-value font-mono">{{ formatEmpty(detail.ai?.alert_signature) }}</span>
+              <span class="info-value font-mono"><template v-if="signatureSid">{{ signatureSid }} · </template>{{ formatEmpty(detail.ai?.alert_signature) }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">威胁判定</span>
@@ -147,7 +179,7 @@ function jumpToLog() {
               <el-icon><CopyDocument /></el-icon>复制
             </el-button>
           </div>
-          <pre v-if="detail.ai?.payload" class="payload-block"><code v-html="hljs.highlight(maskPayload(detail.ai.payload), { language: payloadLang }).value"></code></pre>
+          <pre v-if="detail.ai?.payload" class="payload-block"><code v-html="payloadHtml"></code></pre>
           <p v-else class="empty-text">暂无 Payload</p>
         </section>
 
@@ -157,7 +189,7 @@ function jumpToLog() {
             <h4 class="section-h">Response Body</h4>
             <span v-if="detail.ai?.http_status" class="http-status-badge">HTTP {{ detail.ai.http_status }}</span>
           </div>
-          <pre class="payload-block"><code v-html="hljs.highlight(maskPayload(detail.ai.response_body), { language: 'plaintext' }).value"></code></pre>
+          <pre class="payload-block"><code v-html="responseBodyHtml"></code></pre>
         </section>
 
       </template>
@@ -289,6 +321,14 @@ function jumpToLog() {
     white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: anywhere;
+    :deep(mark.hit) {
+      background: #fbbf24;
+      color: #713f12;
+      font-weight: 700;
+      padding: 0 2px;
+      border-radius: 2px;
+      box-shadow: 0 0 5px rgba(251, 191, 36, 0.5);
+    }
   }
   :deep(.hljs) {
     background: transparent;

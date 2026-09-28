@@ -77,6 +77,8 @@ export interface AlertAi {
   destination_port: number | null
   soc_name: string
   alert_signature: string
+  /** 命中规则 sid；语义检测无规则时后端写 0，展示侧须按 0/缺失处理 */
+  alert_signature_id?: number | null
   confidence: number
   attack_chain: string
   handling_suggestion: string

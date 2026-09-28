@@ -9,6 +9,17 @@ export function getAlertDetail(id: string): Promise<AlertDetail> {
   return request.get(`/alerts/${id}`)
 }
 
+export interface RuleContents {
+  sid: number
+  contents: string[]
+  nocase: boolean
+}
+
+// 命中片段来自规则 content 字面量（Suricata 不记录命中偏移）
+export function getRuleContents(sid: number): Promise<RuleContents> {
+  return request.get('/alerts/rule-contents', { params: { sid } })
+}
+
 export function getAlertAggregations(
   field: string,
   timeRange: TimeRange,

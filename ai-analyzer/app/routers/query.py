@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from ..core.auth import AuthContext, get_current_user
 from ..schemas import ApiResponse, AlertQueryParams
 from ..services.query_service import get_query_service
+from ..suricata.rule_lookup import get_rule_lookup
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 
@@ -62,6 +63,20 @@ def aggregations(
     data = service.aggregations(field, time_range, time_from, time_to)
     return ApiResponse(
         code=0, message="ok", data=data.model_dump(), request_id=str(uuid.uuid4())
+    )
+
+
+# 必须定义在 /{doc_id} 之前：FastAPI 按注册顺序匹配，否则会被当作 doc_id
+@router.get("/rule-contents")
+def rule_contents(
+    sid: int = Query(..., ge=1),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    """按 sid 返回规则的 content 字面量，供详情高亮命中片段"""
+    return ApiResponse(
+        code=0, message="ok",
+        data=get_rule_lookup().get(sid),
+        request_id=str(uuid.uuid4()),
     )
 
 

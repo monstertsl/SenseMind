@@ -53,6 +53,15 @@ async def lifespan(app: FastAPI):
         logger.info("系统资源采集器已启动")
     except Exception as e:
         logger.error("系统资源采集器启动失败: %s", e, exc_info=True)
+    # 规则字面量索引预热（后台线程，读规则文件+备份约 1~2s）
+    try:
+        import threading
+
+        from .suricata.rule_lookup import get_rule_lookup
+
+        threading.Thread(target=get_rule_lookup().warmup, daemon=True).start()
+    except Exception as e:
+        logger.error("规则索引预热失败: %s", e, exc_info=True)
     yield
     # 关闭：停止定时任务
     shutdown_scheduler()
