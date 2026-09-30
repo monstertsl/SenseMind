@@ -1,24 +1,64 @@
-<p align="center"><img src="logo.png" alt="SenseMind" width="250"></p>
+<p align="center"><img src="logo.png" alt="SenseMind" width="220"></p>
 
 <h1 align="center">SenseMind</h1>
 
-<p align="center">一个以 AI 为核心的轻量级 SOC 平台。自动从未命中攻击日志中挖掘低误报检测规则，通过持续积累检测规则实现自我进化，生生不息</p>
+<p align="center"><strong>一个以 AI 为核心的轻量级 SOC 平台</strong><br>
+自动从未命中攻击日志中挖掘低误报检测规则，通过持续积累检测规则实现自我进化，生生不息。</p>
 
-<hr>
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <img src="https://img.shields.io/badge/docker-compose%20v2-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/Suricata%20%7C%20Zeek-latest-005571" alt="Suricata | Zeek">
+  <img src="https://img.shields.io/badge/ELK-8.19.16-005571" alt="ELK 8.19.16">
+  <img src="https://img.shields.io/github/last-commit/monstertsl/SenseMind?label=last%20commit" alt="Last commit">
+</p>
 
-## 特性
+<p align="center">
+  <b>简体中文</b> | <a href="README_EN.md"><b>English</b></a>
+</p>
 
-- **双探针流量采集**：Suricata（告警/事件 + payload）与 Zeek（协议元数据）并行运行，Community ID 跨探针关联。
-- **Elastic 全栈一体化**：Filebeat → Logstash（字段裁剪 + ECS 转换 + SOC 分类）→ Elasticsearch → SenseMind Web 可视化。
-- **SOC 14 大类分类**：Logstash 实时匹配 Suricata 告警，映射 MITRE ATT&CK 战术阶段，命中重点告警自动推送 AI。
-- **5 阶段 AI 研判**：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 最终分析，确认攻击后自动生成规则，AI 自主决策，结构化输出。
-- **三层联合查询**：Community ID 精确关联（同会话全量日志，跨 Suricata + Zeek 探针）+ 源/目的 IP 时间窗口关联（覆盖多连接、横向移动）+ IP 历史告警查询（24h），结果去重合并。
-- **类语义检测引擎**：关键词匹配（14 类攻击特征）+ 递归解码（5 层 URL/HTML/Base64/Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），零 LLM 调用捕获编码绕过和变形攻击。
-- **AI 自学习闭环**：确认攻击后自动生成 Suricata 规则写入 `local.rules` 并热加载，采用 HTTP sticky buffer 精确匹配 + 动态地址组，持续积累检测能力。
-- **告警去重**：同一 `community_id` + `signature_id`、同一 `source_ip` + `signature_id`，以及同一 `community_id`（流级别，不论触发哪条规则）在时间窗口内只分析一次。
-- **一键部署**：证书生成、密码引导、规则更新、全栈启动全流程自动化。
+---
 
-> **规划中**：接入客户端日志（syslog / Beats / 自定义推送），将主机层告警与网络流量关联，为 AI 研判提供更丰富的上下文，提升检测精度。
+开源检测栈（Suricata + ELK）在中小安全团队落地时的常见情况是：告警每天数百上千条，其中大部分为误报，人工跟进很难长期维持；存量规则依赖外部规则集更新，对自身环境中出现的真实攻击覆盖有限；而商业 SOC 平台的报价又超出这类团队的预算。真正发生入侵时，告警往往已经产生过，只是没有人看到。
+
+SenseMind 针对的正是这一环节：告警先交由 AI 完成研判，确认攻击后自动生成低误报的检测规则并热加载生效，使同类攻击在后续被自动识别。检测能力不依赖外部规则集，而是随自身流量中出现的攻击持续积累。系统当前运行在生产流量中，规则池里的规则由系统自行生成与沉淀，不依赖人工逐条编写。
+
+## 它如何工作
+
+核心是一条闭环：**告警进入 AI 研判，研判确认攻击后生成规则并热加载，检测能力随之积累。**
+
+1. **流量采集**：Suricata 输出告警与 payload，Zeek 输出协议元数据，两者通过 Community ID 关联。
+2. **分类与投递**：Logstash 按 SOC 14 大类为告警打标，映射 MITRE ATT&CK 战术阶段，命中重点分类的告警自动推送至 AI 分析中心。
+3. **AI 研判**：五个阶段依次执行——标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 输出结论。关联查询包含 Community ID 精确关联、源/目的 IP 时间窗口关联、24 小时历史告警三个维度，跨 Suricata 与 Zeek 还原一次攻击的完整链路。
+4. **规则生成与加载**：确认攻击后，AI 生成对应的 Suricata 规则（HTTP sticky buffer 精确匹配 + 动态地址组），写入规则池并热加载，无需重启引擎。
+5. **规则沉淀**：仅保留低误报规则，检测能力持续积累。
+
+本地生成规则示例：
+
+```suricata
+alert tcp any any -> any any (msg:"log4j：Log4Shell JNDI LDAP 注入远程代码执行漏洞利用"; flow:established,to_server; content:"${jndi:ldap://"; nocase; sid:93134; rev:1;)
+
+alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权访问探测"; flow:established,to_server; http.uri; content:"swagger-ui"; nocase; sid:93152; rev:2;)
+```
+
+除规则命中的告警外，SenseMind 另有一个**语义检测引擎**：关键词匹配 + 5 层递归解码（URL / HTML / Base64 / Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测）。该引擎不调用 LLM，用于捕获编码绕过与变形攻击。
+
+<p align="center">
+  <img src="demo-00.png" alt="AI 研判详情" width="100%">
+  <br><sub>AI 研判详情：攻击确认、溯源分析、处置建议、Payload 命中高亮</sub>
+</p>
+
+<p align="center">
+  <img src="demo-01.png" alt="监控中心" width="100%">
+  <br><sub>监控中心：SOC 攻击分类、威胁判定分布、威胁分析来源</sub>
+</p>
+
+### 它不做什么
+
+- 不采集主机日志。syslog / Beats 接入在规划中，当前仅覆盖网络流量。
+- 不生成合规报表，不引入外部威胁情报订阅——检测能力来自自身流量中沉淀的规则。
+- 不追求商业 SIEM 的全量功能覆盖，重点解决告警研判与规则积累两个环节。
 
 ## 快速开始
 
@@ -26,12 +66,32 @@
 
 - Docker Engine + Docker Compose V2
 - `curl`、`jq`、`unzip`、`openssl`、`ethtool`
+- 一台能收到待检测流量的 Linux 主机。**监听接口需要接镜像口（SPAN）、分光器或 TAP**：在普通业务口上，混杂模式只能收到与本机通信的流量，看不到其他主机之间的流量。
+
+### 配置参考（10 Gbps 内网镜像流量）
+
+以下配置来自一套实际运行环境，可作为选型与容量规划的参考，占用数据为全栈容器实时读数的近似值。
+
+| 项目 | 配置 | 实测占用 |
+|------|------|----------|
+| CPU | Intel Xeon Silver 4210R（40 线程） | 约 13%（容器合计约 500% / 4000%） |
+| 内存 | 62 GiB | 约 48%（容器合计约 22 GiB） |
+| 系统盘 | 1.1 TB（单块 `sda`，LVM 卷组 `ubuntu-vg`） | 已用 49%，其中 Elasticsearch 数据卷约 367 GB |
+| 监听网卡 | 10 Gb 全双工 | — |
+
+磁盘占用主要来自原始日志（默认保留 7 天），可在「系统设置」中调小**原始日志保留天数**以压缩占用。
+
+相关参数：Suricata af-packet 16 线程，flow 2 GiB / stream 4 GiB / reassembly 8 GiB memcap；Elasticsearch `-Xms2g -Xmx2g`、Logstash `-Xms4g -Xmx4g`（`docker-compose.yml` 内置）。
 
 ### 部署
 
 ```bash
+git clone https://github.com/monstertsl/SenseMind.git
+cd SenseMind
 sudo bash deploy.sh <interface>   # 流量监听接口 如 eno1np0、ns192
 ```
+
+`deploy.sh` 会自动完成网卡配置、证书生成、密码引导、规则更新与全栈启动。首次部署需要拉取镜像，耗时取决于网络。
 
 ### 访问
 
@@ -39,67 +99,51 @@ sudo bash deploy.sh <interface>   # 流量监听接口 如 eno1np0、ns192
 |------|------|------|
 | SenseMind | `https://<IP>:8080` | `admin` / `.env` 中的 `ELASTIC_PASSWORD` |
 
-
 ```bash
 cat .env | grep ELASTIC_PASSWORD
 ```
-#### LLM 配置
+
+### 端口占用
+
+| 端口 | 用途 | 暴露范围 |
+|------|------|----------|
+| 8080 | Web 控制台（HTTPS） | 所有网卡 |
+| 5044 | Logstash Beats 输入 | 所有网卡 |
+| 9090 | AI 分析中心 API | 仅 127.0.0.1 |
+| 9200 | Elasticsearch | 仅 127.0.0.1 |
+| 5432 | PostgreSQL | 仅 127.0.0.1 |
+
+对外只需放行 8080；5044 仅在需要接收外部 Filebeat 推送时才放行。
+
+### 配置 LLM
 
 ```
-`系统设置` > `集成配置` > `LLM 模型`
+系统设置 > 集成配置 > LLM 模型
 ```
 
-![AI 研判仪表板](demo-00.png)
-
-![AI 研判仪表板](demo-01.png)
+填写 OpenAI 兼容接口即可（vLLM / DashScope 均可）。
 
 ## 架构
 
 ```
    ┌───>Suricata eve.json / Zeek logs
    │               │
-   │               │
    │    Filebeat (等待 Logstash 就绪)
    │               │
    │         Logstash 主管道
-   规   字段裁剪 / ECS 转换 / SOC 分类
-   则              │
-   生         ┌────┴────┐
-   成         │         │
-   │       全量→ES   matched→AI推送管道
+   │    字段裁剪 / ECS 转换 / SOC 分类
+   规              │
+   则         ┌────┴────┐
+   生         │         │
+   成      全量→ES   matched→AI推送管道
    │       soc-*       │
-   │             AI 分析中心 (5阶段 Chain)
-   └──────────────结果回写 ES (soc-ai-*)
+   │          AI 分析中心 (5阶段 Chain)
+   └──────────结果回写 ES (soc-ai-*)
                        │
                   SenseMind Web 可视化
 ```
 
-## 目录结构
-
-```
-SenseMind/
-├── deploy.sh                    # 一键部署脚本
-├── remove.sh                    # 彻底清理脚本
-├── docker-compose.yml           # 全栈编排
-├── certs/                       # ES SSL 证书（自动生成）
-├── filebeat/filebeat.yml        # 采集配置
-├── logstash/
-│   ├── logstash.conf            # 主管道
-│   ├── ai-push.conf             # AI 推送管道
-│   └── soc_categories.json      # SOC 分类映射
-├── suricata/
-│   └── combined.rules           # 自定义规则
-├── scripts/
-│   └── suri_monitor.py          # 排错脚本：采样监控
-├── ai-analyzer/
-│   ├── config.yaml              # LLM/ES/知识库/Suricata/去重 配置
-│   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
-│   └── app/                     # FastAPI + LangChain 5阶段 Chain
-└── web/                         # Vue 3 前端（监控中心/分析中心/日志中心/系统设置）
-```
-`ai-analyzer/knowledge`仅有基础RAG知识，需对其进行维护提高检测准确性
-
-## SOC 分类
+## SOC 14 大类
 
 | 分类 | MITRE | 覆盖 |
 |------|-------|------|
@@ -118,7 +162,44 @@ SenseMind/
 | 13 信息泄露 | T1552 | .git/.env/源码泄露 |
 | 14 恶意文件 | T1204 | 木马/勒索/RAT |
 
-## 常用操作
+## 目录结构
+
+```
+SenseMind/
+├── deploy.sh                    # 一键部署脚本
+├── remove.sh                    # 彻底清理脚本
+├── docker-compose.yml           # 全栈编排
+├── certs/                       # ES SSL 证书（自动生成）
+├── filebeat/filebeat.yml        # 采集配置
+├── logstash/
+│   ├── logstash.conf            # 主管道
+│   ├── ai-push.conf             # AI 推送管道
+│   └── soc_categories.json      # SOC 分类映射
+├── suricata/
+│   ├── combined.rules           # 自定义规则
+│   └── patch_yaml.py            # suricata.yaml 补丁脚本（幂等）
+├── scripts/
+│   └── suri_monitor.py          # 排错脚本：采样监控
+├── ai-analyzer/
+│   ├── config.yaml              # LLM/ES/知识库/Suricata/去重 配置
+│   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
+│   └── app/                     # FastAPI + LangChain 5阶段 Chain
+└── web/                         # Vue 3 前端（监控中心/分析中心/日志中心/系统设置）
+```
+
+`ai-analyzer/knowledge` 仅有基础 RAG 知识，需对其进行维护提高检测准确性。
+
+## 技术栈
+
+| 组件 | 版本 |
+|------|------|
+| Elasticsearch / Logstash / Filebeat | 8.19.16 |
+| Suricata / Zeek | latest |
+| AI 分析中心 | Python 3.12 + LangChain + FastAPI |
+| Web 前端 | Vue 3 + TypeScript + Pinia + Element Plus |
+| 数据存储 | PostgreSQL 16 |
+
+## 日常操作
 
 ```bash
 # 更新 Suricata 规则
@@ -146,39 +227,43 @@ sudo python3 scripts/suri_monitor.py -i eno1np0 60 /tmp/suri-mon
 
 输出目录下的 `suri_monitor.csv` 与同名 `.md`（可直接预览），采样间隔建议 ≥60s。
 
-### 故障恢复
+## 常见问题
 
-#### 查看当前WEB白名单
+以下情况均可通过命令行直接排查与处理。命令中 `sensemind-postgres` 和 `ai-analyzer` 为默认容器名。
+
+### 告警有，但 AI 分析中心里是空的
+
+告警的 `msg` 必须命中 `logstash/soc_categories.json` 中的分类关键词，才会带上 `soc.matched` 标记并推送至 AI 分析中心。自定义规则时需注意 `msg` 的命名。
+
+### 查看当前 WEB 白名单
 
 ```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "SELECT allowed_login_ips FROM system_config WHERE id=1;"
 ```
 
-#### 清空WEB白名单（允许所有 IP 访问）
+### 清空 WEB 白名单（允许所有 IP 访问）
 
 ```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "UPDATE system_config SET allowed_login_ips='' WHERE id=1;"
 ```
-#### 或修改WEB为正确的 IP
+
+### 或修改 WEB 白名单为正确的 IP
 
 ```bash
 sudo docker exec sensemind-postgres psql -U postgres -d sensemind \
   -c "UPDATE system_config SET allowed_login_ips='IP地址' WHERE id=1;"
 ```
 
-
-无法登录前端时，可通过命令行直接操作。以下命令中 `sensemind-postgres` 和 `ai-analyzer` 为默认容器名。
-
-#### 查看用户状态
+### 查看用户状态
 
 ```bash
 docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
   "SELECT id, username, role, is_active, (totp_secret_encrypted IS NOT NULL) AS totp_enabled, failed_login_attempts, auth_mode, last_login_at FROM users;"
 ```
 
-#### 重置用户密码
+### 重置用户密码
 
 将 `newpassword` 替换为你要设置的密码：
 
@@ -196,7 +281,7 @@ with SessionLocal() as db:
 EOF
 ```
 
-#### 解锁被禁用的账号
+### 解锁被禁用的账号
 
 登录连续失败达到限制（默认 5 次）后账号会被自动禁用：
 
@@ -205,7 +290,7 @@ docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
   "UPDATE users SET failed_login_attempts=0, is_active=true WHERE username='admin';"
 ```
 
-#### 一键重置（密码 + 解锁 + 禁用 TOTP）
+### 一键重置（密码 + 解锁 + 禁用 TOTP）
 
 最常见的场景——忘记密码 + 账号被锁 + TOTP 丢失，一条命令全部搞定，密码重置为 `admin123`：
 
@@ -226,7 +311,7 @@ with SessionLocal() as db:
 EOF
 ```
 
-#### 禁用 TOTP / 切换为纯密码模式
+### 禁用 TOTP / 切换为纯密码模式
 
 如果用户被设为 TOTP-only 或密码+TOTP 模式后丢失 TOTP 设备，可清除 TOTP 密钥并切回纯密码模式：
 
@@ -235,7 +320,7 @@ docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
   "UPDATE users SET totp_secret_encrypted=null, auth_mode='PASSWORD_ONLY' WHERE username='admin';"
 ```
 
-#### 创建新管理员
+### 创建新管理员
 
 当所有管理员账号都无法恢复时，可直接创建一个新的（密码为 `admin123`）：
 
@@ -260,18 +345,14 @@ with SessionLocal() as db:
 EOF
 ```
 
-#### 启用/禁用用户
-
-手动启用被禁用的用户：
+### 启用/禁用用户
 
 ```bash
+# 手动启用被禁用的用户
 docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
   "UPDATE users SET is_active=true WHERE username='admin';"
-```
 
-手动禁用用户：
-
-```bash
+# 手动禁用用户
 docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
   "UPDATE users SET is_active=false WHERE username='test';"
 ```
@@ -284,20 +365,10 @@ sudo bash remove.sh
 
 清理容器、网络、数据卷、本地数据与证书（不删除已下载镜像）。
 
-## 技术栈
-
-| 组件 | 版本 |
-|------|------|
-| Elasticsearch / Logstash / Filebeat | 8.19.16 |
-| Suricata / Zeek | latest |
-| AI 分析中心 | Python 3.12 + LangChain + FastAPI |
-| Web 前端 | Vue 3 + TypeScript + Pinia + Element Plus |
-| 数据存储 | PostgreSQL 16 |
-
 ## 贡献
 
-欢迎提交Issue/PR
+欢迎提交 Issue / PR。反馈问题时，附上部署方式、监听接口类型（镜像口 / TAP）、Suricata 版本与相关日志，便于定位。
 
 ## 许可证
 
-本项目采用 MIT License。详细内容见 [LICENSE](LICENSE)
+本项目采用 MIT License，详见 [LICENSE](LICENSE)。
