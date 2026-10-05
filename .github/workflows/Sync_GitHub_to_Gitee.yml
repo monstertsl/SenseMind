@@ -3,25 +3,24 @@ name: Sync GitHub to Gitee  # 工作流名称
 # 触发条件：当代码推送到 GitHub 的 main 分支时触发
 on:
   push:
-    branches: [ main ]  # 可修改为你的默认分支，如 master
+    branches: [ main ] #触发分支
+  workflow_dispatch:
 
 # 工作流任务
 jobs:
   sync:
     runs-on: ubuntu-latest  # 运行环境（Ubuntu 系统）
     steps:
-      # 步骤1：拉取 GitHub 仓库代码
-      - name: Checkout GitHub code
-        uses: actions/checkout@v4  # 使用官方的代码拉取动作
-        with:
-          fetch-depth: 0  # 拉取所有历史记录，避免缺失提交
-      
-      # 步骤2：将代码同步到 Gitee
+      # 同步
       - name: Sync to Gitee
-        uses: pixta-dev/repository-mirroring-action@v1  # 使用第三方同步动作
+        uses: Yikun/hub-mirror-action@master
         with:
-          # 目标仓库（Gitee）地址（SSH 格式）
-          target_repo_url: git@gitee.com:monstertsl/SenseMind.git
-
-          # ssh_private_key
-          ssh_private_key: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          src: github/monstertsl
+          dst: gitee/monstertsl
+          dst_key: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          dst_token: ${{ secrets.GITEE_TOKEN }}
+          account_type: user
+          clone_style: https
+          static_list: "SenseMind"
+          force_update: true
+          debug: true
