@@ -4,8 +4,10 @@ import { Plus, Delete, Search, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLogExplorerStore } from '@/stores/logExplorer'
+import KqlInput from '@/components/common/KqlInput.vue'
 import type { LogFieldMapping } from '@/types'
 import { ES_FIELD_MAPPING } from '@/constants/esFieldMapping'
+import { kqlEnumValues, type KqlFieldDef } from '@/constants/kqlFields'
 
 const store = useLogExplorerStore()
 const { conditions, kqlMode, kqlText, keyword, fieldMappings } = storeToRefs(store)
@@ -129,6 +131,15 @@ const groupedFields = computed(() => {
   return groups
 })
 
+// KQL 补全字段：复用可视化模式的可选字段，枚举值沿用分析中心口径（告警类型/威胁判定等）
+const kqlFields = computed<KqlFieldDef[]>(() =>
+  allFields.value.map((f) => ({
+    name: f.name,
+    alias: f.alias,
+    values: kqlEnumValues(f.name),
+  })),
+)
+
 function getOperatorsForField(fieldName: string) {
   const field = allFields.value.find((f) => f.name === fieldName)
   if (!field) return OPERATOR_BY_TYPE.keyword
@@ -194,11 +205,12 @@ function reset() {
 
     <!-- KQL 高级模式 -->
     <div v-if="kqlMode" class="kql-area">
-      <el-input
+      <KqlInput
         v-model="kqlText"
         type="textarea"
         :rows="3"
-        placeholder="输入 KQL 查询，如：source.ip: 10.0.0.1 AND destination.port: 443"
+        :fields="kqlFields"
+        placeholder="如：source.ip: 10.0.0.1 AND destination.port: 443"
       />
     </div>
 

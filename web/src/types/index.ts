@@ -116,9 +116,18 @@ export interface AlertQuery {
   source_ip?: string
   destination_ip?: string
   soc_name?: string
+  /** 威胁判定多选，逗号分隔（误报/可疑/确认威胁） */
+  threat_verdict?: string
   confidence?: number
+  /** 可信度阈值下界（对应日志中心的 ≥） */
+  confidence_min?: number
+  /** 可信度阈值上界（对应日志中心的 ≤） */
+  confidence_max?: number
   alert_signature?: string
+  /** KQL 高级查询，与其余筛选条件 AND 叠加 */
+  kql?: string
   source_alert_id?: string
+  /** 攻击结果多选，逗号分隔（成功/失败/未知） */
   attack_result?: string
   exclude_source_ip?: string
   exclude_destination_ip?: string
@@ -127,6 +136,19 @@ export interface AlertQuery {
   page_size: number
   sort_field?: string
   sort_order?: 'asc' | 'desc'
+}
+
+// ---- 检索快捷方式（保存的筛选条件，后续告警联动复用同一 filters 结构）----
+export interface AlertSearchPreset {
+  id: number
+  name: string
+  remark: string
+  filters: Partial<AlertQuery>
+  /** 预留：告警联动可据此启停 */
+  is_enabled: boolean
+  created_by: string
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface RelatedLog {

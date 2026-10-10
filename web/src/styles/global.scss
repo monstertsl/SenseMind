@@ -103,7 +103,8 @@ body {
 .el-table {
   --el-table-border-color: #{$color-border-light};
   --el-table-header-bg-color: #{$color-bg-soft};
-  --el-table-row-hover-bg-color: rgba(0, 92, 173, 0.04);
+  // 必须不透明：固定列 background:inherit，hover 时半透明会透出被覆盖列的文字
+  --el-table-row-hover-bg-color: #f5f8fc;
   --el-table-header-text-color: #{$color-text-regular};
   font-size: 13px;
 }

@@ -1,7 +1,9 @@
 import { ref, reactive, watch, onBeforeUnmount } from 'vue'
+import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { getAlerts, getAlertDetail, getAlertAggregations } from '@/api/alerts'
+import { ALERT_FILTER_KEYS } from '@/constants/alertFilters'
 import { createAutoRetry } from '@/utils/retry'
 import type { AlertItem, AlertDetail, AlertQuery, AggregationBucket, TimeRange } from '@/types'
 
@@ -37,10 +39,23 @@ export function useAlertList() {
 
   const retry = createAutoRetry(async () => {
     syncTimeRange()
-    const res = await getAlerts(query)
-    list.value = res.items
-    total.value = res.total
-    loading.value = false
+    try {
+      const res = await getAlerts(query)
+      list.value = res.items
+      total.value = res.total
+      loading.value = false
+    } catch (e: any) {
+      // 4xx 属参数问题（如 KQL 语法错误）：重试无意义，停止重试并提示
+      const status = e?.response?.status
+      if (typeof status === 'number' && status >= 400 && status < 500) {
+        list.value = []
+        total.value = 0
+        loading.value = false
+        ElMessage.error(e?.response?.data?.detail || '查询失败，请检查检索条件')
+        return
+      }
+      throw e
+    }
   })
 
   function fetch() {
@@ -86,18 +101,12 @@ export function useAlertList() {
   }
 
   function applyFilter(filter: Record<string, string | string[]>) {
-    query.source_ip = undefined
-    query.destination_ip = undefined
-    query.soc_name = undefined
+    const raw = query as unknown as Record<string, unknown>
+    for (const key of ALERT_FILTER_KEYS) raw[key] = undefined
     query.source_alert_id = undefined
-    query.exclude_source_ip = undefined
-    query.exclude_destination_ip = undefined
-    query.exclude_alert_signature = undefined
     for (const [k, v] of Object.entries(filter)) {
-      if (k === 'source_ip') query.source_ip = v as string
-      else if (k === 'destination_ip') query.destination_ip = v as string
-      else if (k === 'soc_name') query.soc_name = v as string
-      else if (k === 'source_alert_id') query.source_alert_id = v as string
+      const known = k === 'source_alert_id' || (ALERT_FILTER_KEYS as readonly string[]).includes(k)
+      if (known) raw[k] = Array.isArray(v) ? v.join(',') : v
     }
     query.page = 1
     fetch()

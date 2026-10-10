@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
           </el-table-column>
           <el-table-column prop="operator" label="用户" width="100" />
           <el-table-column prop="ip_address" label="IP" width="130" />
-          <el-table-column label="时间" width="160">
+          <el-table-column label="时间" width="180">
             <template #default="{ row }"><span class="font-mono">{{ formatTime(row.created_at) }}</span></template>
           </el-table-column>
           <el-table-column label="详情" min-width="200" show-overflow-tooltip>

@@ -36,10 +36,15 @@ class AlertQueryParams(BaseModel):
     source_ip: Optional[str] = None
     destination_ip: Optional[str] = None
     soc_name: Optional[str] = None
+    threat_verdict: Optional[str] = None
     confidence: Optional[float] = None
+    confidence_min: Optional[float] = None
+    confidence_max: Optional[float] = None
     alert_signature: Optional[str] = None
     source_alert_id: Optional[str] = None
     attack_result: Optional[str] = None
+    # KQL 高级查询，与其余筛选条件 AND 叠加
+    kql: Optional[str] = None
     exclude_source_ip: Optional[str] = None
     exclude_destination_ip: Optional[str] = None
     exclude_alert_signature: Optional[str] = None

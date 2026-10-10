@@ -23,6 +23,7 @@ from .routers import system_config as system_config_router
 from .routers import audit_log as audit_log_router
 from .routers import llm_config as llm_config_router
 from .routers import ai_bypass_rule as ai_bypass_rule_router
+from .routers import alert_search_preset as alert_search_preset_router
 from .scheduler import start_scheduler, shutdown_scheduler
 from .core.database import init_db, SessionLocal
 
@@ -90,6 +91,7 @@ app.include_router(system_config_router.router)
 app.include_router(audit_log_router.router)
 app.include_router(llm_config_router.router)
 app.include_router(ai_bypass_rule_router.router)
+app.include_router(alert_search_preset_router.router)
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None

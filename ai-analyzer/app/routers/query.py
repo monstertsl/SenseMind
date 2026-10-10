@@ -1,13 +1,25 @@
 """分析中心路由 —— 告警查询/详情/聚合"""
 
+import logging
 import uuid
-from fastapi import APIRouter, Depends, Query
+from elasticsearch import BadRequestError
+from fastapi import APIRouter, Depends, HTTPException, Query
 from ..core.auth import AuthContext, get_current_user
 from ..schemas import ApiResponse, AlertQueryParams
 from ..services.query_service import get_query_service
 from ..suricata.rule_lookup import get_rule_lookup
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
+
+
+def _bad_request_reason(exc: BadRequestError) -> str:
+    """取 ES 报错根因，便于把 KQL 语法错误回给前端"""
+    try:
+        return exc.info["error"]["root_cause"][0]["reason"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return str(exc)
 
 
 @router.get("")
@@ -18,10 +30,14 @@ def list_alerts(
     source_ip: str = Query(None),
     destination_ip: str = Query(None),
     soc_name: str = Query(None),
+    threat_verdict: str = Query(None),
     confidence: float = Query(None),
+    confidence_min: float = Query(None),
+    confidence_max: float = Query(None),
     alert_signature: str = Query(None),
     source_alert_id: str = Query(None),
     attack_result: str = Query(None),
+    kql: str = Query(None),
     exclude_source_ip: str = Query(None),
     exclude_destination_ip: str = Query(None),
     exclude_alert_signature: str = Query(None),
@@ -34,8 +50,11 @@ def list_alerts(
     params = AlertQueryParams(
         time_range=time_range, time_from=time_from, time_to=time_to,
         source_ip=source_ip, destination_ip=destination_ip, soc_name=soc_name,
-        confidence=confidence, alert_signature=alert_signature,
+        threat_verdict=threat_verdict,
+        confidence=confidence, confidence_min=confidence_min, confidence_max=confidence_max,
+        alert_signature=alert_signature,
         source_alert_id=source_alert_id, attack_result=attack_result,
+        kql=kql,
         exclude_source_ip=exclude_source_ip,
         exclude_destination_ip=exclude_destination_ip,
         exclude_alert_signature=exclude_alert_signature,
@@ -43,7 +62,16 @@ def list_alerts(
         sort_field=sort_field, sort_order=sort_order,
     )
     service = get_query_service()
-    data = service.list_alerts(params)
+    try:
+        data = service.list_alerts(params)
+    except BadRequestError as e:
+        # 参数类错误（KQL 语法等）重试无意义，直接回 400 让前端提示
+        reason = _bad_request_reason(e)
+        logger.warning("告警查询被 ES 拒绝: %s", reason)
+        raise HTTPException(
+            status_code=400,
+            detail=f"检索条件无法解析，请检查 KQL 语法（{reason}）",
+        )
     return ApiResponse(
         code=0, message="ok",
         data=data.model_dump(by_alias=True, mode="json"),

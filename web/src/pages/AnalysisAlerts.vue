@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { onActivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AlertSearchBar from '@/components/analysis/AlertSearchBar.vue'
+import AlertPresetBar from '@/components/analysis/AlertPresetBar.vue'
 import AlertTable from '@/components/analysis/AlertTable.vue'
 import AlertDetailDrawer from '@/components/analysis/AlertDetailDrawer.vue'
 import { useAlertList } from '@/composables/useAlertList'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
+import { ALERT_FILTER_KEYS, pickAlertFilters } from '@/constants/alertFilters'
 import type { AlertQuery } from '@/types'
 
 // 组件名用于 MainLayout 的 keep-alive include 匹配
@@ -34,32 +36,38 @@ const selectedRowId = ref<string>('')
 // 按全局刷新间隔自动拉取告警列表
 useAutoRefresh(fetch)
 
+// 当前检索条件（供快捷检索保存）
+const currentFilters = computed(() => pickAlertFilters(query))
+
+function clearFilters() {
+  const raw = query as unknown as Record<string, unknown>
+  for (const key of ALERT_FILTER_KEYS) raw[key] = undefined
+}
+
+/** 应用一组筛选条件（整体替换），搜索栏与检索快捷方式共用 */
 function handleSearch(filters: Partial<AlertQuery>) {
-  // 应用搜索栏的筛选值到 query 对象
-  query.source_ip = filters.source_ip
-  query.destination_ip = filters.destination_ip
-  query.soc_name = filters.soc_name
-  query.alert_signature = filters.alert_signature
-  query.attack_result = filters.attack_result
-  query.exclude_source_ip = filters.exclude_source_ip
-  query.exclude_destination_ip = filters.exclude_destination_ip
-  query.exclude_alert_signature = filters.exclude_alert_signature
+  clearFilters()
+  const raw = query as unknown as Record<string, unknown>
+  for (const key of ALERT_FILTER_KEYS) {
+    const value = (filters as Record<string, unknown>)[key]
+    if (value !== undefined && value !== null && value !== '') raw[key] = value
+  }
   query.page = 1
   fetch()
 }
 
 function handleReset() {
-  query.source_ip = undefined
-  query.destination_ip = undefined
-  query.soc_name = undefined
-  query.alert_signature = undefined
-  query.attack_result = undefined
+  clearFilters()
   query.source_alert_id = undefined
-  query.exclude_source_ip = undefined
-  query.exclude_destination_ip = undefined
-  query.exclude_alert_signature = undefined
   query.page = 1
   fetch()
+}
+
+// 保存检索入口在搜索栏按钮组，弹窗与数据由快捷检索栏管理
+const presetBarRef = ref<{ openSaveDialog: () => void } | null>(null)
+
+function handleSavePreset() {
+  presetBarRef.value?.openSaveDialog()
 }
 
 function handleSort(field: string, order: 'asc' | 'desc') {
@@ -133,7 +141,11 @@ onActivated(ensureLoaded)
       :soc-name-buckets="socNameBuckets"
       @search="handleSearch"
       @reset="handleReset"
+      @save="handleSavePreset"
     />
+
+    <!-- 快捷检索：检索栏下方独立一行 -->
+    <AlertPresetBar ref="presetBarRef" :filters="currentFilters" @apply="handleSearch" />
 
     <div class="table-section" v-loading="loading && !list.length">
       <div class="table-toolbar">

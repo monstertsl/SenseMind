@@ -41,6 +41,7 @@ def init_db() -> None:
     from ..db_models.system_config import SystemConfig  # noqa
     from ..db_models.audit_log import SystemLog  # noqa
     from ..db_models.ai_bypass_rule import AiBypassRule  # noqa
+    from ..db_models.alert_search_preset import AlertSearchPreset  # noqa
     from ..db_models.system_metric import SystemMetric  # noqa
     from .auth import hash_password
 

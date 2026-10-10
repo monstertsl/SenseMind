@@ -17,6 +17,16 @@ def _hash_query(params: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:16]
 
 
+def _multi_terms(field: str, raw: str) -> Optional[dict]:
+    """逗号分隔的多值筛选：单值用 term，多值用 terms（与告警类型多选语义一致）"""
+    values = [v.strip() for v in (raw or "").split(",") if v.strip()]
+    if not values:
+        return None
+    if len(values) == 1:
+        return {"term": {field: values[0]}}
+    return {"terms": {field: values}}
+
+
 def _signature_wildcard(field: str, value: str) -> dict:
     """威胁名模糊匹配：将用户输入转成子串通配查询。
 
@@ -52,19 +62,36 @@ class QueryService:
         if params.destination_ip:
             must.append({"term": {"ai.destination_ip": params.destination_ip}})
         if params.soc_name:
-            names = [s.strip() for s in params.soc_name.split(",") if s.strip()]
-            if len(names) == 1:
-                must.append({"term": {"ai.soc_name": names[0]}})
-            else:
-                must.append({"terms": {"ai.soc_name": names}})
+            clause = _multi_terms("ai.soc_name", params.soc_name)
+            if clause:
+                must.append(clause)
+        if params.threat_verdict:
+            clause = _multi_terms("ai.threat_verdict", params.threat_verdict)
+            if clause:
+                must.append(clause)
         if params.confidence is not None:
             must.append({"term": {"ai.confidence": params.confidence}})
+        # 可信度阈值筛选（与日志中心一致：gte / lte 区间）
+        if params.confidence_min is not None or params.confidence_max is not None:
+            bounds = {}
+            if params.confidence_min is not None:
+                bounds["gte"] = params.confidence_min
+            if params.confidence_max is not None:
+                bounds["lte"] = params.confidence_max
+            must.append({"range": {"ai.confidence": bounds}})
         if params.alert_signature:
             must.append(_signature_wildcard("ai.alert_signature.keyword", params.alert_signature))
         if params.source_alert_id:
             must.append({"term": {"ai.source_alert_id": params.source_alert_id}})
         if params.attack_result:
-            must.append({"term": {"ai.attack_result": params.attack_result}})
+            clause = _multi_terms("ai.attack_result", params.attack_result)
+            if clause:
+                must.append(clause)
+        # KQL 高级查询：与其余条件 AND 叠加（不替换时间范围与可视化筛选）
+        # 不指定 default_field / fields：一旦显式列出字段，ip 类型字段（ai.source_ip 等）
+        # 遇到非 IP 查询词会让整条 query_string 变 0 命中（实测），保持 ES 默认全字段行为。
+        if params.kql:
+            must.append({"query_string": {"query": params.kql}})
 
         # 排除条件（! 前缀）
         if params.exclude_source_ip:
@@ -105,6 +132,9 @@ class QueryService:
             return self._list_alerts_scan(params)
         try:
             return self._list_alerts_grouped(params)
+        except BadRequestError:
+            # 查询本身非法（如 KQL 语法错误）：回退全量扫描同样会失败，交给路由回 400
+            raise
         except Exception as e:
             logger.warning("聚合分组查询不可用，回退全量扫描: %s", e)
             return self._list_alerts_scan(params)
