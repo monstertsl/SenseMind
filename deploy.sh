@@ -669,7 +669,7 @@ SURICATA_YAML="/data/suricata/etc/suricata.yaml"
 if [ -f "$SURICATA_YAML" ]; then
     # 初始化两个规则文件（规则目录与 suricata.yaml 的 default-rule-path 一致: /var/lib/suricata/rules）
     # - local.rules：只存放系统(AI)自动生成的规则，初始化时创建空文件
-    # - combined.rules：初始规则 + 外部规则集，初始化时创建空文件（内容在第 5 步填充）
+    # - combined.rules：系统自带规则集（初始化时创建空文件，内容在第 5 步由项目 suricata/combined.rules 填充）
     LOCAL_RULES="/data/suricata/lib/rules/local.rules"
     COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
     : > "$LOCAL_RULES"   # 清空/创建 local.rules
@@ -696,13 +696,13 @@ docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's
 sudo bash -c 'echo "" > /data/suricata/lib/rules/suricata.rules' 2>/dev/null || true
 echo "[+] 所有 suricata-update 源已关闭，旧规则已清空"
 
-echo "[*] 5. 下载三个外部规则集并合并到 combined.rules..."
+echo "[*] 5. 生成 combined.rules（初始规则 = 项目自带规则集；外部三集导入已停用）..."
 # 兜底：SURICATA_YAML 不存在时上面 if 块未定义此变量，这里重新声明；同时清空重置（重复运行时避免重复追加）
 COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
 : > "$COMBINED_RULES"  # 清空 combined.rules，准备重新合并
 
-# 先写入项目内的初始规则（combined.rules，sid 已偏移到 90001 起，避开 AI 自动生成的 9000001 起区间）
-# 手写规则在前，外部三集追加在后
+# 写入项目内的初始规则（combined.rules，sid 已偏移到 90001 起，避开 AI 自动生成的 9000001 起区间）
+# 外部规则集导入已停用（见下方注释块），系统自带规则集即初始规则集
 if [ -f "$BASE_DIR/suricata/combined.rules" ]; then
     cat "$BASE_DIR/suricata/combined.rules" >> "$COMBINED_RULES"
     echo "[+] 初始规则已写入 combined.rules 头部"
@@ -710,67 +710,70 @@ else
     echo "[!] 警告：$BASE_DIR/suricata/combined.rules 不存在，跳过初始规则"
 fi
 
-TMP_RULES=$(mktemp -d)
-# 确保退出时清理临时目录
-cleanup_tmp() { rm -rf "$TMP_RULES"; }
-trap cleanup_tmp EXIT
-
-# 1. PT Rules (Positive Technologies) — 需要 User-Agent 否则 403
-echo "[*] 5.1 下载 PT Rules (Positive Technologies)..."
-PT_OK=false
-if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
-    -O "$TMP_RULES/ptopen-all.rules.tar.gz" \
-    "https://rules.ptsecurity.com/files/ptopen-all.rules.tar.gz"; then
-    if [ -f "$TMP_RULES/ptopen-all.rules.tar.gz" ] && [ -s "$TMP_RULES/ptopen-all.rules.tar.gz" ]; then
-        mkdir -p "$TMP_RULES/ptrules"
-        tar -xzf "$TMP_RULES/ptopen-all.rules.tar.gz" -C "$TMP_RULES/ptrules" 2>/dev/null || true
-        PT_COUNT=$(find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
-        find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
-        PT_OK=true
-        echo "  PT Rules: 已提取 ${PT_COUNT} 条规则"
-    fi
-fi
-if [ "$PT_OK" != "true" ]; then
-    echo "  [!] PT Rules 下载失败或为空，跳过"
-fi
-
-# 2. Stamus Lateral Movement Ruleset
-echo "[*] 5.2 下载 Stamus Lateral Movement Ruleset..."
-STAMUS_OK=false
-if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
-    -O "$TMP_RULES/stamus-lateral-rules.tar.gz" \
-    "https://ti.stamus-networks.io/open/stamus-lateral-rules.tar.gz"; then
-    if [ -f "$TMP_RULES/stamus-lateral-rules.tar.gz" ] && [ -s "$TMP_RULES/stamus-lateral-rules.tar.gz" ]; then
-        mkdir -p "$TMP_RULES/stamus"
-        tar -xzf "$TMP_RULES/stamus-lateral-rules.tar.gz" -C "$TMP_RULES/stamus" 2>/dev/null || true
-        STAMUS_COUNT=$(find "$TMP_RULES/stamus" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
-        find "$TMP_RULES/stamus" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
-        STAMUS_OK=true
-        echo "  Stamus Lateral: 已提取 ${STAMUS_COUNT} 条规则"
-    fi
-fi
-if [ "$STAMUS_OK" != "true" ]; then
-    echo "  [!] Stamus Lateral Movement 下载失败或为空，跳过"
-fi
-
-# 3. Snort Community Rules
-echo "[*] 5.3 下载 Snort Community Rules..."
-SNORT_OK=false
-if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
-    -O "$TMP_RULES/community-rules.tar.gz" \
-    "https://www.snort.org/downloads/community/community-rules.tar.gz"; then
-    if [ -f "$TMP_RULES/community-rules.tar.gz" ] && [ -s "$TMP_RULES/community-rules.tar.gz" ]; then
-        mkdir -p "$TMP_RULES/snort"
-        tar -xzf "$TMP_RULES/community-rules.tar.gz" -C "$TMP_RULES/snort" 2>/dev/null || true
-        SNORT_COUNT=$(find "$TMP_RULES/snort" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
-        find "$TMP_RULES/snort" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
-        SNORT_OK=true
-        echo "  Snort Community: 已提取 ${SNORT_COUNT} 条规则"
-    fi
-fi
-if [ "$SNORT_OK" != "true" ]; then
-    echo "  [!] Snort Community 下载失败或为空，跳过"
-fi
+# [已停用] 以下为三个外部规则集（PT Rules / Stamus Lateral / Snort Community）的下载与合并。
+#   停用原因：生产 /data/suricata/lib/rules/combined.rules 已改为手工维护的自有规则集，
+#   deploy 时只以项目自带 suricata/combined.rules 作为初始规则；恢复时取消本段注释即可。
+# TMP_RULES=$(mktemp -d)
+# # 确保退出时清理临时目录
+# cleanup_tmp() { rm -rf "$TMP_RULES"; }
+# trap cleanup_tmp EXIT
+#
+# # 1. PT Rules (Positive Technologies) — 需要 User-Agent 否则 403
+# echo "[*] 5.1 下载 PT Rules (Positive Technologies)..."
+# PT_OK=false
+# if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+#     -O "$TMP_RULES/ptopen-all.rules.tar.gz" \
+#     "https://rules.ptsecurity.com/files/ptopen-all.rules.tar.gz"; then
+#     if [ -f "$TMP_RULES/ptopen-all.rules.tar.gz" ] && [ -s "$TMP_RULES/ptopen-all.rules.tar.gz" ]; then
+#         mkdir -p "$TMP_RULES/ptrules"
+#         tar -xzf "$TMP_RULES/ptopen-all.rules.tar.gz" -C "$TMP_RULES/ptrules" 2>/dev/null || true
+#         PT_COUNT=$(find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+#         find "$TMP_RULES/ptrules" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+#         PT_OK=true
+#         echo "  PT Rules: 已提取 ${PT_COUNT} 条规则"
+#     fi
+# fi
+# if [ "$PT_OK" != "true" ]; then
+#     echo "  [!] PT Rules 下载失败或为空，跳过"
+# fi
+#
+# # 2. Stamus Lateral Movement Ruleset
+# echo "[*] 5.2 下载 Stamus Lateral Movement Ruleset..."
+# STAMUS_OK=false
+# if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+#     -O "$TMP_RULES/stamus-lateral-rules.tar.gz" \
+#     "https://ti.stamus-networks.io/open/stamus-lateral-rules.tar.gz"; then
+#     if [ -f "$TMP_RULES/stamus-lateral-rules.tar.gz" ] && [ -s "$TMP_RULES/stamus-lateral-rules.tar.gz" ]; then
+#         mkdir -p "$TMP_RULES/stamus"
+#         tar -xzf "$TMP_RULES/stamus-lateral-rules.tar.gz" -C "$TMP_RULES/stamus" 2>/dev/null || true
+#         STAMUS_COUNT=$(find "$TMP_RULES/stamus" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+#         find "$TMP_RULES/stamus" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+#         STAMUS_OK=true
+#         echo "  Stamus Lateral: 已提取 ${STAMUS_COUNT} 条规则"
+#     fi
+# fi
+# if [ "$STAMUS_OK" != "true" ]; then
+#     echo "  [!] Stamus Lateral Movement 下载失败或为空，跳过"
+# fi
+#
+# # 3. Snort Community Rules
+# echo "[*] 5.3 下载 Snort Community Rules..."
+# SNORT_OK=false
+# if wget -q --timeout=180 --tries=3 --user-agent="Mozilla/5.0" \
+#     -O "$TMP_RULES/community-rules.tar.gz" \
+#     "https://www.snort.org/downloads/community/community-rules.tar.gz"; then
+#     if [ -f "$TMP_RULES/community-rules.tar.gz" ] && [ -s "$TMP_RULES/community-rules.tar.gz" ]; then
+#         mkdir -p "$TMP_RULES/snort"
+#         tar -xzf "$TMP_RULES/community-rules.tar.gz" -C "$TMP_RULES/snort" 2>/dev/null || true
+#         SNORT_COUNT=$(find "$TMP_RULES/snort" -name "*.rules" -type f -exec grep -ch '^alert\|^drop\|^reject' {} + 2>/dev/null | awk '{s+=$1}END{print s+0}')
+#         find "$TMP_RULES/snort" -name "*.rules" -type f -exec cat {} + >> "$COMBINED_RULES"
+#         SNORT_OK=true
+#         echo "  Snort Community: 已提取 ${SNORT_COUNT} 条规则"
+#     fi
+# fi
+# if [ "$SNORT_OK" != "true" ]; then
+#     echo "  [!] Snort Community 下载失败或为空，跳过"
+# fi
 
 # 统计并设置权限
 TOTAL_COUNT=$(grep -c '^alert\|^drop\|^reject' "$COMBINED_RULES" 2>/dev/null || echo 0)
@@ -778,7 +781,7 @@ chmod 644 "$COMBINED_RULES"
 echo "[+] combined.rules 已生成（${TOTAL_COUNT} 条规则），路径: $COMBINED_RULES"
 
 # 规则文件在宿主机，suricata 容器通过 /var/lib/suricata/rules 挂载读取
-# 先用 suricata -T 校验规则语法，自动剔除 Snort 社区规则中不兼容的规则，通过后再重启加载
+# 先用 suricata -T 校验规则语法，自动剔除不兼容的规则，通过后再重启加载
 echo "[*] 5.4 校验规则语法并自动修复不兼容规则 (suricata -T)..."
 MAX_FIX_RETRY=5
 for fix_i in $(seq 1 $MAX_FIX_RETRY); do
