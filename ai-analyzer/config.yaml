@@ -55,6 +55,27 @@ suricata:
   rules_file: "/suricata/rules/local.rules"
   # suricata 容器名称（用于 docker exec suricatasc 热加载规则）
   suricata_container: "suricata"
+  # 写入前的误报复核（历史流量回放 + LLM 二次裁定，全自动、无需人工）
+  fp_guard:
+    enabled: true
+    # 回放窗口：回看最近 N 天 HTTP 流量统计规则 content 的命中基数。
+    # 实际取值会被自动收敛到 min(lookback_days, 系统设置里的「原始日志保留天数」)，
+    # 避免窗口超出 soc-* 索引留存范围导致命中数被低估、硬阈值静默失效
+    lookback_days: 7
+    # LLM 二次裁定的硬超时（秒）：超时 / 出错 / 返回无法解析时，
+    # 一律降级为下面的纯证据硬阈值判定，不阻塞规则写入链路
+    llm_timeout: 30
+    # 以下为 LLM 不可用时的纯证据硬阈值（满足则判定为业务常态签名并拒写）：
+    # 主特征命中数 ≥ reject_hits 且 独立源 IP ≥ reject_distinct_src
+    # 且 全部 content 组合命中占比 ≥ reject_combo_ratio
+    reject_hits: 100
+    reject_distinct_src: 5
+    reject_combo_ratio: 0.5
+    # 主特征绝对高频（ ≥ reject_hits_absolute ）时的放宽门槛：
+    # 纯 URI 规则的组合占比 ≥ reject_absolute_ratio 才判噪声；
+    # 占比无法评估（含请求体 content / 组合回放失败）时一律判噪声
+    reject_hits_absolute: 50000
+    reject_absolute_ratio: 0.05
 
 ########################################
 # 告警去重配置

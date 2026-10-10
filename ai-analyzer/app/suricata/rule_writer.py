@@ -33,14 +33,17 @@ class RuleWriter:
     SID_MIN = 9000001
     SID_MAX = 9999999
 
-    def __init__(self, rules_file: str, suricata_container: str = "suricata"):
+    def __init__(self, rules_file: str, suricata_container: str = "suricata", judge_llm=None):
         """
         Args:
             rules_file: local.rules 文件路径（ai-analyzer 容器内）
             suricata_container: suricata 容器名称，用于 docker exec 热加载
+            judge_llm: LangChain Chat 模型实例，用于写入前的误报二次裁定（可为 None）
         """
         self.rules_file = rules_file
         self.suricata_container = suricata_container
+        # 误报复核器：写入前用历史流量回放 + LLM 二次裁定拦截高误报规则
+        self.fp_guard = self._build_fp_guard(judge_llm)
 
         # 确保规则文件存在
         os.makedirs(os.path.dirname(rules_file), exist_ok=True)
@@ -62,6 +65,39 @@ class RuleWriter:
             suricata_container,
             len(self._existing_sids),
         )
+
+    def _build_fp_guard(self, judge_llm):
+        """构造误报复核器（配置/依赖缺失时禁用，不影响原有写入逻辑）"""
+        try:
+            from ..config import Config
+            from .fp_guard import RuleFpGuard
+
+            fp_cfg = Config().suricata.get("fp_guard", {})
+            if not fp_cfg.get("enabled", True):
+                logger.info("误报复核已通过配置禁用")
+                return None
+            guard = RuleFpGuard(
+                llm=judge_llm,
+                lookback_days=fp_cfg.get("lookback_days"),
+                reject_hits=fp_cfg.get("reject_hits"),
+                reject_distinct_src=fp_cfg.get("reject_distinct_src"),
+                reject_combo_ratio=fp_cfg.get("reject_combo_ratio"),
+                reject_hits_absolute=fp_cfg.get("reject_hits_absolute"),
+                reject_absolute_ratio=fp_cfg.get("reject_absolute_ratio"),
+                llm_timeout=fp_cfg.get("llm_timeout"),
+            )
+            logger.info(
+                "误报复核器已启用: 回放窗口=%s 天, LLM 二次裁定=%s（超时 %ss 降级）, "
+                "硬阈值 hits>=%s/src>=%s/占比>=%s",
+                guard.lookback_days,
+                "启用" if judge_llm else "禁用（仅用回放证据）",
+                guard.llm_timeout,
+                guard.reject_hits, guard.reject_distinct_src, guard.reject_combo_ratio,
+            )
+            return guard
+        except Exception as e:
+            logger.warning("误报复核器初始化失败，已禁用: %s", e)
+            return None
 
     def _load_existing(self):
         """加载已有的规则和 SID"""
@@ -587,6 +623,16 @@ class RuleWriter:
         if not self._validate_rule_structure(rule):
             logger.warning("规则结构无效，跳过: %s", rule[:80])
             return False
+
+        # 误报复核：历史流量回放证据 + LLM 二次裁定。
+        # 放在取写锁之前执行（含 ES 查询与 LLM 调用，耗时较长），
+        # 避免长时间持锁阻塞其他写入。
+        if self.fp_guard:
+            allowed, reason = self.fp_guard.review(rule)
+            if not allowed:
+                logger.warning("规则未通过误报复核，跳过写入: %s | %s", rule[:80], reason)
+                return False
+            logger.info("规则通过误报复核: %s", reason)
 
         with _write_lock:
             # 去重检查（在锁内执行，防止并发漏检）

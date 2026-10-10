@@ -120,6 +120,8 @@ class AlertAnalyzer:
                 self.rule_writer = RuleWriter(
                     rules_file=suricata_cfg["rules_file"],
                     suricata_container=suricata_cfg.get("suricata_container", "suricata"),
+                    # 传入主 LLM 用于规则写入前的误报二次裁定
+                    judge_llm=self.llm,
                 )
             except Exception as e:
                 logger.warning("RuleWriter 初始化失败，规则生成功能禁用: %s", e)
