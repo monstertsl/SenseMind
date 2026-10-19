@@ -108,12 +108,13 @@ cat .env | grep ELASTIC_PASSWORD
 | Port | Purpose | Exposure |
 |------|---------|----------|
 | 8080 | Web console (HTTPS) | all interfaces |
-| 5044 | Logstash Beats input | all interfaces |
+| 5044 | Logstash Beats input | 127.0.0.1 only |
 | 9090 | AI Analysis Center API | 127.0.0.1 only |
+| 9091 | alert-responder API | Docker network only |
 | 9200 | Elasticsearch | 127.0.0.1 only |
 | 5432 | PostgreSQL | 127.0.0.1 only |
 
-Only 8080 needs to be reachable externally; open 5044 only when external Filebeat shippers must connect.
+Only 8080 needs to be reachable externally. Filebeat currently connects to `logstash:5044` over the internal Docker network; change the 5044 binding only if external Filebeat shippers are required, and restrict source IPs and configure TLS.
 
 ### LLM configuration
 

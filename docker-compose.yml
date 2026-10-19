@@ -153,7 +153,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "5044:5044"
+      - "127.0.0.1:5044:5044"
 
     volumes:
       - ./logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
