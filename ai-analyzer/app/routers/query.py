@@ -72,6 +72,8 @@ def list_alerts(
             status_code=400,
             detail=f"检索条件无法解析，请检查 KQL 语法（{reason}）",
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return ApiResponse(
         code=0, message="ok",
         data=data.model_dump(by_alias=True, mode="json"),

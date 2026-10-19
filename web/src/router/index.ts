@@ -36,6 +36,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/SystemSettings.vue'),
     meta: { title: '系统设置', requiresAuth: true, admin: true },
   },
+  {
+    path: '/outbound',
+    name: 'AlertOutbound',
+    component: () => import('@/pages/AlertOutbound.vue'),
+    meta: { title: '联动外发', requiresAuth: true, admin: true },
+  },
   { path: '/:pathMatch(.*)*', redirect: '/monitor/dashboard' },
 ]
 

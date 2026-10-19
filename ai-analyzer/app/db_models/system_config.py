@@ -1,7 +1,7 @@
 """系统配置表（单行记录，id 固定为 1）"""
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, Text, Float
+from sqlalchemy import Boolean, String, Integer, DateTime, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column
 from ..core.database import Base
 
@@ -35,5 +35,14 @@ class SystemConfig(Base):
     llm_temperature: Mapped[float] = mapped_column(Float, default=0.1, nullable=False)
     llm_max_tokens: Mapped[int] = mapped_column(Integer, default=8000, nullable=False)
     llm_timeout: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+
+    # SMTP 配置；密码使用 ENCRYPT_KEY 加密后存储
+    mail_protocol: Mapped[str] = mapped_column(String(10), default="smtp", nullable=False)
+    mail_host: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    mail_port: Mapped[int] = mapped_column(Integer, default=587, nullable=False)
+    mail_username: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    mail_password: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    mail_use_ssl: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mail_sender_name: Mapped[str] = mapped_column(String(100), default="SenseMind安全管理平台", nullable=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

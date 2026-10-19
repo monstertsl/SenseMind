@@ -67,6 +67,28 @@ def init_db() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("system_config.metric_retention_days 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
 
+    # 迁移：为已有 system_config 表补充邮件配置字段。
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE system_config "
+                "ADD COLUMN IF NOT EXISTS mail_protocol VARCHAR(10) NOT NULL DEFAULT 'smtp', "
+                "ADD COLUMN IF NOT EXISTS mail_host TEXT NOT NULL DEFAULT '', "
+                "ADD COLUMN IF NOT EXISTS mail_port INTEGER NOT NULL DEFAULT 587, "
+                "ADD COLUMN IF NOT EXISTS mail_username TEXT NOT NULL DEFAULT '', "
+                "ADD COLUMN IF NOT EXISTS mail_password TEXT NOT NULL DEFAULT '', "
+                "ADD COLUMN IF NOT EXISTS mail_use_ssl BOOLEAN NOT NULL DEFAULT FALSE, "
+                "ALTER COLUMN mail_use_ssl SET DEFAULT FALSE, "
+                "ADD COLUMN IF NOT EXISTS mail_sender_name VARCHAR(100) NOT NULL DEFAULT 'SenseMind安全管理平台'"
+            ))
+            conn.execute(text(
+                "UPDATE system_config SET mail_use_ssl = FALSE "
+                "WHERE COALESCE(mail_host, '') = '' AND COALESCE(mail_username, '') = '' "
+                "AND COALESCE(mail_password, '') = ''"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("system_config 邮件配置字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
+
     with SessionLocal() as db:
         # 初始化 admin 用户
         existing = db.execute(select(User).where(User.username == "admin")).scalar_one_or_none()

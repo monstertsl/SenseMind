@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { WarningFilled, User, ArrowDown, Monitor, Aim, Document, Setting } from '@element-plus/icons-vue'
+import { WarningFilled, User, ArrowDown, Monitor, Aim, Document, Setting, Connection } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { useAuthStore } from '@/stores/auth'
@@ -25,6 +25,7 @@ const baseMenus = [
 const keepAlivePages = ['AnalysisAlerts']
 
 const adminMenus = [
+  { path: '/outbound', title: '联动外发', icon: Connection },
   { path: '/system/settings', title: '系统设置', icon: Setting },
 ]
 
@@ -180,10 +181,16 @@ onUnmounted(() => {
     <!-- 顶部导航栏 -->
     <header class="topbar">
       <div class="topbar-left">
-        <div class="logo">
+        <a
+          class="logo"
+          href="https://github.com/monstertsl/SenseMind"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="SenseMind GitHub 仓库"
+        >
           <img src="/logo.svg" alt="SenseMind" class="logo-img" />
           <span class="logo-text">SenseMind</span>
-        </div>
+        </a>
         <span class="nav-divider"></span>
         <nav class="nav-menu">
           <button
@@ -341,6 +348,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: inherit;
+  text-decoration: none;
   .logo-img {
     height: 28px;
     width: auto;
@@ -398,6 +407,9 @@ onUnmounted(() => {
 
 // 窄屏：菜单文字切换为图标，避免文字竖排
 @media (max-width: 1100px) {
+  .logo-text {
+    display: none;
+  }
   .nav-item {
     padding: 0 14px;
     .nav-icon {

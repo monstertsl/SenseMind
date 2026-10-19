@@ -181,7 +181,7 @@ watch(
           @keyup.enter="emitSearch"
         />
       </div>
-      <div class="field">
+      <div class="field field-selected-value">
         <label>告警类型</label>
         <el-select
           v-model="form.soc_name"
@@ -199,7 +199,7 @@ watch(
           />
         </el-select>
       </div>
-      <div class="field">
+      <div class="field field-selected-value">
         <label>威胁判定</label>
         <el-select
           v-model="form.threat_verdict"
@@ -217,7 +217,7 @@ watch(
           />
         </el-select>
       </div>
-      <div class="field">
+      <div class="field field-selected-value">
         <label>攻击结果</label>
         <el-select
           v-model="form.attack_result"
@@ -316,6 +316,16 @@ $field-label-gap: 4px;
 .field-confidence {
   min-width: 168px;
   flex: 0 1 186px;
+}
+
+.field-selected-value :deep(.el-tag) {
+  --el-tag-text-color: #000;
+  color: #000;
+}
+
+.field-selected-value :deep(.el-tag__content),
+.field-selected-value :deep(.el-select__tags-text) {
+  color: #000;
 }
 
 .confidence-row {

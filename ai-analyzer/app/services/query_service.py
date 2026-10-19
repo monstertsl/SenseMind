@@ -1,6 +1,7 @@
 """告警查询业务逻辑 —— ES DSL 构造 + 缓存编排"""
 
 import hashlib
+import ipaddress
 import json
 import logging
 from typing import Optional
@@ -39,6 +40,21 @@ def _signature_wildcard(field: str, value: str) -> dict:
     return {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
 
 
+def _ip_filter(field: str, value: str) -> dict:
+    """把 IPv4 末尾网段通配符转换为 IP 范围查询。"""
+    value = value.strip()
+    if not value.endswith(".*"):
+        return {"term": {field: value}}
+
+    octets = value[:-2].split(".")
+    if not 1 <= len(octets) <= 3 or any(not part.isdigit() or not 0 <= int(part) <= 255 for part in octets):
+        raise ValueError("IP 通配符仅支持连续前缀格式，例如 10.10.*")
+
+    prefix_length = len(octets) * 8
+    network = ipaddress.ip_network(f"{'.'.join(octets)}.{'.'.join(['0'] * (4 - len(octets)))}/{prefix_length}")
+    return {"range": {field: {"gte": str(network.network_address), "lte": str(network.broadcast_address)}}}
+
+
 class QueryService:
     """告警查询服务"""
 
@@ -58,9 +74,9 @@ class QueryService:
         must.append({"range": {"ai.alert_timestamp": {"gte": time_from, "lte": time_to}}})
 
         if params.source_ip:
-            must.append({"term": {"ai.source_ip": params.source_ip}})
+            must.append(_ip_filter("ai.source_ip", params.source_ip))
         if params.destination_ip:
-            must.append({"term": {"ai.destination_ip": params.destination_ip}})
+            must.append(_ip_filter("ai.destination_ip", params.destination_ip))
         if params.soc_name:
             clause = _multi_terms("ai.soc_name", params.soc_name)
             if clause:
@@ -95,9 +111,9 @@ class QueryService:
 
         # 排除条件（! 前缀）
         if params.exclude_source_ip:
-            must_not.append({"term": {"ai.source_ip": params.exclude_source_ip}})
+            must_not.append(_ip_filter("ai.source_ip", params.exclude_source_ip))
         if params.exclude_destination_ip:
-            must_not.append({"term": {"ai.destination_ip": params.exclude_destination_ip}})
+            must_not.append(_ip_filter("ai.destination_ip", params.exclude_destination_ip))
         if params.exclude_alert_signature:
             must_not.append(_signature_wildcard("ai.alert_signature.keyword", params.exclude_alert_signature))
 

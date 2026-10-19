@@ -252,7 +252,14 @@ function goBack() {
         </transition>
       </div>
 
-      <div class="login-footer">SenseMind SOC 智能分析平台</div>
+      <a
+        class="login-footer"
+        href="https://github.com/monstertsl/SenseMind"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        SenseMind SOC 智能分析平台
+      </a>
     </div>
   </div>
 </template>
@@ -358,10 +365,16 @@ function goBack() {
 }
 
 .login-footer {
+  display: block;
   padding: 16px 32px 24px;
   text-align: center;
   font-size: 12px;
   color: $color-text-placeholder;
+  text-decoration: none;
+
+  &:hover {
+    color: $color-primary;
+  }
 }
 
 .fade-enter-active,

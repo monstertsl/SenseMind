@@ -233,6 +233,38 @@ services:
     networks:
       - elastic
 
+  alert-responder:
+    <<: *default-logging
+    build:
+      context: ./alert-responder
+      dockerfile: Dockerfile
+    image: sensemind/alert-responder:latest
+    container_name: alert-responder
+    restart: unless-stopped
+
+    volumes:
+      - ./certs/ca.crt:/usr/share/alert-responder/certs/ca.crt:ro
+
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:${ELASTIC_PASSWORD}@postgres:5432/sensemind
+      - SECRET_KEY=${SECRET_KEY}
+      - ENCRYPT_KEY=${ENCRYPT_KEY}
+      - AI_ANALYZER_URL=http://ai-analyzer:9090
+      - ES_URL=https://elasticsearch:9200
+      - ES_READER_API_KEY=${ES_READER_API_KEY}
+      - ES_CA_CERT=/usr/share/alert-responder/certs/ca.crt
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      ai-analyzer:
+        condition: service_healthy
+
+    networks:
+      - elastic
+
   web:
     <<: *default-logging
     build:
@@ -250,7 +282,10 @@ services:
       - ./certs/web.key:/etc/nginx/ssl/web.key:ro
 
     depends_on:
-      - ai-analyzer
+      ai-analyzer:
+        condition: service_healthy
+      alert-responder:
+        condition: service_healthy
 
     networks:
       - elastic
