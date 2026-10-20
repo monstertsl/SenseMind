@@ -1,11 +1,13 @@
 """FastAPI Webhook 服务 - 接收 Logstash 推送的告警"""
 
 import asyncio
+import hmac
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .analyzer import AlertAnalyzer
@@ -26,6 +28,12 @@ from .routers import ai_bypass_rule as ai_bypass_rule_router
 from .routers import alert_search_preset as alert_search_preset_router
 from .scheduler import start_scheduler, shutdown_scheduler
 from .core.database import init_db, SessionLocal
+from .services.mail_percolator import (
+    delete_watch_query,
+    ensure_mail_outbox_table,
+    put_watch_filters,
+    sync_all_watch_queries,
+)
 
 # 日志配置
 logging.basicConfig(
@@ -40,6 +48,7 @@ async def lifespan(app: FastAPI):
     # 启动：初始化数据库 + 启动定时任务
     try:
         init_db()
+        ensure_mail_outbox_table()
         logger.info("数据库初始化完成")
     except Exception as e:
         logger.error("数据库初始化失败: %s", e, exc_info=True)
@@ -92,6 +101,34 @@ app.include_router(audit_log_router.router)
 app.include_router(llm_config_router.router)
 app.include_router(ai_bypass_rule_router.router)
 app.include_router(alert_search_preset_router.router)
+
+
+class MailPercolatorWatch(BaseModel):
+    filters: dict
+
+
+def require_internal_service_token(token: str = Header(default="", alias="X-Internal-Service-Token")):
+    expected = os.environ.get("SECRET_KEY", "")
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="无效的内部服务凭据")
+
+
+@app.put("/api/internal/mail-percolator/watches/{watch_id}", dependencies=[Depends(require_internal_service_token)])
+def put_mail_percolator_watch(watch_id: int, body: MailPercolatorWatch):
+    put_watch_filters(get_es_client().client, watch_id, body.filters)
+    return {"status": "synced", "watch_id": watch_id}
+
+
+@app.delete("/api/internal/mail-percolator/watches/{watch_id}", dependencies=[Depends(require_internal_service_token)])
+def delete_mail_percolator_watch(watch_id: int):
+    delete_watch_query(get_es_client().client, watch_id)
+    return {"status": "deleted", "watch_id": watch_id}
+
+
+@app.post("/api/internal/mail-percolator/sync", dependencies=[Depends(require_internal_service_token)])
+def sync_mail_percolator_watches():
+    count = sync_all_watch_queries(get_es_client().client)
+    return {"status": "synced", "count": count}
 
 # 全局实例（延迟初始化）
 _analyzer: AlertAnalyzer = None

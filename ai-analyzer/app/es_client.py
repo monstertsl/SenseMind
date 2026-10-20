@@ -483,6 +483,13 @@ class ESClient:
         resp = self.client.index(index=index_name, document=doc, refresh=True)
         doc_id = resp["_id"]
         logger.info("分析结果已写入 %s, id=%s", index_name, doc_id)
+        try:
+            from .services.mail_percolator import enqueue_matching_watches
+
+            enqueue_matching_watches(self.client, index_name, doc_id, doc)
+        except Exception:
+            logger.exception("实时邮件告警匹配/入队失败：索引=%s，文档=%s", index_name, doc_id)
+            raise
         # 失效查询 API 缓存，确保监测中心/分析中心看到最新数据
         try:
             from .services import get_cache

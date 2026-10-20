@@ -386,6 +386,7 @@ onUnmounted(() => {
   background: transparent;
   color: $color-nav-text;
   cursor: pointer;
+  font-family: inherit;
   font-size: 14px;
   font-weight: 500;
   transition: color 0.2s ease;

@@ -146,6 +146,7 @@ export interface AlertSearchPreset {
   filters: Partial<AlertQuery>
   /** 预留：告警联动可据此启停 */
   is_enabled: boolean
+  watch_count?: number
   created_by: string
   created_at: string | null
   updated_at: string | null

@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import bindparam, select, func, text
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
@@ -19,6 +19,7 @@ from ..core.auth import get_current_user, AuthContext
 from ..core.audit import write_system_log
 from ..db_models.alert_search_preset import AlertSearchPreset
 from ..schemas import ApiResponse, AlertQueryParams
+from ..services.mail_percolator import sync_preset_watch_queries
 
 router = APIRouter(prefix="/api/v1/alert-search-presets", tags=["分析中心检索快捷方式"])
 
@@ -73,13 +74,14 @@ def _parse_filters(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _preset_to_dict(preset: AlertSearchPreset) -> dict:
+def _preset_to_dict(preset: AlertSearchPreset, watch_count: int = 0) -> dict:
     return {
         "id": preset.id,
         "name": preset.name,
         "remark": preset.remark or "",
         "filters": _parse_filters(preset.filters),
         "is_enabled": bool(preset.is_enabled),
+        "watch_count": watch_count,
         "created_by": preset.created_by or "",
         "created_at": preset.created_at.isoformat() + "Z" if preset.created_at else None,
         "updated_at": preset.updated_at.isoformat() + "Z" if preset.updated_at else None,
@@ -140,10 +142,21 @@ def list_presets(
         q = q.where(*conditions)
     total = db.execute(count_q).scalar() or 0
     presets = db.execute(q).scalars().all()
+    watch_counts = {}
+    if presets:
+        ids = [preset.id for preset in presets]
+        rows = db.execute(
+            text(
+                "SELECT preset_id, COUNT(*) FROM alert_mail_watches "
+                "WHERE preset_id IN :preset_ids GROUP BY preset_id"
+            ).bindparams(bindparam("preset_ids", expanding=True)),
+            {"preset_ids": ids},
+        ).all()
+        watch_counts = {preset_id: count for preset_id, count in rows}
 
     return ApiResponse(code=0, message="ok", data={
         "total": total,
-        "items": [_preset_to_dict(p) for p in presets],
+        "items": [_preset_to_dict(p, watch_counts.get(p.id, 0)) for p in presets],
     }, request_id=str(uuid.uuid4()))
 
 
@@ -212,6 +225,13 @@ def update_preset(preset_id: int, body: PresetUpdate, request: Request, db: Sess
 
     db.commit()
     db.refresh(preset)
+    if changes:
+        try:
+            from ..main import get_es_client
+
+            sync_preset_watch_queries(get_es_client().client, preset_id)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="快捷检索已保存，但实时告警规则同步失败，请重试") from exc
 
     write_system_log(db, action="update_alert_search_preset", target_type="alert_search_preset",
                      target_id=str(preset.id),
@@ -229,8 +249,32 @@ def delete_preset(preset_id: int, db: Session = Depends(get_db),
     if not preset:
         raise HTTPException(status_code=404, detail="快捷方式不存在")
 
+    watch_ids = db.execute(
+        text("SELECT id FROM alert_mail_watches WHERE preset_id = :preset_id"),
+        {"preset_id": preset_id},
+    ).scalars().all()
+    if watch_ids:
+        db.execute(
+            text("DELETE FROM alert_mail_outbox WHERE watch_id IN :watch_ids").bindparams(
+                bindparam("watch_ids", expanding=True)
+            ),
+            {"watch_ids": watch_ids},
+        )
+        db.execute(
+            text("DELETE FROM alert_mail_watches WHERE preset_id = :preset_id"),
+            {"preset_id": preset_id},
+        )
     db.delete(preset)
     db.commit()
+    try:
+        from ..main import get_es_client
+        from ..services.mail_percolator import delete_watch_query
+
+        client = get_es_client().client
+        for watch_id in watch_ids:
+            delete_watch_query(client, watch_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="快捷检索及关联关注告警已删除，但实时告警规则清理失败") from exc
 
     # 快捷方式删除属高频个人操作，不写系统日志（避免污染系统日志页）
     return ApiResponse(code=0, message="ok", data={"message": "已删除"}, request_id=str(uuid.uuid4()))

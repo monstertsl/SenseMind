@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Delete, Edit, QuestionFilled } from '@element-plus/icons-vue'
 import {
@@ -8,6 +8,7 @@ import {
 } from '@/api/bypassRule'
 
 const rules = ref<BypassRuleItem[]>([])
+const duplicateRules = ref<BypassRuleItem[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const total = ref(0)
@@ -81,6 +82,32 @@ function validateHost(host: string): boolean {
   return HOST_RE.test(normalizeHost(host))
 }
 
+async function loadDuplicateRules() {
+  const firstPage = await listBypassRules({ page: 1, page_size: 100 })
+  const allRules = [...firstPage.items]
+  const pageCount = Math.ceil(firstPage.total / 100)
+  for (let currentPage = 2; currentPage <= pageCount; currentPage += 1) {
+    const data = await listBypassRules({ page: currentPage, page_size: 100 })
+    allRules.push(...data.items)
+  }
+  duplicateRules.value = allRules
+}
+
+function ruleMatchKey(rule: Pick<BypassRuleItem, 'src_ip' | 'src_port' | 'dst_ip' | 'dst_port' | 'host' | 'threat_name'>) {
+  return JSON.stringify([
+    rule.src_ip.trim(),
+    rule.src_port || 0,
+    rule.dst_ip.trim(),
+    rule.dst_port || 0,
+    normalizeHost(rule.host),
+    rule.threat_name.trim().toLocaleLowerCase(),
+  ])
+}
+
+function formatDuplicateRule(rule: BypassRuleItem) {
+  return `${rule.src_ip || '*'}:${rule.src_port || '*'} → ${rule.dst_ip || '*'}:${rule.dst_port || '*'}${rule.host ? `，Host=${rule.host}` : ''}${rule.threat_name ? `，威胁名=${rule.threat_name}` : ''}`
+}
+
 // ---- 新建白名单 ----
 const createDialogVisible = ref(false)
 const createForm = reactive({
@@ -99,10 +126,28 @@ const createErrors = reactive({
   dst_port: '',
   host: '',
 })
+const createDuplicate = computed(() => {
+  if (!createForm.src_ip && !createForm.src_port && !createForm.dst_ip && !createForm.dst_port && !createForm.host && !createForm.threat_name) return undefined
+  const key = ruleMatchKey({
+    src_ip: createForm.src_ip,
+    src_port: createForm.src_port ? Number(createForm.src_port) : 0,
+    dst_ip: createForm.dst_ip,
+    dst_port: createForm.dst_port ? Number(createForm.dst_port) : 0,
+    host: createForm.host,
+    threat_name: createForm.threat_name,
+  })
+  return duplicateRules.value.find((rule) => ruleMatchKey(rule) === key)
+})
 
-function openCreateDialog() {
+async function openCreateDialog() {
   Object.assign(createForm, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '', threat_name: '', remark: '' })
   Object.assign(createErrors, { src_ip: '', src_port: '', dst_ip: '', dst_port: '', host: '' })
+  try {
+    await loadDuplicateRules()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载白名单失败')
+    return
+  }
   createDialogVisible.value = true
 }
 
@@ -139,6 +184,10 @@ function validateCreateForm(): boolean {
 
 async function handleCreate() {
   if (!validateCreateForm()) return
+  if (createDuplicate.value) {
+    ElMessage.warning('已存在相同的 AI 分析白名单规则')
+    return
+  }
   try {
     await createBypassRule({
       src_ip: createForm.src_ip,
@@ -176,6 +225,19 @@ const editErrors = reactive({
   dst_port: '',
   host: '',
 })
+const editDuplicate = computed(() => {
+  if (!editForm.value) return undefined
+  const form = editForm.value
+  const key = ruleMatchKey({
+    src_ip: form.src_ip,
+    src_port: form.src_port ? Number(form.src_port) : 0,
+    dst_ip: form.dst_ip,
+    dst_port: form.dst_port ? Number(form.dst_port) : 0,
+    host: form.host,
+    threat_name: form.threat_name,
+  })
+  return duplicateRules.value.find((rule) => rule.id !== form.id && ruleMatchKey(rule) === key)
+})
 
 // ---- 实时校验（输入时即提示）----
 watch(() => createForm.src_ip, (v) => {
@@ -209,7 +271,13 @@ watch(() => editForm.value?.host, (v) => {
   editErrors.host = (v && !validateHost(v)) ? '请输入正确的域名（如 example.com）' : ''
 })
 
-function openEditDialog(row: BypassRuleItem) {
+async function openEditDialog(row: BypassRuleItem) {
+  try {
+    await loadDuplicateRules()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载白名单失败')
+    return
+  }
   editForm.value = {
     id: row.id,
     src_ip: row.src_ip,
@@ -257,6 +325,10 @@ function validateEditForm(): boolean {
 
 async function handleEdit() {
   if (!editForm.value || !validateEditForm()) return
+  if (editDuplicate.value) {
+    ElMessage.warning('已存在相同的 AI 分析白名单规则')
+    return
+  }
   try {
     await updateBypassRule(editForm.value.id, {
       src_ip: editForm.value.src_ip,
@@ -442,13 +514,21 @@ function formatTime(t: string | null): string {
           </template>
           <el-input v-model="createForm.threat_name" placeholder="告警签名关键词，如 Heartbleed" />
         </el-form-item>
+        <el-alert
+          v-if="createDuplicate"
+          class="duplicate-rule-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`已存在相同的白名单规则：${formatDuplicateRule(createDuplicate)}`"
+        />
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" placeholder="如：LLM API 流量" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCreate">创建</el-button>
+        <el-button type="primary" :disabled="!!createDuplicate" @click="handleCreate">创建</el-button>
       </template>
     </el-dialog>
 
@@ -500,13 +580,21 @@ function formatTime(t: string | null): string {
           </template>
           <el-input v-model="editForm.threat_name" placeholder="告警签名关键词，如 Heartbleed" />
         </el-form-item>
+        <el-alert
+          v-if="editDuplicate"
+          class="duplicate-rule-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`已存在相同的白名单规则：${formatDuplicateRule(editDuplicate)}`"
+        />
         <el-form-item label="备注">
           <el-input v-model="editForm.remark" placeholder="如：LLM API 流量" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleEdit">保存</el-button>
+        <el-button type="primary" :disabled="!!editDuplicate" @click="handleEdit">保存</el-button>
       </template>
     </el-dialog>
   </div>

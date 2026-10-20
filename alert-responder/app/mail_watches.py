@@ -12,8 +12,9 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from elasticsearch import Elasticsearch
 from fastapi import Depends, HTTPException
+import httpx
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, select
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint, delete, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 
 from .main import (
@@ -26,6 +27,8 @@ from .main import (
     engine,
     get_db,
     require_admin,
+    AI_ANALYZER_URL,
+    SECRET_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +36,7 @@ SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 ES_URL = os.environ.get("ES_URL", "https://elasticsearch:9200")
 ES_READER_API_KEY = os.environ.get("ES_READER_API_KEY", "")
 ES_CA_CERT = os.environ.get("ES_CA_CERT", "/usr/share/alert-responder/certs/ca.crt")
-WINDOW_SECONDS = {"realtime": 15, "30m": 1800, "2h": 7200, "4h": 14400, "daily": 86400}
+WINDOW_SECONDS = {"30m": 1800, "2h": 7200, "4h": 14400, "daily": 86400}
 _es_client: Elasticsearch | None = None
 
 
@@ -60,9 +63,25 @@ class AlertMailWatch(MailWatchBase):
     period: Mapped[str] = mapped_column(String(16), nullable=False)
     daily_hour: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     recipients: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AlertMailOutbox(MailWatchBase):
+    __tablename__ = "alert_mail_outbox"
+    __table_args__ = (UniqueConstraint("event_id", "watch_id", name="uq_alert_mail_outbox_event_watch"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    watch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    preset_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    recipients: Mapped[str] = mapped_column(Text, nullable=False)
+    ai_document: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MailWatchPayload(BaseModel):
@@ -84,12 +103,8 @@ def _next_run(period: str, daily_hour: Optional[int], after: datetime) -> dateti
     local_after = after.astimezone(SHANGHAI_TZ)
     candidate = local_after.replace(second=0, microsecond=0)
     if period == "realtime":
-        seconds = (local_after.second // 15 + 1) * 15
-        if seconds == 60:
-            candidate += timedelta(minutes=1)
-        else:
-            candidate = local_after.replace(second=seconds, microsecond=0)
-    elif period == "30m":
+        raise ValueError("实时告警由 Percolator 事件驱动，不使用周期时间")
+    if period == "30m":
         candidate = local_after.replace(minute=(local_after.minute // 30) * 30, second=0, microsecond=0)
         candidate += timedelta(minutes=30)
     elif period in {"2h", "4h"}:
@@ -112,11 +127,15 @@ def _watch_data(db: Session, watch: AlertMailWatch) -> dict:
         "period": watch.period,
         "daily_hour": watch.daily_hour,
         "recipients": _parse_recipients(watch.recipients),
-        "next_run_at": watch.next_run_at.isoformat(),
+        "next_run_at": watch.next_run_at.isoformat() if watch.next_run_at else None,
     }
 
 
-def _validate_payload(payload: MailWatchPayload, db: Session) -> list[str]:
+def _validate_payload(
+    payload: MailWatchPayload,
+    db: Session,
+    exclude_watch_id: Optional[int] = None,
+) -> list[str]:
     preset = db.get(AlertSearchPreset, payload.preset_id)
     if not preset or not preset.is_enabled:
         raise HTTPException(status_code=400, detail="请选择已启用的快捷检索")
@@ -124,6 +143,34 @@ def _validate_payload(payload: MailWatchPayload, db: Session) -> list[str]:
         raise HTTPException(status_code=400, detail="每天发送需要选择整点时间")
     if payload.period != "daily" and payload.daily_hour is not None:
         raise HTTPException(status_code=400, detail="仅每天发送可以设置整点时间")
+    target_filters = json.dumps(
+        json.loads(preset.filters or "{}"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    duplicate_query = (
+        select(AlertMailWatch, AlertSearchPreset.name, AlertSearchPreset.filters)
+        .join(AlertSearchPreset, AlertSearchPreset.id == AlertMailWatch.preset_id)
+        .where(AlertMailWatch.period == payload.period)
+    )
+    if exclude_watch_id is not None:
+        duplicate_query = duplicate_query.where(AlertMailWatch.id != exclude_watch_id)
+    for _, duplicate_name, duplicate_filters in db.execute(duplicate_query):
+        try:
+            existing_filters = json.dumps(
+                json.loads(duplicate_filters or "{}"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            continue
+        if existing_filters == target_filters:
+            raise HTTPException(
+                status_code=400,
+                detail=f"已存在相同检索条件和发送周期的关注告警「{duplicate_name}」，不能重复保存",
+            )
     recipients = []
     for value in payload.recipients:
         recipient = _valid_address(value)
@@ -146,8 +193,10 @@ def _ip_clause(field: str, value: str) -> dict:
     return {"range": {field: {"gte": str(network.network_address), "lte": str(network.broadcast_address)}}}
 
 
-def _build_query(filters: dict, start: datetime, end: datetime) -> dict:
-    must = [{"range": {"ai.alert_timestamp": {"gt": start.isoformat(), "lte": end.isoformat()}}}]
+def _build_query(filters: dict, start: Optional[datetime] = None, end: Optional[datetime] = None) -> dict:
+    must = []
+    if start is not None and end is not None:
+        must.append({"range": {"ai.alert_timestamp": {"gt": start.isoformat(), "lte": end.isoformat()}}})
     must_not = []
     for key, field in (("source_ip", "ai.source_ip"), ("destination_ip", "ai.destination_ip")):
         if filters.get(key):
@@ -186,6 +235,52 @@ def _build_query(filters: dict, start: datetime, end: datetime) -> dict:
     return query
 
 
+def _sync_watch_query(watch_id: int, filters: dict) -> None:
+    try:
+        response = httpx.put(
+            f"{AI_ANALYZER_URL}/api/internal/mail-percolator/watches/{watch_id}",
+            headers={"X-Internal-Service-Token": SECRET_KEY},
+            json={"filters": filters},
+            timeout=10,
+        )
+    except httpx.HTTPError as exc:
+        logger.error("同步实时邮件规则到 Percolator 失败：规则 %s，错误类型=%s", watch_id, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="实时告警规则同步失败，请稍后重试") from None
+    if response.status_code != 200:
+        logger.error("同步实时邮件规则到 Percolator 失败：规则 %s，状态码=%s", watch_id, response.status_code)
+        raise HTTPException(status_code=503, detail="实时告警规则同步失败，请稍后重试")
+
+
+def _delete_watch_query(watch_id: int) -> None:
+    try:
+        response = httpx.delete(
+            f"{AI_ANALYZER_URL}/api/internal/mail-percolator/watches/{watch_id}",
+            headers={"X-Internal-Service-Token": SECRET_KEY},
+            timeout=10,
+        )
+    except httpx.HTTPError as exc:
+        logger.error("删除实时邮件 Percolator 规则失败：规则 %s，错误类型=%s", watch_id, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="实时告警规则删除失败，请稍后重试") from None
+    if response.status_code != 200:
+        logger.error("删除实时邮件 Percolator 规则失败：规则 %s，状态码=%s", watch_id, response.status_code)
+        raise HTTPException(status_code=503, detail="实时告警规则删除失败，请稍后重试")
+
+
+def _sync_all_watch_queries() -> None:
+    try:
+        response = httpx.post(
+            f"{AI_ANALYZER_URL}/api/internal/mail-percolator/sync",
+            headers={"X-Internal-Service-Token": SECRET_KEY},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        logger.error("启动时同步实时邮件规则失败，错误类型=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="实时告警规则同步失败") from None
+    if response.status_code != 200:
+        logger.error("启动时同步实时邮件规则失败，状态码=%s", response.status_code)
+        raise HTTPException(status_code=503, detail="实时告警规则同步失败")
+
+
 def _get_es_client() -> Elasticsearch:
     global _es_client
     if _es_client is not None:
@@ -200,9 +295,22 @@ def _mail_value(value) -> str:
     return str(value) if value not in (None, "") else "-"
 
 
+def _format_beijing_time(value) -> str:
+    if value in (None, ""):
+        return "-"
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("告警时间格式无法解析，邮件中将显示占位符")
+        return "-"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _realtime_mail_body(ai: dict) -> tuple[str, str]:
     basic_fields = [
-        ("时间", ai.get("alert_timestamp")),
+        ("时间", _format_beijing_time(ai.get("alert_timestamp"))),
         ("告警次数", ai.get("alert_count", 1)),
         ("告警类型", ai.get("soc_name")),
         ("威胁名", ai.get("alert_signature")),
@@ -258,7 +366,10 @@ def _batch_mail_body(hits: list[dict], start: datetime, end: datetime) -> tuple[
     html_headers = "".join(f'<th style="padding:9px 10px;text-align:left;background:#f1f4f7;border-bottom:1px solid #dce2e8">{label}</th>' for label, _ in columns)
     html_rows = []
     for ai in records:
-        values = [_mail_value(ai.get(key)) for _, key in columns]
+        values = [
+            _format_beijing_time(ai.get(key)) if key == "alert_timestamp" else _mail_value(ai.get(key))
+            for _, key in columns
+        ]
         text_rows.append("|".join(values))
         html_rows.append("<tr>" + "".join(
             f'<td style="padding:9px 10px;border-bottom:1px solid #e7ebf0;word-break:break-all">{html.escape(value)}</td>'
@@ -306,10 +417,68 @@ def _send_watch_email(
     _send_configured_email(settings, recipients, subject, text_body, html_body)
 
 
+def _process_realtime_outbox() -> None:
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(AlertMailOutbox)
+            .where(
+                AlertMailOutbox.processed_at.is_(None),
+                AlertMailOutbox.next_attempt_at <= now,
+            )
+            .order_by(AlertMailOutbox.id)
+            .limit(50)
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        for item in rows:
+            sent = False
+            try:
+                ai = json.loads(item.ai_document)
+                recipients = _parse_recipients(item.recipients)
+                hit = {"_source": {"ai": ai}}
+                for attempt in range(3):
+                    try:
+                        _send_watch_email(
+                            db,
+                            recipients,
+                            item.preset_name,
+                            "realtime",
+                            [hit],
+                            now,
+                            now,
+                        )
+                        sent = True
+                        break
+                    except Exception as exc:
+                        if attempt == 2:
+                            logger.error(
+                                "实时告警邮件发送失败：规则 %s，事件 %s，错误类型=%s",
+                                item.watch_id,
+                                item.event_id,
+                                type(exc).__name__,
+                            )
+            except (TypeError, ValueError) as exc:
+                logger.error("实时告警 outbox 数据无效：记录 %s，错误类型=%s", item.id, type(exc).__name__)
+                sent = True
+
+            if sent:
+                db.delete(item)
+            else:
+                item.attempts += 1
+                delay_seconds = min(300, 5 * (2 ** min(item.attempts, 6)))
+                item.next_attempt_at = now + timedelta(seconds=delay_seconds)
+            db.commit()
+
+
 def _process_due_watches() -> None:
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
-        due_ids = db.execute(select(AlertMailWatch.id).where(AlertMailWatch.next_run_at <= now)).scalars().all()
+        due_ids = db.execute(
+            select(AlertMailWatch.id).where(
+                AlertMailWatch.period != "realtime",
+                AlertMailWatch.next_run_at <= now,
+            )
+        ).scalars().all()
     for watch_id in due_ids:
         with SessionLocal() as db:
             watch = db.execute(
@@ -319,6 +488,9 @@ def _process_due_watches() -> None:
                 continue
             period, daily_hour, preset_id = watch.period, watch.daily_hour, watch.preset_id
             scheduled_at = watch.next_run_at
+            if scheduled_at is None:
+                logger.error("关注告警缺少下次执行时间：规则 %s，周期=%s", watch_id, period)
+                continue
             recipients = _parse_recipients(watch.recipients)
             watch.next_run_at = _next_run(period, daily_hour, scheduled_at)
             db.commit()
@@ -344,20 +516,17 @@ def _process_due_watches() -> None:
                 )
                 hits = result["hits"]["hits"]
                 if hits:
-                    delivery_hits = hits if period == "realtime" else [hits]
-                    for batch in delivery_hits:
-                        mail_hits = [batch] if period == "realtime" else batch
-                        sent = False
-                        for attempt in range(3):
-                            try:
-                                _send_watch_email(db, recipients, preset.name, period, mail_hits, start, end)
-                                sent = True
-                                break
-                            except Exception as exc:
-                                if attempt == 2:
-                                    logger.error("关注告警邮件发送失败：规则 %s，错误类型=%s", watch_id, type(exc).__name__)
-                        if not sent:
-                            continue
+                    sent = False
+                    for attempt in range(3):
+                        try:
+                            _send_watch_email(db, recipients, preset.name, period, hits, start, end)
+                            sent = True
+                            break
+                        except Exception as exc:
+                            if attempt == 2:
+                                logger.error("关注告警邮件发送失败：规则 %s，错误类型=%s", watch_id, type(exc).__name__)
+                    if not sent:
+                        continue
                 logger.info("关注告警处理完成：规则 %s，窗口起点=%s，命中=%s", watch_id, start.isoformat(), len(hits))
             except Exception as exc:
                 logger.error("关注告警查询失败：规则 %s，错误类型=%s", watch_id, type(exc).__name__)
@@ -377,9 +546,16 @@ def create_mail_watch(payload: MailWatchPayload, db: Session = Depends(get_db), 
         period=payload.period,
         daily_hour=payload.daily_hour,
         recipients=json.dumps(recipients, ensure_ascii=False),
-        next_run_at=_next_run(payload.period, payload.daily_hour, datetime.now(timezone.utc)),
+        next_run_at=(
+            None if payload.period == "realtime"
+            else _next_run(payload.period, payload.daily_hour, datetime.now(timezone.utc))
+        ),
     )
     db.add(watch)
+    db.flush()
+    if payload.period == "realtime":
+        preset = db.get(AlertSearchPreset, payload.preset_id)
+        _sync_watch_query(watch.id, json.loads(preset.filters or "{}"))
     db.commit()
     db.refresh(watch)
     return {"code": 0, "message": "ok", "data": _watch_data(db, watch), "request_id": str(uuid.uuid4())}
@@ -390,12 +566,20 @@ def update_mail_watch(watch_id: int, payload: MailWatchPayload, db: Session = De
     watch = db.get(AlertMailWatch, watch_id)
     if not watch:
         raise HTTPException(status_code=404, detail="关注告警不存在")
-    recipients = _validate_payload(payload, db)
+    recipients = _validate_payload(payload, db, exclude_watch_id=watch_id)
     watch.preset_id = payload.preset_id
     watch.period = payload.period
     watch.daily_hour = payload.daily_hour
     watch.recipients = json.dumps(recipients, ensure_ascii=False)
-    watch.next_run_at = _next_run(payload.period, payload.daily_hour, datetime.now(timezone.utc))
+    watch.next_run_at = (
+        None if payload.period == "realtime"
+        else _next_run(payload.period, payload.daily_hour, datetime.now(timezone.utc))
+    )
+    if payload.period == "realtime":
+        preset = db.get(AlertSearchPreset, payload.preset_id)
+        _sync_watch_query(watch.id, json.loads(preset.filters or "{}"))
+    else:
+        _delete_watch_query(watch.id)
     db.commit()
     db.refresh(watch)
     return {"code": 0, "message": "ok", "data": _watch_data(db, watch), "request_id": str(uuid.uuid4())}
@@ -406,15 +590,25 @@ def delete_mail_watch(watch_id: int, db: Session = Depends(get_db), current_user
     watch = db.get(AlertMailWatch, watch_id)
     if not watch:
         raise HTTPException(status_code=404, detail="关注告警不存在")
+    _delete_watch_query(watch.id)
     db.delete(watch)
     db.commit()
     return {"code": 0, "message": "已删除", "data": {"message": "已删除"}, "request_id": str(uuid.uuid4())}
 
 
 def start_scheduler() -> None:
-    MailWatchBase.metadata.create_all(engine, tables=[AlertMailWatch.__table__])
+    MailWatchBase.metadata.create_all(engine, tables=[AlertMailWatch.__table__, AlertMailOutbox.__table__])
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE alert_mail_watches ALTER COLUMN next_run_at DROP NOT NULL")
+        connection.exec_driver_sql("UPDATE alert_mail_watches SET next_run_at = NULL WHERE period = 'realtime'")
+        connection.exec_driver_sql("DELETE FROM alert_mail_outbox WHERE processed_at IS NOT NULL")
+    try:
+        _sync_all_watch_queries()
+    except HTTPException:
+        logger.exception("启动时同步所有实时邮件规则失败")
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     scheduler.add_job(_process_due_watches, "interval", seconds=5, id="alert_mail_watches", max_instances=1, coalesce=True)
+    scheduler.add_job(_process_realtime_outbox, "interval", seconds=2, id="realtime_mail_outbox", max_instances=1, coalesce=True)
     scheduler.start()
     app.state.mail_watch_scheduler = scheduler
 

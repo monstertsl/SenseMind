@@ -13,6 +13,7 @@ import {
   type MailWatchPeriod,
 } from '@/api/alertMailWatch'
 import { getMailConfig, sendTestMail, updateMailConfig, type MailConfig } from '@/api/mailConfig'
+import { ALERT_FILTER_KEYS } from '@/constants/alertFilters'
 import type { AlertSearchPreset } from '@/types'
 
 const loading = ref(true)
@@ -26,6 +27,7 @@ const watches = ref<AlertMailWatch[]>([])
 const presets = ref<AlertSearchPreset[]>([])
 const watchDialogVisible = ref(false)
 const savingWatch = ref(false)
+const presetLoading = ref(false)
 const editingWatchId = ref<number | null>(null)
 const recipientInput = ref('')
 const watchForm = reactive({
@@ -51,6 +53,17 @@ const recipientInputInvalid = computed(() => {
 const recipientCanAdd = computed(() => {
   const value = recipientInput.value.trim()
   return Boolean(value && emailAddressPattern.test(value))
+})
+const duplicateWatch = computed(() => {
+  if (!watchForm.preset_id) return undefined
+  const selectedPreset = presets.value.find((preset) => preset.id === watchForm.preset_id)
+  if (!selectedPreset) return undefined
+  const selectedFilters = normalizeFilters(selectedPreset.filters)
+  return watches.value.find((watch) => {
+    if (watch.id === editingWatchId.value || watch.period !== watchForm.period) return false
+    const existingPreset = presets.value.find((preset) => preset.id === watch.preset_id)
+    return existingPreset && normalizeFilters(existingPreset.filters) === selectedFilters
+  })
 })
 
 const form = reactive({
@@ -105,6 +118,16 @@ async function loadMailWatches() {
   }
 }
 
+function normalizeFilters(filters: Partial<AlertSearchPreset['filters']>) {
+  const normalized: Record<string, unknown> = {}
+  const source = filters as Record<string, unknown>
+  for (const key of ALERT_FILTER_KEYS) {
+    const value = source[key]
+    if (value !== undefined && value !== null && value !== '') normalized[key] = value
+  }
+  return JSON.stringify(normalized, Object.keys(normalized).sort())
+}
+
 function presetFilterSummary(presetId: number) {
   const preset = presets.value.find((item) => item.id === presetId)
   if (!preset) return '快捷检索不存在或已删除'
@@ -120,9 +143,28 @@ function resetWatchForm(watch?: AlertMailWatch) {
   recipientInput.value = ''
 }
 
-function openWatchDialog(watch?: AlertMailWatch) {
+async function openWatchDialog(watch?: AlertMailWatch) {
   resetWatchForm(watch)
   watchDialogVisible.value = true
+  presetLoading.value = true
+  try {
+    const [presetList, watchList] = await Promise.all([
+      listAlertPresets(),
+      listAlertMailWatches(),
+    ])
+    presets.value = presetList.items
+    watches.value = watchList
+    if (
+      watchForm.preset_id
+      && !presets.value.some((preset) => preset.id === watchForm.preset_id && preset.is_enabled)
+    ) {
+      watchForm.preset_id = undefined
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '快捷检索加载失败')
+  } finally {
+    presetLoading.value = false
+  }
 }
 
 function addRecipient() {
@@ -149,6 +191,10 @@ async function saveWatch() {
   }
   if (!watchForm.recipients.length) {
     ElMessage.warning('请至少添加一个收件邮箱')
+    return
+  }
+  if (duplicateWatch.value) {
+    ElMessage.warning(`已存在相同检索条件和发送周期的关注告警「${duplicateWatch.value.preset_name}」，不能重复保存`)
     return
   }
   const recipients = watchForm.recipients.map((recipient) => recipient.trim())
@@ -347,7 +393,12 @@ onMounted(() => {
       </template>
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="检索条件" required>
-          <el-select v-model="watchForm.preset_id" placeholder="选择已启用的快捷检索" filterable>
+          <el-select
+            v-model="watchForm.preset_id"
+            placeholder="选择已启用的快捷检索"
+            filterable
+            :loading="presetLoading"
+          >
             <el-option
               v-for="preset in presets.filter((item) => item.is_enabled)"
               :key="preset.id"
@@ -366,6 +417,14 @@ onMounted(() => {
             <el-option label="每天" value="daily" />
           </el-select>
         </el-form-item>
+        <el-alert
+          v-if="duplicateWatch && !presetLoading"
+          class="duplicate-watch-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`已存在相同检索条件和发送周期的关注告警「${duplicateWatch.preset_name}」，不能重复保存`"
+        />
         <el-form-item v-if="watchForm.period === 'daily'" label="发送时间（北京时间，整点）" required>
           <el-select v-model="watchForm.daily_hour">
             <el-option v-for="hour in 24" :key="hour - 1" :label="`${String(hour - 1).padStart(2, '0')}:00`" :value="hour - 1" />
@@ -402,7 +461,12 @@ onMounted(() => {
       </el-form>
       <template #footer>
         <el-button @click="watchDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="savingWatch" @click="saveWatch">保存</el-button>
+        <el-button
+          type="primary"
+          :loading="savingWatch"
+          :disabled="presetLoading || !!duplicateWatch"
+          @click="saveWatch"
+        >保存</el-button>
       </template>
     </el-dialog>
 

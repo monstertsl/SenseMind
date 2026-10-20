@@ -33,6 +33,7 @@ if not DATABASE_URL:
     DATABASE_URL = f"postgresql+psycopg2://postgres:{password}@postgres:5432/sensemind"
 
 AI_ANALYZER_URL = os.environ.get("AI_ANALYZER_URL", "http://ai-analyzer:9090").rstrip("/")
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
 DEFAULT_SENDER_NAME = "SenseMind安全管理平台"
 SMTP_TIMEOUT_SECONDS = 10
 EMAIL_DOMAIN_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listAlertPresets, createAlertPreset, deleteAlertPreset } from '@/api/alertPreset'
 import { ALERT_FILTER_KEYS, describeAlertFilters, pickAlertFilters } from '@/constants/alertFilters'
@@ -23,8 +23,7 @@ const summaryText = computed(() => describeAlertFilters(activeFilters.value) || 
 async function fetchPresets() {
   loading.value = true
   try {
-    const data = await listAlertPresets()
-    presets.value = data.items || []
+    await refreshPresets()
   } catch {
     // 静默失败：快捷方式不可用不应影响筛选与列表展示
     presets.value = []
@@ -33,7 +32,12 @@ async function fetchPresets() {
   }
 }
 
-onMounted(fetchPresets)
+async function refreshPresets() {
+  const data = await listAlertPresets()
+  presets.value = data.items || []
+}
+
+onActivated(fetchPresets)
 
 /** 归一化筛选条件：用于判断两条快捷方式是否为同一检索条件 */
 function normalize(filters: Partial<AlertQuery>): string {
@@ -64,9 +68,25 @@ function handleApply(preset: AlertSearchPreset) {
 
 async function handleDelete(preset: AlertSearchPreset) {
   try {
-    await ElMessageBox.confirm(`确认删除快捷检索「${preset.name}」吗？`, '删除快捷方式', {
+    await refreshPresets()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '获取关注告警引用数量失败，请稍后重试')
+    return
+  }
+  const currentPreset = presets.value.find((item) => item.id === preset.id)
+  if (!currentPreset) {
+    ElMessage.warning('该快捷检索已不存在，请刷新列表')
+    return
+  }
+  const watchCount = currentPreset.watch_count ?? 0
+  const message = watchCount
+    ? `快捷检索「${preset.name}」正在被 ${watchCount} 条关注告警配置使用。删除后，这些关注告警配置及其待发送邮件也会一并删除，且无法恢复。确定继续吗？`
+    : `确认删除快捷检索「${preset.name}」吗？`
+  try {
+    await ElMessageBox.confirm(message, watchCount ? '删除快捷检索及关联配置' : '删除快捷检索', {
       type: 'warning',
       confirmButtonText: '删除',
+      cancelButtonText: '取消',
       confirmButtonClass: 'el-button--danger',
     })
   } catch {

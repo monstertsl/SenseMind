@@ -9,7 +9,7 @@ export interface AlertMailWatch {
   period: MailWatchPeriod
   daily_hour: number | null
   recipients: string[]
-  next_run_at: string
+  next_run_at: string | null
 }
 
 export interface AlertMailWatchPayload {

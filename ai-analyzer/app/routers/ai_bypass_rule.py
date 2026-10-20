@@ -116,6 +116,31 @@ def _format_rule(rule: AiBypassRule) -> str:
     return " ".join(parts)
 
 
+def _rule_match_key(rule: AiBypassRule | dict) -> tuple:
+    get_value = rule.get if isinstance(rule, dict) else lambda key, default=None: getattr(rule, key, default)
+    return (
+        (get_value("src_ip", "") or "").strip(),
+        int(get_value("src_port", 0) or 0),
+        (get_value("dst_ip", "") or "").strip(),
+        int(get_value("dst_port", 0) or 0),
+        _normalize_host(get_value("host", "") or ""),
+        (get_value("threat_name", "") or "").strip().casefold(),
+    )
+
+
+def _ensure_unique_rule(db: Session, rule: AiBypassRule | dict, exclude_id: Optional[int] = None) -> None:
+    target = _rule_match_key(rule)
+    query = select(AiBypassRule)
+    if exclude_id is not None:
+        query = query.where(AiBypassRule.id != exclude_id)
+    for existing in db.execute(query).scalars():
+        if _rule_match_key(existing) == target:
+            raise HTTPException(
+                status_code=400,
+                detail=f"已存在相同的 AI 分析白名单规则（ID: {existing.id}）",
+            )
+
+
 @router.get("")
 def list_rules(
     keyword: Optional[str] = None,
@@ -181,6 +206,7 @@ def create_rule(body: BypassRuleCreate, request: Request, db: Session = Depends(
         threat_name=body.threat_name.strip(),
         remark=body.remark.strip(),
     )
+    _ensure_unique_rule(db, rule)
     db.add(rule)
     db.commit()
     db.refresh(rule)
@@ -237,6 +263,7 @@ def update_rule(rule_id: int, body: BypassRuleUpdate, request: Request, db: Sess
     if not rule.src_ip and not rule.src_port and not rule.dst_ip and not rule.dst_port and not rule.host and not rule.threat_name:
         raise HTTPException(status_code=400, detail="至少保留一个匹配字段（IP/端口/Host/威胁名）")
 
+    _ensure_unique_rule(db, rule, exclude_id=rule_id)
     db.commit()
     db.refresh(rule)
 
