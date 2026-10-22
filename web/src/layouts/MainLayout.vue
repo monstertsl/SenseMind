@@ -488,6 +488,7 @@ onUnmounted(() => {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      font-family: $font-mono;
     }
 
     .arrow {

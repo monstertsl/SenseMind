@@ -141,6 +141,7 @@ function goBack() {
         <div v-if="step === 1" class="step-content">
           <el-input
             v-model="form.username"
+            class="credential-input"
             placeholder="请输入用户名"
             size="large"
             @keyup.enter="handleCheckUser"
@@ -166,7 +167,7 @@ function goBack() {
         <div v-else-if="step === 2" class="step-content">
           <div class="user-info">
             <el-icon><User /></el-icon>
-            <span>{{ form.username }}</span>
+            <span class="font-mono">{{ form.username }}</span>
             <el-button text size="small" class="switch-user-btn" @click="goBack">
               <el-icon><ArrowLeft /></el-icon>
               切换用户
@@ -176,6 +177,7 @@ function goBack() {
           <el-input
             v-if="needPassword"
             v-model="form.password"
+            class="credential-input"
             type="password"
             placeholder="请输入密码"
             size="large"
@@ -216,7 +218,7 @@ function goBack() {
         <div v-else-if="step === 3" class="step-content">
           <div class="user-info">
             <el-icon><User /></el-icon>
-            <span>{{ form.username }}</span>
+            <span class="font-mono">{{ form.username }}</span>
             <el-button text size="small" class="switch-user-btn" @click="goBack">
               <el-icon><ArrowLeft /></el-icon>
               重新开始
@@ -333,6 +335,10 @@ function goBack() {
   gap: 16px;
 }
 
+.credential-input :deep(.el-input__inner) {
+  font-family: $font-mono;
+}
+
 .user-info {
   display: flex;
   align-items: center;
@@ -346,6 +352,8 @@ function goBack() {
   .switch-user-btn {
     margin-left: auto;
     color: $color-primary;
+    font-family: $font-sans;
+    font-weight: 700;
   }
 }
 

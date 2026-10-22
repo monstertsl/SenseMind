@@ -29,6 +29,7 @@ check_dependency curl "curl"
 check_dependency jq "jq"
 check_dependency unzip "unzip"
 check_dependency openssl "openssl"
+check_dependency ethtool "ethtool"
 
 # 检查 docker compose 子命令（v2 插件）
 if ! docker compose version >/dev/null 2>&1; then
@@ -70,17 +71,15 @@ if command -v ip >/dev/null 2>&1; then
     ip link set "$INTERFACE" promisc on
 fi
 
-if command -v ethtool >/dev/null 2>&1; then
-    ethtool -K "$INTERFACE" gro off || true
-    ethtool -K "$INTERFACE" lro off || true
-    ethtool -K "$INTERFACE" tso off || true
-    ethtool -K "$INTERFACE" gso off || true
-    # 禁用 RX/TX checksum offload，避免网卡硬件计算 checksum 导致
-    # Zeek/Suricata 在混杂模式下捕获到错误 checksum（如 tcp checksum incorrect），
-    # 进而影响 payload 解析和 http_request_body 提取
-    ethtool -K "$INTERFACE" rx off || true
-    ethtool -K "$INTERFACE" tx off || true
-fi
+ethtool -K "$INTERFACE" gro off
+ethtool -K "$INTERFACE" lro off
+ethtool -K "$INTERFACE" tso off
+ethtool -K "$INTERFACE" gso off
+# 禁用 RX/TX checksum offload，避免网卡硬件计算 checksum 导致
+# Zeek/Suricata 在混杂模式下捕获到错误 checksum（如 tcp checksum incorrect），
+# 进而影响 payload 解析和 http_request_body 提取
+ethtool -K "$INTERFACE" rx off
+ethtool -K "$INTERFACE" tx off
 
 # 持久化网卡配置：创建 systemd 服务，重启后自动恢复混杂模式和 offload 禁用
 NET_SERVICE="/etc/systemd/system/sensemind-network.service"
@@ -93,7 +92,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'ip link set $INTERFACE promisc on; ethtool -K $INTERFACE gro off lro off tso off gso off rx off tx off 2>/dev/null || true'
+ExecStart=/bin/bash -c 'set -e; ip link set $INTERFACE promisc on; ethtool -K $INTERFACE gro off lro off tso off gso off rx off tx off'
 
 [Install]
 WantedBy=multi-user.target
@@ -696,7 +695,7 @@ docker exec suricata sh -c "suricata-update list-sources 2>/dev/null | sed -E 's
 sudo bash -c 'echo "" > /data/suricata/lib/rules/suricata.rules' 2>/dev/null || true
 echo "[+] 所有 suricata-update 源已关闭，旧规则已清空"
 
-echo "[*] 5. 生成 combined.rules（初始规则 = 项目自带规则集；外部三集导入已停用）..."
+echo "[*] 5. 生成 combined.rules"
 # 兜底：SURICATA_YAML 不存在时上面 if 块未定义此变量，这里重新声明；同时清空重置（重复运行时避免重复追加）
 COMBINED_RULES="/data/suricata/lib/rules/combined.rules"
 : > "$COMBINED_RULES"  # 清空 combined.rules，准备重新合并

@@ -3,7 +3,7 @@
 <h1 align="center">SenseMind</h1>
 
 <p align="center"><strong>一个以 AI 为核心的轻量级 SOC 平台</strong><br>
-自动从未命中攻击日志中挖掘低误报检测规则，通过持续积累检测规则实现自我进化，生生不息。</p>
+告警自动完成标准化、威胁研判、跨源关联与知识增强；确认攻击后自动生成并热加载低误报检测规则，让检测能力从自身流量中持续沉淀，不依赖外部规则集或人工逐条编写。</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
@@ -11,7 +11,6 @@
   <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Suricata%20%7C%20Zeek-latest-005571" alt="Suricata | Zeek">
   <img src="https://img.shields.io/badge/ELK-8.19.16-005571" alt="ELK 8.19.16">
-  <img src="https://img.shields.io/github/last-commit/monstertsl/SenseMind?label=last%20commit" alt="Last commit">
 </p>
 
 <p align="center">
@@ -22,7 +21,7 @@
 
 开源检测栈（Suricata + ELK）在中小安全团队落地时的常见情况是：告警每天数百上千条，其中大部分为误报，人工跟进很难长期维持；存量规则依赖外部规则集更新，对自身环境中出现的真实攻击覆盖有限；而商业 SOC 平台的报价又超出这类团队的预算。真正发生入侵时，告警往往已经产生过，只是没有人看到。
 
-SenseMind 针对的正是这一环节：告警先交由 AI 完成研判，确认攻击后自动生成低误报的检测规则并热加载生效，使同类攻击在后续被自动识别。检测能力不依赖外部规则集，而是随自身流量中出现的攻击持续积累。系统当前运行在生产流量中，规则池里的规则由系统自行生成与沉淀，不依赖人工逐条编写。
+SenseMind 针对的正是这一环节：告警自动完成标准化、威胁研判、跨源关联与知识增强；确认攻击后自动生成低误报检测规则并热加载生效，检测能力随自身流量持续沉淀，不依赖外部规则集与人工逐条编写。基于既有安全设备完成多厂商设备与处置通道（防火墙封禁、终端隔离、邮件与工单通知）的整合，正在把「发现 → 研判 → 处置 → 归档」打通为规则触发的全自动流程，替代人工逐条确认处置。
 
 ## 它如何工作
 

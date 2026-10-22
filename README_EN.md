@@ -3,7 +3,7 @@
 <h1 align="center">SenseMind</h1>
 
 <p align="center"><strong>An AI-centric lightweight SOC platform</strong><br>
-It mines low-false-positive detection rules out of attacks that raised no alert, and keeps evolving as those rules accumulate.</p>
+Alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Confirmed attacks generate low-false-positive detection rules that are hot-reloaded, allowing detection capability to grow from observed traffic without external rule sets or rule-by-rule manual authoring.</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
@@ -11,7 +11,6 @@ It mines low-false-positive detection rules out of attacks that raised no alert,
   <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Suricata%20%7C%20Zeek-latest-005571" alt="Suricata | Zeek">
   <img src="https://img.shields.io/badge/ELK-8.19.16-005571" alt="ELK 8.19.16">
-  <img src="https://img.shields.io/github/last-commit/monstertsl/SenseMind?label=last%20commit" alt="Last commit">
 </p>
 
 <p align="center">
@@ -22,7 +21,7 @@ It mines low-false-positive detection rules out of attacks that raised no alert,
 
 An open-source detection stack (Suricata + ELK) deployed by a small or mid-sized security team usually runs into the same situation: hundreds to thousands of alerts a day, most of them false positives, and sustained manual follow-up is not realistic. Detection content depends on external rule sets, which cover little of the attacks that actually reach the local environment, while commercial SOC platforms are priced well beyond what such a team can budget. When a real intrusion does occur, the alert has often already fired — nobody saw it.
 
-SenseMind targets that specific gap. Alerts go to AI triage first, and once an attack is confirmed, the system generates a low-false-positive detection rule for it and hot-reloads that rule, so the same class of attack is detected automatically from then on. Detection capability does not depend on external rule sets; it accumulates from the attacks observed in local traffic. The system runs on production traffic today, and the rules in its rule pool are generated and retained by the system itself rather than written by hand one at a time.
+SenseMind targets that specific gap: alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Once an attack is confirmed, the system generates and hot-reloads a low-false-positive detection rule, allowing detection capability to continuously grow from its own traffic without relying on external rule sets or rule-by-rule manual authoring. SenseMind also integrates multi-vendor security products and response channels—including firewall blocking, endpoint isolation, email, and ticketing—and is working toward a rule-triggered automated workflow from detection and triage through response and case closure, replacing manual handling of each alert.
 
 ## How it works
 
