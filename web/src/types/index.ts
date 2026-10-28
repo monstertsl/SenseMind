@@ -86,6 +86,8 @@ export interface AlertAi {
   http_status: number | null
   response_body: string
   source_alert_id: string
+  /** 原告警所在的 ES 索引，处置成功后写 blocked=true 需要它 */
+  source_alert_index?: string
   threat_verdict: string
   attack_result: string
   attack_technique: string
@@ -124,6 +126,8 @@ export interface AlertQuery {
   /** 可信度阈值上界（对应日志中心的 ≤） */
   confidence_max?: number
   alert_signature?: string
+  /** 是否已处置（封堵成功后 responder 在文档上写 blocked=true，未处置无该字段） */
+  blocked?: boolean
   /** KQL 高级查询，与其余筛选条件 AND 叠加 */
   kql?: string
   source_alert_id?: string

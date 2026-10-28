@@ -543,6 +543,9 @@ echo "[+] ES Reader API Key 已写入 .env"
 # soc-* 模板（原始日志）：仅对搜索/过滤/排序字段建索引，其余 250+ 字段仅存储不索引
 # soc-ai-* 模板（AI 研判）：仅对搜索/聚合字段建索引
 # 模板永久注册在 ES 中，新索引自动套用，旧索引不受影响
+# 注意：dynamic_templates 把动态字段一律建成 index:false（省空间），所以需要筛选/聚合/排序
+# 的字段必须在模板 properties 白名单里显式声明（如 blocked，否则 term 查询报
+# "Cannot search on field [blocked] since it is not indexed nor has doc values"）
 echo "[*] 3.5.5 正在初始化 ES 索引模板与索引优化..."
 ES_TMPL_DIR="$BASE_DIR/ai-analyzer/scripts"
 # 注意：curl 不带 -f 时 HTTP 4xx/5xx 仍返回退出码 0，必须用 -w 提取状态码判断注册是否成功

@@ -42,6 +42,9 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/AlertOutbound.vue'),
     meta: { title: '联动外发', requiresAuth: true, admin: true },
   },
+  // 旧地址兜底：联动处置与联动日志已合成一个页面内的 tab
+  { path: '/outbound/response', redirect: '/outbound' },
+  { path: '/outbound/logs', redirect: '/outbound' },
   { path: '/:pathMatch(.*)*', redirect: '/monitor/dashboard' },
 ]
 

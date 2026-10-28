@@ -55,6 +55,7 @@ export const KQL_FIELDS: KqlFieldDef[] = [
   { name: 'ai.http_status', alias: 'HTTP 状态码' },
   { name: 'ai.http_user_agent', alias: 'User-Agent' },
   { name: 'ai.tls_sni', alias: 'TLS SNI' },
+  { name: 'blocked', alias: '是否已处置', values: ['true', 'false'] },
   { name: 'ai.source_alert_id', alias: '原始日志ID' },
   { name: 'ai.analysis_source', alias: '分析来源' },
 ]

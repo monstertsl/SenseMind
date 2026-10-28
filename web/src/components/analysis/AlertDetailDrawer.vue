@@ -8,8 +8,11 @@ import { ElMessage } from 'element-plus'
 import type { AlertDetail } from '@/types'
 import { formatDateTime, formatEmpty, formatPort, copyToClipboard } from '@/utils/format'
 import { maskPayload } from '@/utils/desensitize'
+import SkeletonLines from '@/components/common/SkeletonLines.vue'
 import { renderHighlighted } from '@/utils/highlight'
 import { getRuleContents } from '@/api/alerts'
+import { listResponseDevices, type ResponseDeviceItem } from '@/api/responseDevice'
+import { runResponseAction } from '@/api/responseAction'
 import { useCrossPageRouter } from '@/composables/useCrossPageRouter'
 
 const props = defineProps<{
@@ -95,18 +98,103 @@ function jumpToLog() {
   const id = props.detail?.ai?.source_alert_id
   if (id) goToLogExplorer(id)
 }
+
+// ---- 联动处置 ----
+
+const actionVisible = ref(false)
+const actionSubmitting = ref(false)
+const actionDevicesLoading = ref(false)
+const actionDevices = ref<ResponseDeviceItem[]>([])
+const actionDeviceId = ref<number | null>(null)
+const actionTakeSource = ref(true)
+const actionTakeDestination = ref(false)
+
+const detailSourceIp = computed(() => String(props.detail?.ai?.source_ip || '').trim())
+const detailDestinationIp = computed(() => String(props.detail?.ai?.destination_ip || '').trim())
+const enabledActionDevices = computed(() => actionDevices.value.filter((item) => item.enabled))
+
+async function openActionDialog() {
+  actionDeviceId.value = null
+  actionTakeSource.value = Boolean(detailSourceIp.value)
+  actionTakeDestination.value = false
+  actionVisible.value = true
+  actionDevicesLoading.value = true
+  try {
+    const res = await listResponseDevices()
+    actionDevices.value = res.items || []
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '联动设备加载失败')
+  } finally {
+    actionDevicesLoading.value = false
+  }
+}
+
+async function submitAction() {
+  const targets = new Set<string>()
+  if (actionTakeSource.value && detailSourceIp.value) targets.add(detailSourceIp.value)
+  if (actionTakeDestination.value && detailDestinationIp.value) targets.add(detailDestinationIp.value)
+  if (!targets.size) {
+    ElMessage.warning('请至少勾选一个处置地址')
+    return
+  }
+  if (!actionDeviceId.value) {
+    ElMessage.warning('请选择封堵设备')
+    return
+  }
+
+  const eventId = props.detail?.ai?.source_alert_id
+  const eventIndex = props.detail?.ai?.source_alert_index
+  const done: string[] = []
+  const failed: string[] = []
+  const skipped: string[] = []
+  let markFailed = false
+  actionSubmitting.value = true
+  try {
+    for (const ip of targets) {
+      try {
+        const res = await runResponseAction({
+          device_id: actionDeviceId.value,
+          ip,
+          event_id: eventId ? String(eventId) : undefined,
+          event_index: eventIndex ? String(eventIndex) : undefined,
+        })
+        if (res.status === 'success') {
+          done.push(ip)
+          if (eventIndex && eventId && res.event_blocked === false) markFailed = true
+        } else if (res.status === 'skipped') skipped.push(ip)
+        else failed.push(`${ip}（${res.error_message || '处置失败'}）`)
+      } catch (error: any) {
+        failed.push(`${ip}（${error?.response?.data?.detail || error?.message || '请求失败'}）`)
+      }
+    }
+  } finally {
+    actionSubmitting.value = false
+  }
+
+  if (done.length) ElMessage.success(`已下发封堵：${done.join('、')}`)
+  if (skipped.length) ElMessage.info(`白名单跳过：${skipped.join('、')}`)
+  if (failed.length) ElMessage.error(`处置失败：${failed.join('；')}`)
+  if (markFailed) ElMessage.warning('封堵已下发，但告警的「已处置」标记写入失败')
+  actionVisible.value = false
+}
 </script>
 
 <template>
   <el-drawer
     :model-value="modelValue"
-    :title="`告警详情`"
     direction="rtl"
     size="50%"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div v-loading="loading" class="detail-body">
-      <template v-if="detail">
+    <template #header>
+      <div class="drawer-header">
+        <span class="drawer-title">告警详情</span>
+        <el-button type="primary" :disabled="!detail" @click="openActionDialog">处置</el-button>
+      </div>
+    </template>
+    <div class="detail-body">
+      <SkeletonLines v-if="loading && !detail" :rows="10" />
+      <template v-else-if="detail">
         <!-- 基本信息 -->
         <section class="detail-section">
           <h4 class="section-h">基本信息</h4>
@@ -196,9 +284,73 @@ function jumpToLog() {
       <div v-else-if="!loading" class="empty-text">未加载到详情</div>
     </div>
   </el-drawer>
+
+  <el-dialog v-model="actionVisible" title="联动处置" width="480px" :close-on-click-modal="false">
+    <el-form label-position="top" @submit.prevent>
+      <el-form-item label="处置地址" required>
+        <div class="action-targets">
+          <el-checkbox v-model="actionTakeSource" :disabled="!detailSourceIp">
+            源地址 {{ detailSourceIp || '—' }}
+          </el-checkbox>
+          <el-checkbox v-model="actionTakeDestination" :disabled="!detailDestinationIp">
+            目的地址 {{ detailDestinationIp || '—' }}
+          </el-checkbox>
+        </div>
+      </el-form-item>
+      <el-form-item label="封堵设备" required>
+        <el-select
+          v-model="actionDeviceId"
+          placeholder="选择已启用的联动设备"
+          :loading="actionDevicesLoading"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="item in enabledActionDevices"
+            :key="item.id"
+            :label="`${item.name}（${item.display_name}）`"
+            :value="item.id"
+          />
+        </el-select>
+        <div v-if="!actionDevicesLoading && !enabledActionDevices.length" class="action-help">
+          暂无启用的联动设备，请先在「联动外发 → 联动处置」添加并启用设备。
+        </div>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="actionVisible = false">取消</el-button>
+      <el-button type="primary" :loading="actionSubmitting" @click="submitAction">下发封堵</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped lang="scss">
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  // 右侧留出抽屉自带的关闭按钮位置，避免两个按钮挤在一起
+  padding-right: 32px;
+}
+
+.drawer-title {
+  color: $color-text-primary;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.action-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.action-help {
+  margin-top: 4px;
+  color: $color-text-secondary;
+  font-size: 12px;
+}
+
 .detail-body {
   padding: 0 $space-xl $space-xl;
 }

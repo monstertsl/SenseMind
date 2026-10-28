@@ -6,6 +6,7 @@ import type { LogItem } from '@/types'
 import { formatDateTime, copyToClipboard } from '@/utils/format'
 import { maskSensitive } from '@/utils/desensitize'
 import { triggerAiAnalysis } from '@/api/logs'
+import SkeletonLines from '@/components/common/SkeletonLines.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -199,8 +200,9 @@ function onContextField(n: TreeNode) {
     size="50%"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div v-loading="loading" class="detail-body">
-      <template v-if="log">
+    <div class="detail-body">
+      <SkeletonLines v-if="loading && !log" :rows="10" />
+      <template v-else-if="log">
         <!-- 顶部信息 -->
         <div class="log-meta">
           <div class="meta-row">

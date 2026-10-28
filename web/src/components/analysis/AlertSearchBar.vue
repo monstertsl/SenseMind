@@ -5,6 +5,7 @@ import KqlInput from '@/components/common/KqlInput.vue'
 import {
   ALERT_FILTER_KEYS,
   ATTACK_RESULT_OPTIONS,
+  BLOCKED_OPTIONS,
   THREAT_VERDICT_OPTIONS,
   parseExcludeInput,
 } from '@/constants/alertFilters'
@@ -32,6 +33,7 @@ const form = reactive({
   threat_verdict: [] as string[],
   attack_result: [] as string[],
   alert_signature: '',
+  blocked: undefined as boolean | undefined,
   confidence_op: 'gte' as ConfidenceOp,
   confidence_value: undefined as number | undefined,
 })
@@ -50,6 +52,7 @@ function emitSearch() {
     soc_name: form.soc_name.length ? form.soc_name.join(',') : undefined,
     threat_verdict: form.threat_verdict.length ? form.threat_verdict.join(',') : undefined,
     attack_result: form.attack_result.length ? form.attack_result.join(',') : undefined,
+    blocked: form.blocked === true || form.blocked === false ? form.blocked : undefined,
     confidence: undefined,
     confidence_min: undefined,
     confidence_max: undefined,
@@ -95,6 +98,7 @@ function reset() {
   form.threat_verdict = []
   form.attack_result = []
   form.alert_signature = ''
+  form.blocked = undefined
   form.confidence_op = 'gte'
   form.confidence_value = undefined
   emit('reset')
@@ -109,6 +113,7 @@ function fillForm(q: AlertQuery) {
   form.soc_name = q.soc_name ? q.soc_name.split(',').filter(Boolean) : []
   form.threat_verdict = q.threat_verdict ? q.threat_verdict.split(',').filter(Boolean) : []
   form.attack_result = q.attack_result ? q.attack_result.split(',').filter(Boolean) : []
+  form.blocked = q.blocked === true || q.blocked === false ? q.blocked : undefined
   // 可信度：由后端参数反推比较符
   if (q.confidence !== undefined && q.confidence !== null) {
     form.confidence_op = 'eq'
@@ -230,6 +235,22 @@ watch(
           <el-option
             v-for="opt in ATTACK_RESULT_OPTIONS"
             :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
+      </div>
+      <div class="field field-selected-value">
+        <label>是否处理</label>
+        <el-select
+          v-model="form.blocked"
+          clearable
+          placeholder="选择处置状态"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="opt in BLOCKED_OPTIONS"
+            :key="String(opt.value)"
             :label="opt.label"
             :value="opt.value"
           />

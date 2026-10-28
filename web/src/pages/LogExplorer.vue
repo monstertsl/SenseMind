@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import LogConditionBuilder from '@/components/log/LogConditionBuilder.vue'
 import LogList from '@/components/log/LogList.vue'
 import LogDetailDrawer from '@/components/log/LogDetailDrawer.vue'
+import SkeletonLines from '@/components/common/SkeletonLines.vue'
 import { useLogSearch } from '@/composables/useLogSearch'
 import { useLogExplorerStore } from '@/stores/logExplorer'
 import { useCrossPageRouter } from '@/composables/useCrossPageRouter'
@@ -87,14 +88,16 @@ onMounted(() => {
   <div class="log-explorer">
     <LogConditionBuilder @search="handleSearch" @reset="handleReset" />
 
-    <div class="list-section" v-loading="loading">
+    <div class="list-section">
       <div class="list-toolbar">
         <span class="result-count">
           共 <b class="font-mono">{{ total }}</b> 条日志
         </span>
       </div>
 
+      <SkeletonLines v-if="loading && !list.length" :rows="10" />
       <LogList
+        v-else
         :data="list"
         :loading="loading"
         @row-click="handleRowClick"

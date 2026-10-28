@@ -6,6 +6,7 @@ import {
   listBypassRules, createBypassRule, updateBypassRule, deleteBypassRule,
   type BypassRuleItem,
 } from '@/api/bypassRule'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
 
 const rules = ref<BypassRuleItem[]>([])
 const duplicateRules = ref<BypassRuleItem[]>([])
@@ -401,7 +402,8 @@ function formatTime(t: string | null): string {
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建白名单</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="rules" stripe class="rule-table">
+    <SkeletonTable v-if="loading" :rows="6" :columns="5" />
+    <el-table v-else :data="rules" stripe class="rule-table">
       <el-table-column label="源 IP" min-width="140">
         <template #default="{ row }">
           <span class="font-mono">{{ formatIp(row.src_ip) }}</span>

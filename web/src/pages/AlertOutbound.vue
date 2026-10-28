@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Setting } from '@element-plus/icons-vue'
 import { listAlertPresets } from '@/api/alertPreset'
 import { describeAlertFilters } from '@/constants/alertFilters'
 import {
@@ -15,6 +16,9 @@ import {
 import { getMailConfig, sendTestMail, updateMailConfig, type MailConfig } from '@/api/mailConfig'
 import { ALERT_FILTER_KEYS } from '@/constants/alertFilters'
 import type { AlertSearchPreset } from '@/types'
+import ResponsePanel from '@/pages/AlertResponse.vue'
+import ResponseLogs from '@/pages/ResponseLogs.vue'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -25,6 +29,12 @@ const testRecipient = ref('')
 const savedConfig = ref<MailConfig | null>(null)
 const watches = ref<AlertMailWatch[]>([])
 const presets = ref<AlertSearchPreset[]>([])
+const activeTab = ref<'response' | 'logs'>('response')
+const pageTabs = [
+  { key: 'response', label: '联动处置' },
+  { key: 'logs', label: '联动日志' },
+] as const
+
 const watchDialogVisible = ref(false)
 const savingWatch = ref(false)
 const presetLoading = ref(false)
@@ -332,19 +342,25 @@ onMounted(() => {
 
 <template>
   <div class="outbound-page">
-    <section v-loading="loading" class="section-block">
+    <div class="page-tabs">
+      <button
+        v-for="tab in pageTabs"
+        :key="tab.key"
+        type="button"
+        class="page-tab"
+        :class="{ active: activeTab === tab.key }"
+        @click="activeTab = tab.key"
+      >{{ tab.label }}</button>
+    </div>
+
+    <div v-show="activeTab === 'response'" class="tab-panel">
+    <section class="section-block">
       <div class="block-title-row">
         <div class="block-title">邮件告警</div>
-        <el-button v-if="savedConfig?.password_configured" type="primary" @click="openConfigDialog">
-          修改发件邮箱配置
-        </el-button>
-        <el-button
-          v-else-if="!loading"
-          type="primary"
-          @click="openConfigDialog"
-        >
-          配置发件邮箱
-        </el-button>
+        <div class="row-actions">
+          <el-button :icon="Setting" @click="openConfigDialog">发件邮箱配置</el-button>
+          <el-button type="primary" :icon="Plus" @click="openWatchDialog()">添加关注告警</el-button>
+        </div>
       </div>
 
       <div class="mail-config-row">
@@ -352,12 +368,10 @@ onMounted(() => {
           <span class="config-label">关注告警配置</span>
           <span class="watch-count">{{ watches.length }} 条</span>
         </div>
-        <div class="row-actions">
-          <el-button type="primary" @click="openWatchDialog()">添加关注告警</el-button>
-        </div>
       </div>
 
-      <el-table v-if="watches.length" :data="watches" row-key="id" class="watch-table">
+      <SkeletonTable v-if="loading" :rows="3" :columns="4" />
+      <el-table v-else-if="watches.length" :data="watches" row-key="id" class="watch-table">
         <el-table-column label="检索条件" min-width="150">
           <template #default="scope">
             <el-tooltip :content="presetFilterSummary(scope.row.preset_id)" placement="top" :show-after="200">
@@ -382,6 +396,8 @@ onMounted(() => {
       </el-table>
       <div v-else class="watch-empty">暂无关注告警，点击「添加关注告警」添加</div>
     </section>
+
+    <ResponsePanel />
 
     <el-dialog
       v-model="watchDialogVisible"
@@ -548,11 +564,59 @@ onMounted(() => {
         <el-button type="primary" :loading="testing" @click="handleTestMail">发送</el-button>
       </template>
     </el-dialog>
+    </div>
+
+    <ResponseLogs v-if="activeTab === 'logs'" />
   </div>
 </template>
 
 <style scoped lang="scss">
 .outbound-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.page-tabs {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 2px;
+  border-bottom: 1px solid $color-border;
+}
+
+.page-tab {
+  position: relative;
+  padding: 6px 2px 10px;
+  border: none;
+  background: transparent;
+  color: $color-text-secondary;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s;
+
+  &:hover {
+    color: $color-primary;
+  }
+
+  &.active {
+    color: $color-primary;
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 3px;
+      border-radius: 2px;
+      background: $color-primary;
+    }
+  }
+}
+
+.tab-panel {
   display: flex;
   flex-direction: column;
   gap: 14px;

@@ -5,6 +5,7 @@ import AlertSearchBar from '@/components/analysis/AlertSearchBar.vue'
 import AlertPresetBar from '@/components/analysis/AlertPresetBar.vue'
 import AlertTable from '@/components/analysis/AlertTable.vue'
 import AlertDetailDrawer from '@/components/analysis/AlertDetailDrawer.vue'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
 import { useAlertList } from '@/composables/useAlertList'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
@@ -147,13 +148,15 @@ onActivated(ensureLoaded)
     <!-- 快捷检索：检索栏下方独立一行 -->
     <AlertPresetBar ref="presetBarRef" :filters="currentFilters" @apply="handleSearch" />
 
-    <div class="table-section" v-loading="loading && !list.length">
+    <div class="table-section">
       <div class="table-toolbar">
         <span class="result-count">
           共 <b class="font-mono">{{ total }}</b> 条告警
         </span>
       </div>
+      <SkeletonTable v-if="loading && !list.length" :rows="10" :columns="6" />
       <AlertTable
+        v-else
         :data="list"
         :loading="loading"
         :page="query.page"

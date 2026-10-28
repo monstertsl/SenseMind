@@ -147,9 +147,12 @@ async function handleSave() {
 </script>
 
 <template>
-  <div class="preset-bar" v-loading="loading">
+  <div class="preset-bar">
     <span class="preset-label">快捷检索</span>
-    <div v-if="presets.length" class="preset-list">
+    <div v-if="loading && !presets.length" class="preset-skeleton">
+      <div v-for="i in 3" :key="i" class="skeleton-block preset-skeleton-tag"></div>
+    </div>
+    <div v-else-if="presets.length" class="preset-list">
       <el-tooltip
         v-for="p in presets"
         :key="p.id"
@@ -219,6 +222,17 @@ async function handleSave() {
   line-height: 24px;
   font-weight: 700;
   color: $color-text-primary;
+}
+
+// 加载中用骨架标签占位，避免转圈
+.preset-skeleton {
+  display: flex;
+  gap: $space-sm;
+}
+
+.preset-skeleton-tag {
+  width: 72px;
+  height: 22px;
 }
 
 // 标签行：数量多时换行铺开，不做收缩/展开

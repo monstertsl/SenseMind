@@ -337,3 +337,6 @@ def send_test_mail(
 
 
 from . import mail_watches
+from . import response as _response
+
+_response.register(app, engine)

@@ -12,6 +12,7 @@ export const ALERT_FILTER_KEYS = [
   'threat_verdict',
   'attack_result',
   'alert_signature',
+  'blocked',
   'kql',
   'confidence',
   'confidence_min',
@@ -31,6 +32,7 @@ export const ALERT_FILTER_LABELS: Record<AlertFilterKey, string> = {
   threat_verdict: '威胁判定',
   attack_result: '攻击结果',
   alert_signature: '威胁名',
+  blocked: '是否处理',
   kql: 'KQL',
   confidence: '可信度',
   confidence_min: '可信度≥',
@@ -53,6 +55,17 @@ export const ATTACK_RESULT_OPTIONS = [
   { label: '失败', value: '失败' },
   { label: '未知', value: '未知' },
 ]
+
+/** 是否处理选项：blocked=true 仅在封堵成功后写入（后端参数为布尔） */
+export const BLOCKED_OPTIONS: { label: string; value: boolean }[] = [
+  { label: '已处置', value: true },
+  { label: '未处置', value: false },
+]
+
+/** 摘要中需要把取值翻译成中文的键 */
+const FILTER_VALUE_LABELS: Partial<Record<AlertFilterKey, { label: string; value: unknown }[]>> = {
+  blocked: BLOCKED_OPTIONS,
+}
 
 // 排除前缀：英文 ! 与中文 ！ 均支持
 const EXCLUDE_PREFIXES = ['!', '！']
@@ -84,7 +97,8 @@ export function describeAlertFilters(filters: Partial<AlertQuery>): string {
   for (const key of ALERT_FILTER_KEYS) {
     const value = (filters as Record<string, unknown>)[key]
     if (value === undefined || value === null || value === '') continue
-    const text = Array.isArray(value) ? value.join('/') : String(value)
+    const label = FILTER_VALUE_LABELS[key]?.find((opt) => String(opt.value) === String(value))?.label
+    const text = label ?? (Array.isArray(value) ? value.join('/') : String(value))
     parts.push(`${ALERT_FILTER_LABELS[key]}=${text}`)
   }
   return parts.join('，')

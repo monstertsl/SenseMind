@@ -8,6 +8,7 @@ import {
   enableTotp, disableTotp, getTotpSecret, type UserItem, type AuthMode,
 } from '@/api/user'
 import { useAuthStore } from '@/stores/auth'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
 
 const authStore = useAuthStore()
 
@@ -244,7 +245,8 @@ function copyToClipboard(text: string) {
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建用户</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="filteredUsers" stripe class="user-table">
+    <SkeletonTable v-if="loading" :rows="6" :columns="5" />
+    <el-table v-else :data="filteredUsers" stripe class="user-table">
       <el-table-column prop="username" label="用户名" min-width="120" />
       <el-table-column label="角色" min-width="90">
         <template #default="{ row }">

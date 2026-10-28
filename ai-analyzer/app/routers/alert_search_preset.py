@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/v1/alert-search-presets", tags=["分析中心检
 ALLOWED_FILTER_KEYS = (
     "source_ip", "destination_ip", "soc_name", "threat_verdict",
     "attack_result", "alert_signature", "confidence",
-    "confidence_min", "confidence_max", "kql",
+    "confidence_min", "confidence_max", "blocked", "kql",
     "exclude_source_ip", "exclude_destination_ip", "exclude_alert_signature",
 )
 

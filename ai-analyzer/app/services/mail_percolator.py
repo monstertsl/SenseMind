@@ -181,6 +181,12 @@ def _query_from_filters(filters: dict) -> dict:
     if filters.get("alert_signature"):
         escaped = str(filters["alert_signature"]).replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
         must.append({"wildcard": {"ai.alert_signature.keyword": {"value": f"*{escaped}*", "case_insensitive": True}}})
+    if filters.get("blocked") is not None:
+        # 与告警查询口径一致：未处置的文档没有 blocked 字段
+        if filters["blocked"] in (True, "true", 1, "1"):
+            must.append({"term": {"blocked": True}})
+        else:
+            must.append({"bool": {"must_not": [{"term": {"blocked": True}}]}})
     if filters.get("kql"):
         must.append({"query_string": {"query": filters["kql"]}})
     for key, field in (("exclude_source_ip", "ai.source_ip"), ("exclude_destination_ip", "ai.destination_ip")):

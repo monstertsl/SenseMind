@@ -15,6 +15,8 @@ import {
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
 import AiBypassManage from '@/pages/AiBypassManage.vue'
+import SkeletonLines from '@/components/common/SkeletonLines.vue'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -347,7 +349,8 @@ onBeforeUnmount(() => {
     <!-- 集成配置 -->
     <div class="section-block">
       <div class="block-title">集成配置</div>
-      <div v-loading="configLoading" class="config-row">
+      <SkeletonLines v-if="configLoading" :rows="6" />
+      <div v-else class="config-row">
         <!-- 安全策略（左） -->
         <div class="config-section">
           <div class="section-title">安全策略</div>
@@ -399,9 +402,10 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- LLM 模型 -->
-          <div v-loading="llmLoading" class="config-section config-section-llm">
+          <div class="config-section config-section-llm">
             <div class="section-title">LLM 模型</div>
-            <div class="llm-info">
+            <SkeletonLines v-if="llmLoading" :rows="1" />
+            <div v-else class="llm-info">
               <span v-if="llmSaved.model" class="llm-model-name">{{ llmSaved.model }}</span>
               <span v-else class="llm-model-empty">未配置</span>
               <el-button type="primary" text @click="openLLMDialog">设置</el-button>
@@ -487,7 +491,8 @@ onBeforeUnmount(() => {
           <el-input v-model="systemFilter.detail" placeholder="操作详情（模糊查询）" clearable class="filter-input-wide" @keyup.enter="handleSystemSearch" />
           <el-button type="primary" :icon="Search" @click="handleSystemSearch">查询</el-button>
         </div>
-        <el-table :key="'system-' + (isNarrow ? 'n' : 'w')" v-loading="systemLoading" :data="systemLogs" stripe max-height="420">
+        <SkeletonTable v-if="systemLoading" :rows="6" :columns="5" />
+        <el-table v-else :key="'system-' + (isNarrow ? 'n' : 'w')" :data="systemLogs" stripe max-height="420">
           <el-table-column label="操作类型" width="130">
             <template #default="{ row }">
               <el-tag size="small">{{ ACTION_LABELS[row.action] || row.action }}</el-tag>

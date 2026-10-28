@@ -69,10 +69,9 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
 </script>
 
 <template>
-  <div class="alert-table-wrap">
+  <div class="alert-table-wrap" :style="loading && data.length > 0 ? { opacity: 0.55 } : undefined">
     <el-table
       :data="data"
-      v-loading="loading && data.length > 0"
       :border="false"
       stripe
       size="small"

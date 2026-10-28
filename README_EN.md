@@ -21,7 +21,7 @@ Alerts are automatically normalized, triaged, correlated across sources, and enr
 
 An open-source detection stack (Suricata + ELK) deployed by a small or mid-sized security team usually runs into the same situation: hundreds to thousands of alerts a day, most of them false positives, and sustained manual follow-up is not realistic. Detection content depends on external rule sets, which cover little of the attacks that actually reach the local environment, while commercial SOC platforms are priced well beyond what such a team can budget. When a real intrusion does occur, the alert has often already fired — nobody saw it.
 
-SenseMind targets that specific gap: alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Once an attack is confirmed, the system generates and hot-reloads a low-false-positive detection rule, allowing detection capability to continuously grow from its own traffic without relying on external rule sets or rule-by-rule manual authoring. SenseMind also integrates multi-vendor security products and response channels—including firewall blocking, endpoint isolation, email, and ticketing—and is working toward a rule-triggered automated workflow from detection and triage through response and case closure, replacing manual handling of each alert.
+SenseMind targets that specific gap: alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Once an attack is confirmed, the system generates and hot-reloads a low-false-positive detection rule, allowing detection capability to continuously grow from its own traffic without relying on external rule sets or rule-by-rule manual authoring. SenseMind also integrates multi-vendor security products and response channels—including firewall blocking, endpoint isolation, email, and ticketing—and is working toward a rule-triggered automated workflow from detection and triage through response and case closure, replacing manual handling of each alert. Supported devices, how to configure them, and how to add a new one are covered in the [Device Integration Guide](DEVICE_INTEGRATION.md).
 
 ## How it works
 
@@ -65,6 +65,7 @@ Beyond alerts matched by rules, SenseMind also provides a **semantic detection e
 
 - Docker Engine + Docker Compose V2
 - `curl`, `jq`, `unzip`, `openssl`, `ethtool`
+- Minimum configuration: **16 CPU cores and 16 GiB RAM**. With fewer than 16 cores, remove the af-packet `threads: 16` entry from `suricata/patch_yaml.py` (the `("set", ["af-packet"], "threads", "16", ...)` line); the capture thread count then falls back to automatic allocation based on available cores.
 - A Linux host able to receive the traffic to be inspected. **The capture interface must be connected to a SPAN port, an optical splitter, or a network TAP.**
 
 ### Reference configuration (10 Gbps internal mirrored traffic)
@@ -171,6 +172,7 @@ SenseMind/
 ├── deploy.sh                    # one-command deployment script
 ├── remove.sh                    # full cleanup script
 ├── docker-compose.yml           # full-stack orchestration
+├── DEVICE_INTEGRATION.md        # device integration guide (supported devices, configuration, adding your own)
 ├── certs/                       # ES SSL certificates (generated)
 ├── filebeat/filebeat.yml        # collection configuration
 ├── logstash/

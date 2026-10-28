@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { WarningFilled, User, ArrowDown, Monitor, Aim, Document, Setting, Connection } from '@element-plus/icons-vue'
+import { WarningFilled, User, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { useAuthStore } from '@/stores/auth'
@@ -15,18 +15,26 @@ const globalStore = useGlobalFilterStore()
 const authStore = useAuthStore()
 const llmConfigMissing = ref(false)
 
-const baseMenus = [
-  { path: '/monitor/dashboard', title: '监测中心', icon: Monitor },
-  { path: '/analysis/alerts', title: '分析中心', icon: Aim },
-  { path: '/log/explorer', title: '日志中心', icon: Document },
+// 图标用字符串名：main.ts 已全局注册全部 Element Plus 图标，
+// 因此换图标只需改这里，不用再加 import
+interface NavMenu {
+  path: string
+  title: string
+  icon: string
+}
+
+const baseMenus: NavMenu[] = [
+  { path: '/monitor/dashboard', title: '监测中心', icon: 'Grid' },
+  { path: '/analysis/alerts', title: '分析中心', icon: 'Postcard' },
+  { path: '/log/explorer', title: '日志中心', icon: 'Document' },
 ]
 
 // 缓存页面（组件 name）：切回时复用已有数据与筛选状态，不重新请求
 const keepAlivePages = ['AnalysisAlerts']
 
-const adminMenus = [
-  { path: '/outbound', title: '联动外发', icon: Connection },
-  { path: '/system/settings', title: '系统设置', icon: Setting },
+const adminMenus: NavMenu[] = [
+  { path: '/outbound', title: '联动外发', icon: 'Operation' },
+  { path: '/system/settings', title: '系统设置', icon: 'SetUp' },
 ]
 
 const menus = computed(() => {
@@ -52,6 +60,19 @@ const refreshIntervalOptions: { label: string; value: RefreshInterval }[] = [
 
 const activeMenu = computed(() => route.path)
 
+// 竖屏/窄屏折叠：<=1024px 把刷新间隔、时间范围、账号收进下拉面板，避免顶部溢出
+const NARROW_BREAKPOINT = 1024
+const isNarrow = ref(window.innerWidth <= NARROW_BREAKPOINT)
+const narrowPanelVisible = ref(false)
+
+function updateNarrow() {
+  isNarrow.value = window.innerWidth <= NARROW_BREAKPOINT
+  if (!isNarrow.value) narrowPanelVisible.value = false
+}
+
+onMounted(() => window.addEventListener('resize', updateNarrow))
+onUnmounted(() => window.removeEventListener('resize', updateNarrow))
+
 const customTimeVisible = computed(() => globalStore.timeRange === 'custom')
 const customRange = ref<[Date, Date] | null>(
   globalStore.customTime.start && globalStore.customTime.end
@@ -61,6 +82,10 @@ const customRange = ref<[Date, Date] | null>(
 
 function handleMenuSelect(path: string) {
   router.push(path)
+}
+
+function isMenuActive(menu: NavMenu) {
+  return activeMenu.value === menu.path || activeMenu.value.startsWith(`${menu.path}/`)
 }
 
 function handleTimeRangeChange(val: TimeRange) {
@@ -196,8 +221,9 @@ onUnmounted(() => {
           <button
             v-for="m in menus"
             :key="m.path"
+            type="button"
             class="nav-item"
-            :class="{ active: activeMenu === m.path }"
+            :class="{ active: isMenuActive(m) }"
             :title="m.title"
             @click="handleMenuSelect(m.path)"
           >
@@ -215,7 +241,7 @@ onUnmounted(() => {
           class="mapping-warn"
         >
           <el-icon><WarningFilled /></el-icon>
-          字段映射缺失 {{ globalStore.missingFields.length }} 项
+          <span class="warn-text">字段映射缺失 {{ globalStore.missingFields.length }} 项</span>
         </el-tag>
         <el-tag
           v-if="authStore.isAdmin && llmConfigMissing"
@@ -228,8 +254,9 @@ onUnmounted(() => {
           @keydown.enter="router.push({ path: '/system/settings', query: { llm: 'configure' } })"
         >
           <el-icon><WarningFilled /></el-icon>
-          LLM 模型未配置
+          <span class="warn-text">LLM 模型未配置</span>
         </el-tag>
+        <template v-if="!isNarrow">
         <span class="time-label">刷新间隔</span>
         <el-select
           :model-value="globalStore.refreshInterval"
@@ -283,6 +310,81 @@ onUnmounted(() => {
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        </template>
+
+        <!-- 竖屏/窄屏：刷新间隔、时间范围与账号折叠进下拉面板，避免顶部溢出 -->
+        <el-popover
+          v-else
+          v-model:visible="narrowPanelVisible"
+          placement="bottom-end"
+          :width="268"
+          trigger="click"
+        >
+          <template #reference>
+            <button class="narrow-trigger" type="button" title="筛选与账号">
+              <el-icon><ArrowDown /></el-icon>
+            </button>
+          </template>
+          <div class="narrow-panel">
+            <div class="narrow-field">
+              <span class="narrow-label">刷新间隔</span>
+              <el-select
+                :model-value="globalStore.refreshInterval"
+                size="small"
+                :teleported="false"
+                @change="handleRefreshIntervalChange"
+              >
+                <el-option
+                  v-for="opt in refreshIntervalOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </div>
+            <div class="narrow-field">
+              <span class="narrow-label">时间范围</span>
+              <el-select
+                :model-value="globalStore.timeRange"
+                size="small"
+                :teleported="false"
+                @change="handleTimeRangeChange"
+              >
+                <el-option
+                  v-for="opt in timeRangeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </div>
+            <div v-if="customTimeVisible" class="narrow-field narrow-field-column">
+              <span class="narrow-label">自定义时间</span>
+              <el-date-picker
+                v-model="customRange"
+                type="datetimerange"
+                size="small"
+                :teleported="false"
+                range-separator="至"
+                start-placeholder="开始时间"
+                end-placeholder="结束时间"
+                format="YYYY-MM-DD HH:mm:ss"
+                @change="handleCustomConfirm"
+              />
+            </div>
+            <el-divider class="narrow-divider" />
+            <div class="narrow-account">
+              <span class="narrow-user">
+                <el-icon><User /></el-icon>
+                {{ authStore.user?.username || '用户' }}
+              </span>
+              <div class="narrow-actions">
+                <el-button size="small" @click="openPwdDialog">修改密码</el-button>
+                <el-button size="small" type="danger" plain @click="handleLogout">退出登录</el-button>
+              </div>
+            </div>
+          </div>
+        </el-popover>
       </div>
     </header>
 
@@ -494,6 +596,119 @@ onUnmounted(() => {
     .arrow {
       font-size: 12px;
     }
+  }
+}
+
+.narrow-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: $color-nav-text-active;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+}
+
+.narrow-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  .narrow-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    :deep(.el-select) {
+      width: 140px;
+    }
+  }
+
+  .narrow-field-column {
+    flex-direction: column;
+    align-items: stretch;
+
+    :deep(.el-date-editor) {
+      width: 100%;
+    }
+  }
+
+  .narrow-label {
+    color: $color-text-secondary;
+    font-size: 13px;
+  }
+
+  .narrow-divider {
+    margin: 2px 0;
+  }
+
+  .narrow-account {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .narrow-user {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: $color-text-primary;
+    font-family: $font-mono;
+    font-size: 13px;
+  }
+
+  .narrow-actions {
+    display: flex;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .topbar {
+    padding: 0 16px;
+    gap: 10px;
+    overflow: hidden;
+  }
+
+  .topbar-right {
+    gap: 10px;
+    min-width: 0;
+    flex-wrap: nowrap;
+  }
+
+  .nav-item {
+    min-width: 44px;
+    padding: 0 14px;
+  }
+
+  .narrow-trigger {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0 10px;
+  }
+
+  .nav-item {
+    min-width: 40px;
+    padding: 0 10px;
+  }
+
+  // 极窄屏告警标签只留图标，避免挤出边界
+  .topbar-right .warn-text {
+    display: none;
   }
 }
 

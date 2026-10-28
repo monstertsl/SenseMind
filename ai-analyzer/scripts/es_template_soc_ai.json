@@ -12,6 +12,7 @@
       "dynamic": true,
       "properties": {
         "@timestamp": { "type": "date" },
+        "blocked": { "type": "boolean" },
         "ai": {
           "properties": {
             "source_ip": { "type": "ip" },

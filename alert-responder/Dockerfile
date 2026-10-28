@@ -10,6 +10,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 COPY app/ ./app/
+COPY sensemind_device/ ./sensemind_device/
 
 EXPOSE 9091
 

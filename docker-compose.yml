@@ -253,6 +253,8 @@ services:
       - ES_URL=https://elasticsearch:9200
       - ES_READER_API_KEY=${ES_READER_API_KEY}
       - ES_CA_CERT=/usr/share/alert-responder/certs/ca.crt
+      # 封堵成功后给原告警文档写 blocked=true，需要写权限（只读 key 不够）
+      - ES_PASSWORD=${ELASTIC_PASSWORD}
 
     depends_on:
       postgres:

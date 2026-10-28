@@ -43,6 +43,8 @@ class AlertQueryParams(BaseModel):
     alert_signature: Optional[str] = None
     source_alert_id: Optional[str] = None
     attack_result: Optional[str] = None
+    # 是否已处置（封堵成功后 responder 在文档上写 blocked=true）
+    blocked: Optional[bool] = None
     # KQL 高级查询，与其余筛选条件 AND 叠加
     kql: Optional[str] = None
     exclude_source_ip: Optional[str] = None

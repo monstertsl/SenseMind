@@ -103,6 +103,12 @@ class QueryService:
             clause = _multi_terms("ai.attack_result", params.attack_result)
             if clause:
                 must.append(clause)
+        # 是否已处置：blocked 只在封堵成功后由 responder 写入，未处置的文档没有该字段
+        if params.blocked is not None:
+            if params.blocked:
+                must.append({"term": {"blocked": True}})
+            else:
+                must.append({"bool": {"must_not": [{"term": {"blocked": True}}]}})
         # KQL 高级查询：与其余条件 AND 叠加（不替换时间范围与可视化筛选）
         # 不指定 default_field / fields：一旦显式列出字段，ip 类型字段（ai.source_ip 等）
         # 遇到非 IP 查询词会让整条 query_string 变 0 命中（实测），保持 ES 默认全字段行为。
