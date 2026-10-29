@@ -140,11 +140,14 @@ def test_connection(cfg: dict) -> ProbeResult:
 
 
 def _is_blocked(entry: dict) -> bool:
-    return (
-        bool(entry.get("enable"))
-        and entry.get("type") == "BLACK"
-        and entry.get("urlType") == "ip"
-    )
+    if not entry.get("enable") or entry.get("type") != "BLACK":
+        return False
+    url_type = entry.get("urlType")
+    if url_type is not None:
+        return url_type == "ip"
+    # 部分固件不回 urlType，改用 domain 标记：0 表示非域名（即 IP 对象）。
+    # 漏判会让「已存在」被当成「不在黑名单」，解封被跳过、封堵重复下发。
+    return entry.get("domain") in (None, 0, "0", False)
 
 
 def _is_not_found(payload: dict) -> bool:

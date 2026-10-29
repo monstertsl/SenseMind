@@ -27,6 +27,12 @@ class FakeSangfor:
         self.network_down = False
         self.ignore_block = False  # 模拟“设备返回成功但没真正写入”
         self.ignore_unblock = False  # 模拟“设备返回成功但没真正删除”
+        self.missing_url_type = False  # 模拟部分固件：不回 urlType，改用 domain=0 表示 IP
+
+    def _entry(self, ip: str) -> dict:
+        if self.missing_url_type:
+            return {"enable": True, "type": "BLACK", "domain": 0, "url": ip}
+        return {"enable": True, "type": "BLACK", "urlType": "ip", "url": ip}
 
     def handle(self, request: httpx.Request):
         if self.network_down:
@@ -48,11 +54,7 @@ class FakeSangfor:
                 if ip in self.blocked:
                     return httpx.Response(
                         200,
-                        json={
-                            "code": 0,
-                            "message": "成功",
-                            "data": {"enable": True, "type": "BLACK", "urlType": "ip", "url": ip},
-                        },
+                        json={"code": 0, "message": "成功", "data": self._entry(ip)},
                     )
                 return httpx.Response(200, json={"code": 1, "message": "黑名单不存在"})
             if request.method == "DELETE":
@@ -65,10 +67,7 @@ class FakeSangfor:
                     self.blocked.add(json.loads(request.content)["url"])
                 return httpx.Response(200, json={"code": 0, "message": "成功"})
             if request.method == "GET":
-                items = [
-                    {"enable": True, "type": "BLACK", "urlType": "ip", "url": ip}
-                    for ip in sorted(self.blocked)
-                ]
+                items = [self._entry(ip) for ip in sorted(self.blocked)]
                 return httpx.Response(
                     200,
                     json={"code": 0, "message": "成功", "data": {"items": items, "totalPages": 1}},
@@ -393,6 +392,21 @@ def check_sangfor(spec, fake: FakeSangfor, failures) -> None:
     expect(spec.call("list_blocked")(cfg) == ["10.1.1.1"], "list_blocked 返回已封禁 IP", failures)
     spec.call("unblock")("10.1.1.1", cfg, ctx)
     expect("10.1.1.1" not in fake.blocked, "unblock 解除封禁", failures)
+
+    # 部分固件不回 urlType（改用 domain=0 表示 IP）：查重、回读、解封都要照常识别
+    fake.missing_url_type = True
+    try:
+        spec.call("block")("10.7.7.7", cfg, ctx)
+        expect("10.7.7.7" in fake.blocked, "缺 urlType 时 block 仍能写入", failures)
+        before = len(fake.calls)
+        spec.call("block")("10.7.7.7", cfg, ctx)
+        expect(len(fake.calls) - before == 1, "缺 urlType 时重复 block 仍只查一次", failures)
+        expect(spec.call("list_blocked")(cfg) == ["10.7.7.7"], "缺 urlType 时 list_blocked 仍能识别", failures)
+        spec.call("unblock")("10.7.7.7", cfg, ctx)
+        expect("10.7.7.7" not in fake.blocked, "缺 urlType 时 unblock 真正删除", failures)
+    finally:
+        fake.missing_url_type = False
+
     spec.call("teardown")(ctx)
 
     spec.call("block")("10.2.2.2", cfg, None)
