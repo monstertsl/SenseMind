@@ -21,6 +21,13 @@ export interface DriverCapabilities {
   ipv6: boolean
 }
 
+export interface DriverScriptMeta {
+  sha256?: string
+  size?: number
+  uploaded_by?: string
+  uploaded_at?: string
+}
+
 export interface DriverManifest {
   key: string
   display_name: string
@@ -28,6 +35,9 @@ export interface DriverManifest {
   config_schema: ConfigField[]
   secret_fields: string[]
   capabilities: DriverCapabilities
+  /** true = 后台上传的脚本，可删除 */
+  custom?: boolean
+  meta?: DriverScriptMeta
 }
 
 export interface ResponseDeviceItem {
@@ -86,4 +96,29 @@ export function testResponseDeviceConfig(payload: { driver: string; config: Reco
 
 export function testSavedResponseDevice(id: number) {
   return request.post<unknown, DeviceTestResult>(`/response/devices/${id}/test`)
+}
+
+/** 上传自定义设备脚本；文件名走请求头，body 是脚本原文。 */
+export function uploadResponseDriver(file: File, overwrite = false) {
+  return request.post<unknown, DriverManifest>(
+    `/response/drivers/upload?overwrite=${overwrite ? 'true' : 'false'}`,
+    file,
+    {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Script-Filename': encodeURIComponent(file.name),
+      },
+      timeout: 60000,
+    },
+  )
+}
+
+/** 删除上传的设备脚本（内置脚本会被后端拒绝）。 */
+export function deleteResponseDriverScript(key: string) {
+  return request.delete<unknown, { key: string }>(`/response/drivers/${key}`)
+}
+
+/** 获取设备脚本模板（返回源码文本，由前端拼成 .py 下载）。 */
+export function downloadExampleDriver() {
+  return request.get<unknown, { filename: string; content: string }>('/response/drivers/example')
 }

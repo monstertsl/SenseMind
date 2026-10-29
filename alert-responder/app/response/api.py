@@ -5,8 +5,9 @@
 
 import ipaddress
 import uuid
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -101,6 +102,75 @@ def _run_test(spec: registry.DriverSpec, cfg: dict) -> dict:
 @router.get("/drivers", dependencies=[Depends(require_admin)])
 def list_drivers():
     return _ok("ok", {"items": registry.manifests()})
+
+
+@router.get("/drivers/example", dependencies=[Depends(require_admin)])
+def download_example_driver():
+    """可下载的设备脚本示例（content 为源码文本，前端自行拼成 .py 下载）。"""
+    try:
+        filename, content = registry.example_script()
+    except registry.DriverLoadError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return _ok("ok", {"filename": filename, "content": content})
+
+
+@router.delete("/drivers/{key}", dependencies=[Depends(require_admin)])
+def delete_driver_script(key: str):
+    """删除上传的设备脚本；内置脚本不可删除。"""
+    try:
+        removed = registry.uninstall_script(key)
+    except registry.DriverLoadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _ok(f"已删除自定义脚本 {removed}.py", {"key": removed})
+
+
+@router.post("/drivers/upload")
+async def upload_driver(
+    request: Request,
+    user: dict = Depends(require_admin),
+    x_script_filename: str = Header("", alias="X-Script-Filename"),
+    overwrite: bool = False,
+):
+    """上传自定义设备脚本。
+
+    文件名经 `X-Script-Filename` 传递（前端做 URL 编码），请求体是脚本原文；
+    不使用 multipart，避免额外的解析依赖。体积先按 Content-Length 拦一次，再按实际长度拦一次。
+
+    注意：脚本会被平台导入执行，权限等同服务进程本身，因此只做管理员准入 + 静态检查，
+    真正隔离需要独立执行环境（见 DEVICE_INTEGRATION.md 的风险说明）。
+    """
+    declared = request.headers.get("content-length")
+    limit = registry.MAX_SCRIPT_BYTES
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail=f"脚本不能超过 {limit // 1024} KB")
+    content = await request.body()
+    if len(content) > limit:
+        raise HTTPException(status_code=413, detail=f"脚本不能超过 {limit // 1024} KB")
+    filename = unquote(x_script_filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少文件名（请求头 X-Script-Filename）")
+    try:
+        spec = registry.install_script(
+            filename,
+            content,
+            overwrite=overwrite,
+            uploaded_by=str(user.get("username") or user.get("name") or ""),
+        )
+    except registry.DriverLoadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _ok(
+        f"脚本已上传：{spec.display_name}",
+        {
+            "key": spec.key,
+            "display_name": spec.display_name,
+            "schema_version": spec.schema_version,
+            "config_schema": spec.config_schema,
+            "secret_fields": list(spec.secret_fields),
+            "capabilities": spec.capabilities,
+            "custom": spec.custom,
+            "meta": spec.meta,
+        },
+    )
 
 
 @router.get("/devices", dependencies=[Depends(require_admin)])
@@ -359,7 +429,7 @@ def run_action(body: ActionRequest, db: Session = Depends(get_db)):
         spec.call("block")(ip, store.runtime_config(device))
     except DeviceError as exc:
         status, error_code, error_message = "failed", exc.code, exc.message
-    except Exception as exc:  # 驱动未预料的异常也要留痕，不能让日志缺口
+    except Exception as exc:  # 脚本未预料的异常也要留痕，不能让日志缺口
         status, error_code, error_message = "failed", type(exc).__name__, str(exc)
 
     row = ResponseBlockRecord(

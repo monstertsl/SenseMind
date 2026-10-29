@@ -20,6 +20,6 @@ def register(app, engine) -> None:
     def _startup() -> None:
         create_response_tables(engine)
         specs = registry.scan(force=True)
-        logger.info("联动处置设备脚本已注册：%s", ", ".join(sorted(specs)) or "无")
+        logger.info("联动处置设备脚本已注册：%s", ", ".join(specs) or "无")
 
     app.router.on_startup.append(_startup)

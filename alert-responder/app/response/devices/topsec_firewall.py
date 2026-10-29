@@ -1,8 +1,6 @@
 """天融信防火墙设备脚本（一个设备一个文件）。
 
-实现依据：`docs/topsec_firewall/下一代防火墙webui管理接口说明文档_V37.6`（官方接口文档）。
-
-调用约定（文档「注意事项 → 统一参数获取」）：
+调用约定：
 
 - 登录 `POST /home/login/addNoCode/`：`name` + `password` + `pwdlen`；密码用 AES-CBC
   （密钥/偏移量均为 `ngfwrestapilogin`、零填充、输出 base64），`pwdlen` 是明文长度。
@@ -34,6 +32,7 @@ MANIFEST = {
     "key": "topsec_firewall",
     "display_name": "天融信防火墙",
     "schema_version": 1,
+    "order": 3,
     "config_schema": [
         {
             "name": "base_url",

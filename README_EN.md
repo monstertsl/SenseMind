@@ -373,6 +373,13 @@ Removes containers, networks, data volumes, local data and certificates (downloa
 
 Issues and pull requests are welcome. When reporting a problem, include your deployment method, capture interface type (SPAN / TAP), Suricata version and the relevant logs so it can be reproduced.
 
+## Reference implementations
+
+Multi-vendor device API integration referenced the following open-source projects (protocol reference only; the drivers in this project are rewritten against each vendor's official API documentation):
+
+- NSFOCUS NF firewall REST API: [HaoNan-0331/nsf-firewall-api-skill](https://github.com/HaoNan-0331/nsf-firewall-api-skill)
+- Sangfor AF API: [NAXG/sangfor-af-api](https://github.com/NAXG/sangfor-af-api)
+
 ## License
 
 This project is released under the MIT License. See [LICENSE](LICENSE) for details.

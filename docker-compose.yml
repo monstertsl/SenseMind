@@ -16,6 +16,8 @@ volumes:
   esdata:
   filebeat-data:
   pgdata:
+  # 后台上传的自定义设备脚本：容器内可写、重建镜像不丢
+  driver-scripts:
 
 services:
 
@@ -241,11 +243,23 @@ services:
     image: sensemind/alert-responder:latest
     container_name: alert-responder
     restart: unless-stopped
+    # 零侵入加固：不改运行用户与文件权限，只收紧提权与进程数
+    # no-new-privileges：禁止 setuid/setgid 提权，容器内拿到 root 也难进一步升级
+    # cap_drop ALL：丢弃全部内核能力（监听 9091 不需 NET_BIND_SERVICE）
+    # pids_limit：阻断 fork 炸弹，避免自定义脚本无限 fork 打满宿主机
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
 
     volumes:
       - ./certs/ca.crt:/usr/share/alert-responder/certs/ca.crt:ro
+      - driver-scripts:/usr/share/alert-responder/app/response/devices/custom
 
     environment:
+      # 不写 .pyc：custom/ 是命名卷，__pycache__ 会跨容器重建存活，成为持久的垃圾文件
+      - PYTHONDONTWRITEBYTECODE=1
       - DATABASE_URL=postgresql+psycopg2://postgres:${ELASTIC_PASSWORD}@postgres:5432/sensemind
       - SECRET_KEY=${SECRET_KEY}
       - ENCRYPT_KEY=${ENCRYPT_KEY}

@@ -18,7 +18,7 @@ from .errors import DeviceError, ProbeResult
 from .log import logger, mask, mask_config
 from .parsing import json_after_token, json_body, split_token_prefix
 
-# 脚本清单契约版本；接口不兼容变更时递增，registry 加载时校验
+# 脚本清单版本；接口不兼容变更时递增，registry 加载时校验
 API_VERSION = 1
 
 __all__ = [

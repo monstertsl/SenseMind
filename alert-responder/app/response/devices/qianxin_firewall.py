@@ -1,7 +1,6 @@
 """奇安信防火墙设备脚本（一个设备一个文件）。
 
-接口依据 docs/qianxin_firewall/ 文档与参考实现的调用顺序：
-/v1.0/login/ 取 `__s_sessionid__` cookie + `result.token`，业务走 /v1.0/rest/ 按
+调用顺序：/v1.0/login/ 取 `__s_sessionid__` cookie + `result.token`，业务走 /v1.0/rest/ 按
 head.module + head.function 分发，结束 /v1.0/out/ 退登。
 """
 
@@ -22,6 +21,7 @@ MANIFEST = {
     "key": "qianxin_firewall",
     "display_name": "奇安信防火墙",
     "schema_version": 1,
+    "order": 1,
     "config_schema": [
         {
             "name": "base_url",

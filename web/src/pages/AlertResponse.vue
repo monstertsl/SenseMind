@@ -2,15 +2,18 @@
 // 联动处置面板：作为「联动外发」页（/outbound）的子区块使用，无独立路由
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Upload } from '@element-plus/icons-vue'
 import {
   createResponseDevice,
   deleteResponseDevice,
+  deleteResponseDriverScript,
+  downloadExampleDriver,
   listResponseDevices,
   listResponseDrivers,
   testResponseDeviceConfig,
   testSavedResponseDevice,
   updateResponseDevice,
+  uploadResponseDriver,
   type ConfigField,
   type DriverManifest,
   type ResponseDeviceItem,
@@ -43,6 +46,10 @@ const deviceDialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const testing = ref(false)
 const saving = ref(false)
+const uploading = ref(false)
+const downloadingExample = ref(false)
+const scriptInput = ref<HTMLInputElement | null>(null)
+const scriptDialogVisible = ref(false)
 
 const taskDialogVisible = ref(false)
 const editingTaskId = ref<number | null>(null)
@@ -60,6 +67,7 @@ const form = reactive({
 })
 
 const currentDriver = computed(() => drivers.value.find((item) => item.key === form.driver))
+const customDrivers = computed(() => drivers.value.filter((item) => item.custom))
 const currentFields = computed<ConfigField[]>(() => currentDriver.value?.config_schema || [])
 const enabledDevices = computed(() => devices.value.filter((item) => item.enabled))
 const enabledPresets = computed(() => presets.value.filter((item) => item.is_enabled))
@@ -138,6 +146,101 @@ function openEdit(row: ResponseDeviceItem) {
 
 function onDriverChange() {
   if (editingId.value === null) applyDefaults()
+}
+
+function pickScript() {
+  scriptInput.value?.click()
+}
+
+async function reloadDrivers(selectKey?: string) {
+  const data = await listResponseDrivers()
+  drivers.value = data.items || []
+  if (selectKey) {
+    form.driver = selectKey
+    applyDefaults()
+  }
+}
+
+async function onScriptPicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  uploading.value = true
+  try {
+    const manifest = await uploadResponseDriver(file)
+    await reloadDrivers(manifest.key)
+    ElMessage.success(`脚本已上传：${manifest.display_name}`)
+  } catch (error) {
+    const detail = errorText(error, '上传脚本失败')
+    if (!detail.includes('已存在同名脚本')) {
+      ElMessage.error(detail)
+      return
+    }
+    try {
+      await ElMessageBox.confirm(
+        `${detail}。覆盖后使用该设备类型的设备会立即改用新脚本。`,
+        '覆盖脚本',
+        { type: 'warning', confirmButtonText: '覆盖' },
+      )
+    } catch {
+      return
+    }
+    try {
+      const manifest = await uploadResponseDriver(file, true)
+      await reloadDrivers(manifest.key)
+      ElMessage.success(`脚本已覆盖：${manifest.display_name}`)
+    } catch (err) {
+      ElMessage.error(errorText(err, '覆盖脚本失败'))
+    }
+  } finally {
+    uploading.value = false
+  }
+}
+
+function openScriptManager() {
+  scriptDialogVisible.value = true
+}
+
+async function removeScript(row: DriverManifest) {
+  try {
+    await ElMessageBox.confirm(
+      `删除后，使用「${row.display_name}」的设备将无法再下发封堵，相关联动处置会失败。`,
+      '删除自定义脚本',
+      { type: 'warning', confirmButtonText: '删除' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteResponseDriverScript(row.key)
+    await reloadDrivers()
+    if (form.driver === row.key) {
+      form.driver = drivers.value[0]?.key || ''
+      applyDefaults()
+    }
+    ElMessage.success(`已删除脚本 ${row.key}.py`)
+  } catch (error) {
+    ElMessage.error(errorText(error, '删除脚本失败'))
+  }
+}
+
+async function downloadExample() {
+  downloadingExample.value = true
+  try {
+    const data = await downloadExampleDriver()
+    const blob = new Blob([data.content], { type: 'text/x-python;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = data.filename || 'example_vendor.py'
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    ElMessage.error(errorText(error, '下载示例脚本失败'))
+  } finally {
+    downloadingExample.value = false
+  }
 }
 
 function secretPlaceholder(field: ConfigField): string {
@@ -516,9 +619,33 @@ onMounted(refreshAll)
 
     <el-dialog v-model="deviceDialogVisible" width="600px" :close-on-click-modal="false">
       <template #header>
-        <strong class="dialog-title">
-          {{ editingId === null ? '添加联动设备' : '编辑联动设备' }}
-        </strong>
+        <div class="dialog-header">
+          <strong class="dialog-title">
+            {{ editingId === null ? '添加联动设备' : '编辑联动设备' }}
+          </strong>
+          <div v-if="editingId === null" class="dialog-header-actions">
+            <el-button size="small" :icon="Upload" :loading="uploading" @click="pickScript">
+              上传脚本
+            </el-button>
+            <el-button
+              size="small"
+              link
+              type="primary"
+              :loading="downloadingExample"
+              @click="downloadExample"
+            >
+              下载示例
+            </el-button>
+            <el-button size="small" link @click="openScriptManager">管理脚本</el-button>
+          </div>
+          <input
+            ref="scriptInput"
+            type="file"
+            accept=".py"
+            class="hidden-file"
+            @change="onScriptPicked"
+          />
+        </div>
       </template>
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="设备名称" required>
@@ -606,6 +733,35 @@ onMounted(refreshAll)
       </template>
     </el-dialog>
 
+    <el-dialog v-model="scriptDialogVisible" width="660px" :close-on-click-modal="false">
+      <template #header>
+        <strong class="dialog-title">自定义设备脚本</strong>
+      </template>
+      <el-table :data="customDrivers" size="small" empty-text="暂无自定义脚本">
+        <el-table-column label="设备类型" prop="display_name" min-width="150" />
+        <el-table-column label="文件名" min-width="140">
+          <template #default="{ row }">{{ row.key }}.py</template>
+        </el-table-column>
+        <el-table-column label="上传时间" min-width="160">
+          <template #default="{ row }">{{ row.meta?.uploaded_at || '未知' }}</template>
+        </el-table-column>
+        <el-table-column label="上传人" min-width="100">
+          <template #default="{ row }">{{ row.meta?.uploaded_by || '未知' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="removeScript(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="field-help">
+        自定义脚本以服务进程权限执行，等价于允许上传者在服务端运行代码；删除脚本不会删除已保存的设备。
+      </div>
+      <template #footer>
+        <el-button @click="scriptDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="whitelistDialogVisible" width="460px" :close-on-click-modal="false">
       <template #header>
         <strong class="dialog-title">添加白名单</strong>
@@ -686,6 +842,30 @@ onMounted(refreshAll)
   margin-top: 4px;
   color: $color-text-secondary;
   font-size: 12px;
+}
+
+.dialog-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 22px;
+}
+
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.script-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hidden-file {
+  display: none;
 }
 
 .advanced-row {

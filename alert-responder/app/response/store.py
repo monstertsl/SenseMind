@@ -102,7 +102,7 @@ def seal_config(spec: registry.DriverSpec, values: dict, *, existing: dict = Non
 
 
 def runtime_config(device) -> dict:
-    """解密后交给脚本的 cfg：包含驱动字段与平台字段。"""
+    """解密后交给脚本的 cfg：包含脚本声明字段与平台字段。"""
     cfg = {}
     for name, value in (device.config or {}).items():
         if isinstance(value, str) and value.startswith(SECRET_PREFIX):

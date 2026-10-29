@@ -1,9 +1,9 @@
 """深信服防火墙设备脚本（一个设备一个文件）。
 
-接口依据 docs/sangfor_firewall/ 的官方示例：
-登录换 token → token 放 cookie → whiteblacklist 增删查。
+调用顺序：登录换 token → token 放 cookie → whiteblacklist 增删查。
 """
 
+import time
 from contextlib import contextmanager
 
 from sensemind_device import (
@@ -19,8 +19,9 @@ from sensemind_device import (
 
 MANIFEST = {
     "key": "sangfor_af",
-    "display_name": "深信服防火墙",
+    "display_name": "深信服 AF 防火墙",
     "schema_version": 1,
+    "order": 2,
     "config_schema": [
         {
             "name": "base_url",
@@ -47,6 +48,9 @@ log = logger("sangfor_af")
 DEFAULT_NAMESPACE = "@namespace"
 BLACK_DESCRIPTION = "SenseMind联动封禁"
 LIST_PAGE_SIZE = 200
+NOT_FOUND_CODE = 1004  # 设备的「资源不存在」语义码，比中文文案稳定
+VERIFY_ATTEMPTS = 2  # 处置后回查次数：首次不符再等一下重查，避免设备侧延迟造成误判
+VERIFY_INTERVAL = 0.4
 
 
 def _namespace(cfg: dict) -> str:
@@ -143,19 +147,63 @@ def _is_blocked(entry: dict) -> bool:
     )
 
 
-def _query_ip(client, cfg: dict, ip: str) -> bool:
+def _is_not_found(payload: dict) -> bool:
+    """设备用 code=1004 表示资源不存在；文案会随固件/语言变化，优先看语义码。"""
+    try:
+        return int(payload.get("code")) == NOT_FOUND_CODE
+    except (TypeError, ValueError):
+        return False
+
+
+def _query_entry(client, cfg: dict, ip: str) -> dict | None:
+    """查单 IP 条目：不存在（404 / code=1004 / 文案含「不存在」）时返回 None。"""
     response = send(client, "GET", f"{_base_path(cfg)}/whiteblacklist/{ip}")
     if response.status_code == 404:
-        return False
+        return None
     if response.status_code >= 400:
         raise status_error(response, message="查询黑名单失败")
-    if "不存在" in response.text:
-        return False
     payload = json_body(response)
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return False
-    return _is_blocked(data)
+    if isinstance(payload, dict) and _is_not_found(payload):
+        return None
+    if "不存在" in response.text:
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def _query_ip(client, cfg: dict, ip: str) -> bool:
+    entry = _query_entry(client, cfg, ip)
+    return bool(entry) and _is_blocked(entry)
+
+
+def _verify(client, cfg: dict, ip: str, expect_blocked: bool) -> bool | None:
+    """处置后回查设备侧状态：True 与预期一致，False 不一致，None 无法确认（查询异常）。"""
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        try:
+            actual = _query_ip(client, cfg, ip)
+        except Exception as exc:  # 复查失败不改写处置结论，只留痕
+            log.warning("复查 %s 状态失败（第 %s 次）：%s", ip, attempt, exc)
+            return None
+        if actual == expect_blocked:
+            return True
+        if attempt < VERIFY_ATTEMPTS:
+            time.sleep(VERIFY_INTERVAL)
+    return False
+
+
+def _require_effective(client, cfg: dict, ip: str, expect_blocked: bool) -> None:
+    """设备返回成功后再回查确认；明确不符即判失败，避免「设备说成功但没生效」被记账为成功。"""
+    verified = _verify(client, cfg, ip, expect_blocked=expect_blocked)
+    action = "封禁" if expect_blocked else "解封"
+    if verified is False:
+        detail = "IP 不在黑名单" if expect_blocked else "IP 仍在黑名单"
+        raise DeviceError(
+            "block_not_effective" if expect_blocked else "unblock_not_effective",
+            f"设备返回成功，但复查未生效（{action}后{detail}）",
+            retryable=True,
+        )
+    if verified:
+        log.info("%s成功并已复查：%s", action, ip)
 
 
 def block(ip: str, cfg: dict, ctx=None) -> None:
@@ -178,6 +226,7 @@ def block(ip: str, cfg: dict, ctx=None) -> None:
         if response.status_code >= 400:
             raise status_error(response, message="添加黑名单失败")
         _ensure_ok(json_body(response), response, "添加黑名单")
+        _require_effective(client, cfg, target, expect_blocked=True)
 
 
 def unblock(ip: str, cfg: dict, ctx=None) -> None:
@@ -190,6 +239,7 @@ def unblock(ip: str, cfg: dict, ctx=None) -> None:
         if response.status_code >= 400:
             raise status_error(response, message="删除黑名单失败")
         _ensure_ok(json_body(response), response, "删除黑名单")
+        _require_effective(client, cfg, target, expect_blocked=False)
 
 
 def list_blocked(cfg: dict):
@@ -209,12 +259,21 @@ def list_blocked(cfg: dict):
             payload = json_body(response)
             _ensure_ok(payload, response, "查询黑名单列表")
             data = payload.get("data") or {}
-            for entry in data.get("items") or []:
-                if _is_blocked(entry) and entry.get("url") not in blocked:
-                    blocked.append(entry.get("url"))
+            items = data.get("items") or []
             try:
                 total_pages = int(data.get("totalPages") or 1)
             except (TypeError, ValueError):
                 total_pages = 1
+            log.info(
+                "黑名单第 %s 页：_start=%s 返回 %s 条（totalPages=%s）",
+                page + 1,
+                page * LIST_PAGE_SIZE,
+                len(items),
+                total_pages,
+            )
+            for entry in items:
+                if _is_blocked(entry) and entry.get("url") not in blocked:
+                    blocked.append(entry.get("url"))
             page += 1
+    log.info("黑名单共 %s 条", len(blocked))
     return blocked

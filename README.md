@@ -371,6 +371,13 @@ sudo bash remove.sh
 
 欢迎提交 Issue / PR。反馈问题时，附上部署方式、监听接口类型（镜像口 / TAP）、Suricata 版本与相关日志，便于定位。
 
+## 参考实现
+
+多厂商设备接口对接参考了以下开源项目（仅作协议参考，本项目设备脚本按各厂商官方接口文档重写）：
+
+- 绿盟 NF 防火墙 REST API：[HaoNan-0331/nsf-firewall-api-skill](https://github.com/HaoNan-0331/nsf-firewall-api-skill)
+- 深信服 AF API：[NAXG/sangfor-af-api](https://github.com/NAXG/sangfor-af-api)
+
 ## 许可证
 
 本项目采用 MIT License，详见 [LICENSE](LICENSE)。
