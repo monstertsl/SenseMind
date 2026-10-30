@@ -1002,7 +1002,7 @@ log.debug("配置：%s", mask_config(cfg))
 账号准备（三步，均在设备 WebUI 完成）：
 
 1. **启用 RESTful API**：`系统配置` → `设备管理` → `本机设置` → `RESTful API`，开启后接口才可访问。
-2. **新建 RESTful API 用户**：`系统配置` → `设备管理` → `管理账号` → 新建账号，角色选 **`RESTful API管理员`**。账号名任意（示例用 `api-admin`）；接口权限按该角色模板授予，换成普通 WebUI 管理员角色可能缺少 API 调用权限。
+2. **新建 RESTful API 用户**：`系统配置` → `设备管理` → `管理账号` → 新建账号，角色选 **`RESTful API管理员`**。账号名任意（示例用 `api-admin`）；接口权限按该角色模板授予，换成普通 WebUI 管理员角色可能缺少 API 调用权限。该账号需覆盖 `威胁处置 → 人工处置` 的读写权限，否则封禁与解封会返回非 0 的 `error_code`。
 3. **添加可信主机**（设备启用了「管理主机」时必须做）：`系统配置` → `设备管理` → `管理主机` → 添加可信主机，添加时选择 **RESTful API** 类型，并填入 `alert-responder` 所在服务器的出口 IP。
 
 接口调用顺序（脚本已实现）：
@@ -1011,15 +1011,18 @@ log.debug("配置：%s", mask_config(cfg))
 2. 业务请求统一 `POST /v1.0/rest/`，body 为列表，用 `head.module` + `head.function` 分发，成功判据是 `head.error_code` 为 0。
 3. 结束 `POST /v1.0/out/` 退登。
 
-封堵写入的位置是 **`策略配置` → `黑白名单` → `地址黑名单`**（`module=addr_blacklist`），三条 function：
+封堵写入的位置是 **`处置中心` → `人工处置`** 里的网络连接处置项（`module=threat_disposal`），三条 function：
 
 | 动作 | function | body 要点 |
 | --- | --- | --- |
-| 查是否已存在 | `get_blacklist_config` | `{"addr_blacklist_cp": {"search_key": "<ip>", "is_detail": "true"}}`；`search_key` 支持模糊匹配，须按返回的 `ip_start`/`ip_end` 精确比对 |
-| 添加 | `add_blacklist_ip_web` | `blacklist_cp[{name, type:"host", ip_start, ip_end, enable:"enable", desc, schedule:""}]`，`name` 取 `sm-<ip>` |
-| 删除 | `del_blacklist_by_id` | `blacklist_cp[{ip_start, ip_end}]`。传 `name` 或 `id` 也返回 `error_code=0`，但条目不会被删，必须传起止地址 |
+| 查是否已存在 | `get_threat_disposal` | `{"threat_disposal_cfg_ext": {"operation": "", "is_later": "no", "disposal_filter": {"status": "", "searchkey": "<ip>", "expired": "0", "datatype": "", "source": ""}}}`，`head` 带 `page_index`/`page_size`（每页最多 100）；`searchkey` 是模糊查询，须按返回项的 `sip`/`dip` 精确比对 |
+| 添加 | `add_threat_disposal` | `{"threat_disposal_cfg_ext": {"is_later": "no", "threat_disposal_cfg": [{...}]}}`，单条处置项见下 |
+| 删除（解封主路径） | `del_threat_disposal` | `{"threat_disposal_cfg_ext": {"is_later": "no", "threat_disposal_cfg": [{...}]}}`，字段与添加同构、无 `operation`。一次删除即解除阻断并把记录从列表移除。列表里历史遗留的「待响应」记录也用同一接口直接删，不做「先恢复处置再删」的来回改状态 |
+| 撤销（兜底） | `set_threat_disposal` | 同结构再加 `operation: "revoke"`；**只在删除被拒时才发**。撤销只解除阻断、把记录置为「待响应」，记录仍留在列表里，因此不作为首选 |
 
-规格限制：地址黑名单上限 **1000 条**，且添加接口不支持批量下发（一次一条）。封堵规模会超过这个量时，需改用「批量黑IP封堵」（`add_batch_blacklist`，每次最多 1000 个），该名单是独立的阻断入口。
+**封禁固定下发两条处置项**：地址黑名单只对源地址生效，单条带 `sip` 或单条带 `dip` 都盖不住两个方向，所以每次封禁建两条——`sip=<ip>`（阻断该 IP 主动外连）与 `dip=<ip>`（阻断外部访问该 IP）。未填的另一个方向即 any，`proto`/`sport`/`dport` 留空表示不限；解封就是把这两条一次删掉。处置项其余字段固定为 `ipv4:"yes"`、`action:"block"`、`source:"manual"`、`datatype:"connection"`、`timeout:"forever"`（`timeout` 也可取 86400 / 604800 / 2592000 / 7776000）。
+
+查询接口的 `searchkey` 未必能命中目的地址方向，脚本在按 IP 查不到时会退化为全量比对，避免重复下发或漏删。
 
 能力位：`test` = true（连接测试为登录 + 退登），`list_blocked` = false，`ipv6` = false。
 
@@ -1063,9 +1066,10 @@ log.debug("配置：%s", mask_config(cfg))
 调用约定（官方文档「注意事项 → 统一参数获取」）：
 
 1. **登录** `POST /home/login/addNoCode/`，表单 `name` + `password` + `pwdlen`。密码用 AES-CBC（密钥与偏移量均为 `ngfwrestapilogin`、零填充、输出 base64），`pwdlen` 是明文长度。响应正文是 base64 JSON：`data.authid` 作为 userMark，`data.secret` 参与 codeRun 计算。
+   该接口在部分固件上不存在（返回 HTTP 404），此时脚本自动改走 `POST /home/restLogin/`：表单 `name` + `password` + `ngtosAuth`，`password` 与 `ngtosAuth`（加密后的明文长度）都用 AES-CBC 加密，但密钥与偏移量换成 16 个 `1`；响应是普通 JSON，`data.authid` 同为 userMark，`secret` 在顶层或 `data` 内，token 取 `tokens` 数组（优先第 2 个）。该方式建立的会话必须用 `GET /home/restLogout/` 退登（`commands` 为 `{}` 且参与 codeRun），用 `/home/index/logout/` 会返回 `Parameter tampered`。
 2. **公共参数**：除登录外每个请求都必须带登录返回的 Cookie、`Referer: <base>/html/webui/home.html/?userMark=<userMark>`、`Content-Type: application/x-www-form-urlencoded`。
 3. **token**：取响应里 `?[` 与 `}?` 之间的字符串；**每次请求都会换新的**，下一次请求必须用最新的。
-4. **codeRun** = `md5(secret + token + url + commands 的 JSON)`。
+4. **codeRun** = `md5(secret + token + url + commands 的 JSON)`，`url` 是不带参数的路径。`commands` 必须按**设备侧的数组形态**序列化：`commands[0][pf_blacklist_add][sip]=<ip>` 对应 `[{"pf_blacklist_add":{"sip":"<ip>"}}]`，**不能**把下标当对象键写成 `{"0":{...}}`，否则设备返回 `Parameter tampered`。
 5. **封堵落点**：`资源管理` → `黑名单传播`（`blackListSpread`），按五元组下发：
 
 | 动作 | 请求 |
@@ -1073,6 +1077,8 @@ log.debug("配置：%s", mask_config(cfg))
 | 查是否已存在 | `GET /home/default/blackListSpread/searchpf/?commands[0][pf_blacklist_static_search][0]=<ip>` |
 | 添加 | `POST /home/default/blackListSpread/add/`，`commands[0][pf_blacklist_add][sip]=<ip>` |
 | 删除 | `POST /home/default/blackListSpread/deleteLots/`，`commands[0][pf_blacklist_delete][0][sip]=<ip>`（其余四元组字段传空串） |
+
+   `token` 与 `codeRun` 一律放 query，命令字段放表单（GET 则全部在 query）——设备按这个形态校验，放错位置同样报 `Parameter tampered`。
 
 6. **判成功**：响应 `{"result":true,...}`；`{"result":false,"data":"原因"}` 为失败。查询结果在 `rows[]` 里，五元组记录看 `sip`、地址段记录看 `ip_start`/`ip_end`。
 

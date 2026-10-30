@@ -76,9 +76,48 @@ class FakeSangfor:
 
 
 class FakeQianxin:
+    """人工处置（threat_disposal）：一条处置项只带一个方向的地址，另一方向空即 any。"""
+
     def __init__(self) -> None:
-        self.blocked = set()
+        self.disposals = []
         self.calls = []
+        self.functions = []
+        self.revokes = []
+        self.deletes = []
+        self.ignore_block = False  # 模拟“设备返回成功但没真正写入”
+        self.reject_plain_revoke = False  # 模拟只认「回传端口/协议原值」的撤销报文
+        self.reject_delete = False  # 模拟不允许删除处置记录、只能撤销的固件
+
+    @property
+    def blocked(self) -> set:
+        ips = set()
+        for row in self.disposals:
+            if row.get("status") != "block":
+                continue
+            ip = str(row.get("sip") or row.get("dip") or "")
+            if ip:
+                ips.add(ip)
+        return ips
+
+    @property
+    def directions(self) -> list:
+        """被封 IP 的方向标记，用于断言源、目的各一条。"""
+        marks = []
+        for row in self.disposals:
+            if row.get("sip"):
+                marks.append(f"src:{row['sip']}")
+            if row.get("dip"):
+                marks.append(f"dst:{row['dip']}")
+        return marks
+
+    def _search(self, key: str) -> list:
+        if not key:
+            return list(self.disposals)
+        return [
+            row
+            for row in self.disposals
+            if key in str(row.get("sip") or "") or key in str(row.get("dip") or "")
+        ]
 
     def handle(self, request: httpx.Request):
         path = request.url.path
@@ -94,27 +133,75 @@ class FakeQianxin:
             return httpx.Response(200, json=ok)
         if path == "/v1.0/rest/":
             item = json.loads(request.content)[0]
-            function = item["head"]["function"]
-            body = item.get("body", {})
-            if function == "get_blacklist_config":
-                key = body["addr_blacklist_cp"]["search_key"]
-                hits = [ip for ip in self.blocked if ip == key]
+            head = item["head"]
+            function = head["function"]
+            self.functions.append(function)
+            ext = (item.get("body") or {}).get("threat_disposal_cfg_ext") or {}
+            if function == "get_threat_disposal":
+                key = str((ext.get("disposal_filter") or {}).get("searchkey") or "")
+                hits = self._search(key)
+                page_index = int(head.get("page_index") or 1)
+                page_size = int(head.get("page_size") or 20)
+                start = (page_index - 1) * page_size
                 return httpx.Response(
                     200,
                     json={
                         "head": {"error_code": 0, "total": len(hits)},
-                        "data": [{"ip_start": ip, "ip_end": ip} for ip in hits],
+                        "data": hits[start : start + page_size],
                     },
                 )
-            if function in ("add_blacklist_ip_web", "del_blacklist_by_id"):
-                entry = body["addr_blacklist_cp"]["blacklist_cp"][0]
-                ip = entry.get("ip_start")
-                if function == "add_blacklist_ip_web":
-                    self.blocked.add(ip)
-                else:
-                    self.blocked.discard(ip)
+            if function == "add_threat_disposal":
+                if not self.ignore_block:
+                    for rule in ext.get("threat_disposal_cfg") or []:
+                        entry = dict(rule)
+                        entry.setdefault("sip", "")
+                        entry.setdefault("dip", "")
+                        entry.setdefault("sport", "0")
+                        entry.setdefault("dport", "0")
+                        entry.setdefault("proto", "")
+                        entry["status"] = "block"
+                        entry["dispose_id"] = f"dp-{len(self.disposals) + 1}"
+                        self.disposals.append(entry)
+                return httpx.Response(200, json=ok)
+            if function == "set_threat_disposal":
+                if ext.get("operation") != "revoke":
+                    return httpx.Response(
+                        200,
+                        json={"head": {"error_code": 1, "error_string": "operation 非法"}, "data": []},
+                    )
+                rules = ext.get("threat_disposal_cfg") or []
+                self.revokes.extend(rules)
+                # 模拟要求回传端口/协议原值的固件：同构报文一律拒绝
+                if self.reject_plain_revoke and any("proto" not in rule for rule in rules):
+                    return httpx.Response(200, json={"head": {"error_code": 5}, "data": []})
+                # 撤销只解除阻断，记录留下变成「待响应」
+                for row in self._locate(rules):
+                    row["status"] = "undisposed"
+                return httpx.Response(200, json=ok)
+            if function == "del_threat_disposal":
+                rules = ext.get("threat_disposal_cfg") or []
+                self.deletes.extend(rules)
+                targets = self._locate(rules)
+                # 设备的删除只对「处置中」记录生效，已撤销（待响应）的记录删不掉
+                if self.reject_delete or any(row.get("status") != "block" for row in targets):
+                    return httpx.Response(
+                        200, json={"head": {"error_code": 5, "error_string": "记录不可删除"}, "data": []}
+                    )
+                drop = {id(row) for row in targets}
+                self.disposals = [row for row in self.disposals if id(row) not in drop]
                 return httpx.Response(200, json=ok)
         return httpx.Response(404, json=ok)
+
+    def _locate(self, rules: list) -> list:
+        """按报文里的 sip/dip 匹配处置项（设备按五元组匹配，测试只用地址区分）。"""
+        hits = []
+        for rule in rules:
+            for row in self.disposals:
+                if str(row.get("sip") or "") == str(rule.get("sip") or "") and str(
+                    row.get("dip") or ""
+                ) == str(rule.get("dip") or ""):
+                    hits.append(row)
+        return hits
 
 
 class FakeTopsec:
@@ -130,6 +217,7 @@ class FakeTopsec:
         self.missing_code_run = 0
         self.stale_token = 0
         self.last_token = ""
+        self.no_addnocode = False  # 模拟固件没有 addNoCode 接口（返回 404）
 
     def _wrap(self, body: str) -> str:
         self.counter += 1
@@ -144,6 +232,8 @@ class FakeTopsec:
             form = {key: values[0] for key, values in parse_qs(request.content.decode()).items()}
 
         if path == "/home/login/addNoCode/":
+            if self.no_addnocode:
+                return httpx.Response(404, text="not found")
             self.login_form = form
             if self.login_fails:
                 payload = base64.b64encode(
@@ -161,6 +251,21 @@ class FakeTopsec:
                 headers={"set-cookie": "PHPSESSID=sess-1; Path=/"},
             )
 
+        if path == "/home/restLogin/":
+            # restLogin：返回 tokens 数组，token 由服务端给出（示例取第 2 个）
+            self.login_form = form
+            self.last_token = "tk-1"
+            return httpx.Response(
+                200,
+                json={
+                    "result": True,
+                    "data": {"url": "home", "authid": "um-1"},
+                    "secret": "sec-1",
+                    "tokens": ["tk-0", "tk-1"],
+                },
+                headers={"set-cookie": "PHPSESSID=sess-1; Path=/"}
+            )
+
         # 除登录外：必须带 cookie、codeRun，且 token 必须是上一次响应给的最新值
         if not request.headers.get("cookie"):
             self.missing_cookie += 1
@@ -171,7 +276,7 @@ class FakeTopsec:
         if self.last_token and sent_token != self.last_token:
             self.stale_token += 1
 
-        if path == "/home/index/logout/":
+        if path in ("/home/index/logout/", "/home/restLogout/"):
             return httpx.Response(200, text=self._wrap('{"result":true,"data":"success"}'))
         if path == "/home/default/blackListSpread/searchpf/":
             ip = params.get("commands[0][pf_blacklist_static_search][0]")
@@ -464,12 +569,90 @@ def check_qianxin(spec, fake: FakeQianxin, failures) -> None:
 
     ctx = spec.call("setup")(cfg)
     spec.call("block")("10.9.9.9", cfg, ctx)
-    expect("10.9.9.9" in fake.blocked, "block 写入黑名单", failures)
-    before = len(fake.calls)
+    expect(
+        sorted(fake.directions) == ["dst:10.9.9.9", "src:10.9.9.9"],
+        f"block 建源地址与目的地址两条处置（实际 {fake.directions}）",
+        failures,
+    )
+    expect(
+        all(row.get("action") == "block" and row.get("timeout") == "forever" for row in fake.disposals),
+        "处置动作为阻断、时效永久",
+        failures,
+    )
+    adds = fake.functions.count("add_threat_disposal")
     spec.call("block")("10.9.9.9", cfg, ctx)
-    expect(len(fake.calls) - before == 1, "重复 block 只查询一次、不重复下发", failures)
+    expect(fake.functions.count("add_threat_disposal") == adds, "重复 block 不重复下发", failures)
+
+    fake.disposals = [row for row in fake.disposals if row.get("sip")]
+    spec.call("block")("10.9.9.9", cfg, ctx)
+    expect(
+        sorted(fake.directions) == ["dst:10.9.9.9", "src:10.9.9.9"],
+        "只缺一个方向时单独补齐",
+        failures,
+    )
+
+    fake.revokes.clear()
+    fake.deletes.clear()
+    functions_before = len(fake.functions)
     spec.call("unblock")("10.9.9.9", cfg, ctx)
-    expect("10.9.9.9" not in fake.blocked, "unblock 解除封禁", failures)
+    expect("10.9.9.9" not in fake.blocked, "unblock 删除两条处置、解除阻断", failures)
+    expect(len(fake.deletes) == 2, f"解封只发删除（实际 {len(fake.deletes)} 条）", failures)
+    expect(
+        "set_threat_disposal" not in fake.functions[functions_before:],
+        f"解封不再先撤销（实际 {fake.functions[functions_before:]}）",
+        failures,
+    )
+    expect(fake.disposals == [], f"处置列表清空、不留待响应条目（实际 {fake.disposals}）", failures)
+
+    # 不允许删除的固件：退回撤销（同样两段式），阻断解除但记录以「待响应」留下
+    fake.reject_delete = True
+    fake.reject_plain_revoke = True
+    try:
+        spec.call("block")("10.7.7.7", cfg, ctx)
+        fake.revokes.clear()
+        spec.call("unblock")("10.7.7.7", cfg, ctx)
+        expect("10.7.7.7" not in fake.blocked, "删除被拒后改走撤销仍能解除阻断", failures)
+        expect(
+            any("proto" in rule and "dispose_id" in rule for rule in fake.revokes),
+            "撤销被拒后按设备原值重试",
+            failures,
+        )
+        expect(
+            [row.get("status") for row in fake.disposals if row.get("dip") == "10.7.7.7"] == ["undisposed"],
+            f"撤销后记录以待响应保留（实际 {fake.disposals}）",
+            failures,
+        )
+    finally:
+        fake.reject_delete = False
+        fake.reject_plain_revoke = False
+
+    # 历史残留的「待响应」记录：同样直接删，不恢复处置；设备拒绝时只记日志不改结论
+    fake.disposals.append(
+        {
+            "ipv4": "yes",
+            "sip": "10.4.4.4",
+            "dip": "",
+            "sport": "0",
+            "dport": "0",
+            "proto": "",
+            "status": "undisposed",
+            "datatype": "connection",
+            "source": "manual",
+        }
+    )
+    functions_before = len(fake.functions)
+    spec.call("unblock")("10.4.4.4", cfg, ctx)
+    expect(
+        "set_threat_disposal" not in fake.functions[functions_before:],
+        f"待响应记录不恢复处置（实际 {fake.functions[functions_before:]}）",
+        failures,
+    )
+    expect(
+        [row.get("status") for row in fake.disposals if row.get("sip") == "10.4.4.4"] == ["undisposed"],
+        "设备拒绝删除时残留记录保持原状",
+        failures,
+    )
+    fake.disposals = [row for row in fake.disposals if row.get("sip") != "10.4.4.4"]
     spec.call("teardown")(ctx)
 
     fake.calls.clear()
@@ -527,6 +710,18 @@ def check_topsec(spec, fake: FakeTopsec, failures) -> None:
         expect(exc.retryable is False, f"登录失败标记为不可重试（{exc.code}）", failures)
     finally:
         fake.login_fails = False
+
+    # 部分固件没有 /home/login/addNoCode/（返回 404）：应自动改走 /home/restLogin/
+    fake.no_addnocode = True
+    try:
+        fake.calls.clear()
+        fallback = spec.call("test_connection")(cfg)
+        expect(fallback.ok, f"addNoCode 404 时回退 restLogin：{fallback.message}", failures)
+        expect(bool(fake.login_form.get("ngtosAuth")), "restLogin 传 ngtosAuth（AES 加密的密码长度）", failures)
+        expect("pwdlen" not in fake.login_form, "restLogin 不再传明文 pwdlen", failures)
+        expect("/home/restLogout/" in [url for _, url in fake.calls], "restLogin 会话用 restLogout 退登", failures)
+    finally:
+        fake.no_addnocode = False
     print()
 
 
