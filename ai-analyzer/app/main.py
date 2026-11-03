@@ -34,6 +34,10 @@ from .services.mail_percolator import (
     put_watch_filters,
     sync_all_watch_queries,
 )
+from .services.block_tasks import (
+    sync_all_task_queries,
+    sync_preset_task_queries,
+)
 
 # 日志配置
 logging.basicConfig(
@@ -128,6 +132,14 @@ def delete_mail_percolator_watch(watch_id: int):
 @app.post("/api/internal/mail-percolator/sync", dependencies=[Depends(require_internal_service_token)])
 def sync_mail_percolator_watches():
     count = sync_all_watch_queries(get_es_client().client)
+    return {"status": "synced", "count": count}
+
+
+@app.post("/api/internal/block-tasks/sync", dependencies=[Depends(require_internal_service_token)])
+def sync_block_tasks(preset_id: int | None = None):
+    """联动封堵规则同步：带 preset_id 时只重建该预设下的任务（预设改动后调用）。"""
+    client = get_es_client().client
+    count = sync_preset_task_queries(client, preset_id) if preset_id else sync_all_task_queries(client)
     return {"status": "synced", "count": count}
 
 # 全局实例（延迟初始化）

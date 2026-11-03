@@ -1195,6 +1195,91 @@ def check_store(spec, failures) -> None:
     print()
 
 
+def check_auto_block(failures) -> None:
+    """待执行队列的消费：任务停用丢弃、白名单命中跳过（两条分支都不碰设备）。"""
+    print("联动封堵自动执行（需要数据库）")
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import delete, select
+
+    from ..main import SessionLocal, engine
+    from . import auto_block
+    from .models import (
+        ResponseBlockRecord,
+        ResponseDevice,
+        ResponsePendingAction,
+        ResponseTask,
+        ResponseWhitelist,
+        create_response_tables,
+    )
+
+    create_response_tables(engine)
+    db = SessionLocal()
+    device = task = whitelist = None
+    try:
+        device = ResponseDevice(name="selftest-auto-device", driver="topsec_firewall", config={}, secret_fields=[])
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+        task = ResponseTask(name="selftest-auto-task", device_id=device.id, preset_id=0, enabled=False)
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+
+        due = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+        def enqueue(ip: str) -> None:
+            db.add(
+                ResponsePendingAction(
+                    task_id=task.id,
+                    device_id=device.id,
+                    ip=ip,
+                    event_id=f"evt-{ip}",
+                    attempts=0,
+                    next_attempt_at=due,
+                )
+            )
+            db.commit()
+
+        def remaining() -> list:
+            return (
+                db.execute(select(ResponsePendingAction.id).where(ResponsePendingAction.task_id == task.id))
+                .scalars()
+                .all()
+            )
+
+        enqueue("10.9.9.9")
+        auto_block.process_pending()
+        expect(not remaining(), "任务停用时丢弃待执行行", failures)
+
+        task.enabled = True
+        whitelist = ResponseWhitelist(value="10.9.9.0/24", note="selftest")
+        db.add(whitelist)
+        db.commit()
+        enqueue("10.9.9.10")
+        auto_block.process_pending()
+        expect(not remaining(), "白名单命中时丢弃待执行行（不调设备）", failures)
+        records = (
+            db.execute(select(ResponseBlockRecord.id).where(ResponseBlockRecord.task_id == task.id)).scalars().all()
+        )
+        expect(not records, "白名单跳过时不写联动日志", failures)
+    finally:
+        if task is not None and task.id is not None:
+            db.execute(delete(ResponsePendingAction).where(ResponsePendingAction.task_id == task.id))
+            db.execute(delete(ResponseBlockRecord).where(ResponseBlockRecord.task_id == task.id))
+            db.commit()
+            db.delete(task)
+            db.commit()
+        if device is not None and device.id is not None:
+            db.delete(device)
+            db.commit()
+        if whitelist is not None and whitelist.id is not None:
+            db.delete(whitelist)
+            db.commit()
+        db.close()
+    print()
+
+
 def main() -> int:
     failures = []
     sangfor = FakeSangfor()
@@ -1242,6 +1327,7 @@ def main() -> int:
     check_upload(failures)
     if os.environ.get("SENSEMIND_SELFTEST_DB") == "1":
         check_store(specs["sangfor_af"], failures)
+        check_auto_block(failures)
 
     if failures:
         print(f"失败 {len(failures)} 项")

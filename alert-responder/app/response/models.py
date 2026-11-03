@@ -109,6 +109,8 @@ class ResponsePendingAction(ResponseBase):
     device_id: Mapped[int] = mapped_column(Integer, nullable=False)
     ip: Mapped[str] = mapped_column(String(64), nullable=False)
     event_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    # 原告警所在索引：封堵成功后据此写 blocked=true（analyzer 侧从 ai.source_alert_index 取）
+    event_index: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -126,7 +128,9 @@ TABLES = (
 )
 
 # create_all 不会给已存在的表补列；后续新增字段在此登记幂等 ALTER
-_ENSURE_COLUMNS: tuple[str, ...] = ()
+_ENSURE_COLUMNS: tuple[str, ...] = (
+    "ALTER TABLE response_pending_actions ADD COLUMN IF NOT EXISTS event_index VARCHAR(300)",
+)
 
 
 def create_response_tables(engine: Engine) -> None:

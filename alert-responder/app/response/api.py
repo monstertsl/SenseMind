@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sensemind_device import DeviceError, check_network
 
 from ..main import get_db, require_admin
-from . import registry, store
+from . import auto_block, executor, registry, store
 from .es_marker import mark_blocked
 from .models import ResponseBlockRecord, ResponseDevice, ResponseTask, ResponseWhitelist
 
@@ -224,6 +224,7 @@ def update_device(device_id: int, body: DeviceUpdate, db: Session = Depends(get_
         db.rollback()
         raise HTTPException(status_code=409, detail="设备名称已存在") from None
     db.refresh(device)
+    auto_block.sync_task_queries()
     return _ok("设备已更新", store.device_view(device, spec))
 
 
@@ -304,6 +305,7 @@ def create_task(body: TaskCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=409, detail="该设备已绑定同一检索条件") from None
     db.refresh(row)
+    auto_block.sync_task_queries()
     return _ok("联动设置已保存", _task_view(row, _device_names(db, [row])))
 
 
@@ -327,6 +329,7 @@ def update_task(task_id: int, body: TaskUpdate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=409, detail="该设备已绑定同一检索条件") from None
     db.refresh(row)
+    auto_block.sync_task_queries()
     return _ok("联动设置已更新", _task_view(row, _device_names(db, [row])))
 
 
@@ -337,6 +340,7 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="联动设置不存在")
     db.delete(row)
     db.commit()
+    auto_block.sync_task_queries()
     return _ok("联动设置已删除", {"id": task_id})
 
 
@@ -382,18 +386,6 @@ def delete_whitelist(row_id: int, db: Session = Depends(get_db)):
     return _ok("白名单已删除", {"id": row_id})
 
 
-def _whitelisted(db: Session, ip: str) -> bool:
-    """白名单按 CIDR 存储，逐条判断目标 IP 是否落在网段内。"""
-    target = ipaddress.ip_address(ip)
-    for value in db.execute(select(ResponseWhitelist.value)).scalars().all():
-        try:
-            if target in ipaddress.ip_network(str(value), strict=False):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
 def _record_view(row: ResponseBlockRecord, device_names: dict, task_names: dict) -> dict:
     return {
         "id": row.id,
@@ -420,31 +412,22 @@ def run_action(body: ActionRequest, db: Session = Depends(get_db)):
         ip = str(ipaddress.ip_address(body.ip.strip()))
     except ValueError:
         raise HTTPException(status_code=400, detail=f"非法 IP：{body.ip}") from None
-    if _whitelisted(db, ip):
+    if executor.is_whitelisted(db, ip):
         return _ok("IP 在白名单内，已跳过", {"status": "skipped", "ip": ip})
 
-    spec = _spec_or_404(device.driver)
-    status, error_code, error_message = "success", None, None
-    try:
-        spec.call("block")(ip, store.runtime_config(device))
-    except DeviceError as exc:
-        status, error_code, error_message = "failed", exc.code, exc.message
-    except Exception as exc:  # 脚本未预料的异常也要留痕，不能让日志缺口
-        status, error_code, error_message = "failed", type(exc).__name__, str(exc)
-
-    row = ResponseBlockRecord(
-        task_id=0,
-        device_id=device.id,
-        ip=ip,
-        action="block",
+    _spec_or_404(device.driver)
+    status, error_code, error_message = executor.run_device_action(device, ip, "block")
+    row = executor.record_action(
+        db,
+        device,
+        ip,
+        "block",
         status=status,
         error_code=error_code,
         error_message=error_message,
+        task_id=0,
         event_id=body.event_id,
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
 
     # 需求口径：blocked=true 只在封堵成功后写入，失败不标记
     blocked = mark_blocked(body.event_index or "", body.event_id or "") if status == "success" else False
@@ -515,28 +498,19 @@ def revoke_record(row_id: int, db: Session = Depends(get_db)):
     if not device.enabled:
         raise HTTPException(status_code=400, detail="设备已停用，请先启用")
 
-    spec = _spec_or_404(device.driver)
-    status, error_code, error_message = "success", None, None
-    try:
-        spec.call("unblock")(origin.ip, store.runtime_config(device))
-    except DeviceError as exc:
-        status, error_code, error_message = "failed", exc.code, exc.message
-    except Exception as exc:
-        status, error_code, error_message = "failed", type(exc).__name__, str(exc)
-
-    row = ResponseBlockRecord(
-        task_id=origin.task_id,
-        device_id=device.id,
-        ip=origin.ip,
-        action="unblock",
+    _spec_or_404(device.driver)
+    status, error_code, error_message = executor.run_device_action(device, origin.ip, "unblock")
+    row = executor.record_action(
+        db,
+        device,
+        origin.ip,
+        "unblock",
         status=status,
         error_code=error_code,
         error_message=error_message,
+        task_id=origin.task_id,
         event_id=origin.event_id,
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
     view = _record_view(row, {device.id: device.name}, {})
     return _ok("已撤销封堵" if status == "success" else "撤销失败", view)
 

@@ -228,8 +228,12 @@ def update_preset(preset_id: int, body: PresetUpdate, request: Request, db: Sess
     if changes:
         try:
             from ..main import get_es_client
+            from ..services.block_tasks import sync_preset_task_queries
 
-            sync_preset_watch_queries(get_es_client().client, preset_id)
+            client = get_es_client().client
+            sync_preset_watch_queries(client, preset_id)
+            # 联动设置绑定的就是这个预设，条件变了任务查询要跟着变
+            sync_preset_task_queries(client, preset_id)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="快捷检索已保存，但实时告警规则同步失败，请重试") from exc
 
@@ -268,11 +272,14 @@ def delete_preset(preset_id: int, db: Session = Depends(get_db),
     db.commit()
     try:
         from ..main import get_es_client
+        from ..services.block_tasks import sync_preset_task_queries
         from ..services.mail_percolator import delete_watch_query
 
         client = get_es_client().client
         for watch_id in watch_ids:
             delete_watch_query(client, watch_id)
+        # 预设已删，关联的联动任务查询一并清掉（任务本身由用户自行处理）
+        sync_preset_task_queries(client, preset_id)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="快捷检索及关联关注告警已删除，但实时告警规则清理失败") from exc
 

@@ -44,13 +44,18 @@ alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权
 除规则命中的告警外，SenseMind 另有一个**语义检测引擎**：关键词匹配 + 5 层递归解码（URL / HTML / Base64 / Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测）。该引擎不调用 LLM，用于捕获编码绕过与变形攻击。
 
 <p align="center">
-  <img src="demo-00.png" alt="AI 研判详情" width="100%">
+  <img src="告警研判.png" alt="AI 研判详情" width="100%">
   <br><sub>AI 研判详情：攻击确认、溯源分析、处置建议、Payload 命中高亮</sub>
 </p>
 
 <p align="center">
-  <img src="demo-01.png" alt="监控中心" width="100%">
+  <img src="监控中心.png" alt="监控中心" width="100%">
   <br><sub>监控中心：SOC 攻击分类、威胁判定分布、威胁分析来源</sub>
+</p>
+
+<p align="center">
+  <img src="联动外发.png" alt="联动外发" width="100%">
+  <br><sub>联动外发：邮件告警、命中后自动封禁攻击 IP、IP 白名单、联动日志</sub>
 </p>
 
 ### 它不做什么

@@ -44,13 +44,18 @@ alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权
 Beyond alerts matched by rules, SenseMind also provides a **semantic detection engine**: keyword matching + 5-layer recursive decoding (URL / HTML / Base64 / Hex) + syntax analysis (SQL comment stripping, shell command parsing, path normalization, XSS tag detection). The engine makes no LLM calls; it catches encoded bypasses and obfuscated attacks.
 
 <p align="center">
-  <img src="demo-00.png" alt="AI triage detail" width="100%">
+  <img src="告警研判.png" alt="AI triage detail" width="100%">
   <br><sub>AI triage detail: attack confirmation, pivot analysis, remediation advice, highlighted payload matches</sub>
 </p>
 
 <p align="center">
-  <img src="demo-01.png" alt="Monitoring dashboard" width="100%">
+  <img src="监控中心.png" alt="Monitoring dashboard" width="100%">
   <br><sub>Monitoring dashboard: SOC attack categories, verdict distribution, detection sources</sub>
+</p>
+
+<p align="center">
+  <img src="联动外发.png" alt="Outbound response" width="100%">
+  <br><sub>Outbound response: email alerting, automated blocking of attacking IPs, IP allowlist, response log</sub>
 </p>
 
 ### What it does not do

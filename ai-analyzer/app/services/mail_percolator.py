@@ -15,6 +15,43 @@ logger = logging.getLogger(__name__)
 
 PERCOLATOR_INDEX = ".alert-mail-watch-queries"
 
+# 邮件实时告警与联动封堵共用同一份文档结构，各自一个索引（文档 ID 语义不同）
+PERCOLATOR_MAPPINGS = {
+    "dynamic": True,
+    "properties": {
+        "watch_id": {"type": "long"},
+        "task_id": {"type": "long"},
+        "query": {"type": "percolator"},
+        "@timestamp": {"type": "date"},
+        "ai": {
+            "properties": {
+                "source_ip": {"type": "ip"},
+                "destination_ip": {"type": "ip"},
+                "soc_name": {"type": "keyword"},
+                "soc_category": {"type": "keyword"},
+                "threat_verdict": {"type": "keyword"},
+                "attack_result": {"type": "keyword"},
+                "confidence": {"type": "float"},
+                "alert_timestamp": {"type": "date"},
+                "alert_count": {"type": "long"},
+                "source_port": {"type": "integer"},
+                "destination_port": {"type": "integer"},
+                "source_alert_id": {"type": "keyword"},
+                "source_alert_index": {"type": "keyword"},
+                "analysis_source": {"type": "keyword"},
+                "community_id": {"type": "keyword"},
+                "alert_signature": {
+                    "type": "text",
+                    "fields": {"keyword": {"type": "keyword", "ignore_above": 1024}},
+                },
+                "attack_chain": {"type": "text"},
+                "handling_suggestion": {"type": "text"},
+                "payload": {"type": "text"},
+            }
+        },
+    },
+}
+
 
 def ensure_mail_outbox_table() -> None:
     with engine.begin() as connection:
@@ -45,43 +82,7 @@ def ensure_percolator_index(client: Elasticsearch) -> None:
     if client.indices.exists(index=PERCOLATOR_INDEX):
         return
     try:
-        client.indices.create(
-            index=PERCOLATOR_INDEX,
-            mappings={
-                "dynamic": True,
-                "properties": {
-                    "watch_id": {"type": "long"},
-                    "query": {"type": "percolator"},
-                    "@timestamp": {"type": "date"},
-                    "ai": {
-                        "properties": {
-                            "source_ip": {"type": "ip"},
-                            "destination_ip": {"type": "ip"},
-                            "soc_name": {"type": "keyword"},
-                            "soc_category": {"type": "keyword"},
-                            "threat_verdict": {"type": "keyword"},
-                            "attack_result": {"type": "keyword"},
-                            "confidence": {"type": "float"},
-                            "alert_timestamp": {"type": "date"},
-                            "alert_count": {"type": "long"},
-                            "source_port": {"type": "integer"},
-                            "destination_port": {"type": "integer"},
-                            "source_alert_id": {"type": "keyword"},
-                            "source_alert_index": {"type": "keyword"},
-                            "analysis_source": {"type": "keyword"},
-                            "community_id": {"type": "keyword"},
-                            "alert_signature": {
-                                "type": "text",
-                                "fields": {"keyword": {"type": "keyword", "ignore_above": 1024}},
-                            },
-                            "attack_chain": {"type": "text"},
-                            "handling_suggestion": {"type": "text"},
-                            "payload": {"type": "text"},
-                        }
-                    },
-                },
-            },
-        )
+        client.indices.create(index=PERCOLATOR_INDEX, mappings=PERCOLATOR_MAPPINGS)
     except Exception as exc:
         if getattr(exc, "meta", None) and exc.meta.status == 400:
             if getattr(exc, "body", {}).get("error", {}).get("type") == "resource_already_exists_exception":
@@ -148,8 +149,11 @@ def sync_all_watch_queries(client: Elasticsearch) -> int:
         put_watch_filters(client, row["id"], json.loads(row["filters"] or "{}"))
     response = client.search(index=PERCOLATOR_INDEX, size=10000, source=["watch_id"], query={"match_all": {}})
     for hit in response["hits"]["hits"]:
-        if hit["_id"] not in active_ids:
-            delete_watch_query(client, int(hit["_id"]))
+        doc_id = hit["_id"]
+        # 索引里还有联动封堵任务（task-<id>），由 sync_all_task_queries 维护，这里不能删
+        if not doc_id.isdigit() or doc_id in active_ids:
+            continue
+        delete_watch_query(client, int(doc_id))
     if rows:
         client.indices.refresh(index=PERCOLATOR_INDEX)
     return len(rows)
@@ -228,12 +232,31 @@ def _enqueue_matching_watches_once(client: Elasticsearch, index_name: str, doc_i
     response = client.search(
         index=PERCOLATOR_INDEX,
         size=10000,
-        source=["watch_id"],
+        source=["watch_id", "task_id"],
         query={"percolate": {"field": "query", "document": document}},
     )
-    watch_ids = sorted({hit["_source"]["watch_id"] for hit in response["hits"]["hits"]})
-    if not watch_ids:
+    # 同一次 percolate 同时驱动两个动作：邮件 watch 入 outbox、联动任务入待执行表
+    watch_ids, task_ids = set(), set()
+    for hit in response["hits"]["hits"]:
+        source = hit["_source"]
+        if source.get("task_id") is not None:
+            task_ids.add(int(source["task_id"]))
+        elif source.get("watch_id") is not None:
+            watch_ids.add(int(source["watch_id"]))
+    if not watch_ids and not task_ids:
         return 0
+
+    # 联动封堵失败不能影响邮件与告警入库，单独兜住
+    blocked = 0
+    if task_ids:
+        try:
+            from .block_tasks import enqueue_task_actions
+
+            blocked = enqueue_task_actions(sorted(task_ids), document, fallback_event_id=f"{index_name}:{doc_id}")
+        except Exception:
+            logger.exception("联动封堵入队失败：任务=%s", task_ids)
+    if not watch_ids:
+        return blocked
 
     event_id = f"{index_name}:{doc_id}"
     ai_json = json.dumps(document.get("ai", {}), ensure_ascii=False)
@@ -257,4 +280,4 @@ def _enqueue_matching_watches_once(client: Elasticsearch, index_name: str, doc_i
                 "now": datetime.now(timezone.utc),
             })
             inserted += result.rowcount or 0
-    return inserted
+    return inserted + blocked
