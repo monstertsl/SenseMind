@@ -208,7 +208,7 @@ class FakeTopsec:
     """天融信 WebUI 表单接口：响应带 `?[token}?` 前缀且 token 轮转，非登录接口必须带 cookie 与 codeRun。"""
 
     def __init__(self) -> None:
-        self.blocked = set()
+        self.blocked = {}  # ip -> {direction}；3.7 同一 IP 只允许一条记录，旧版本可两条
         self.calls = []
         self.counter = 0
         self.login_fails = False
@@ -217,7 +217,12 @@ class FakeTopsec:
         self.missing_code_run = 0
         self.stale_token = 0
         self.last_token = ""
-        self.no_addnocode = False  # 模拟固件没有 addNoCode 接口（返回 404）
+        self.no_restlogin = False  # 模拟老固件没有 restLogin 接口（返回 404）
+        self.reject_search = False  # 模拟按 IP 精确查询被拒（如保留段地址）
+        self.allow_multi = False  # 模拟旧版本：同一 IP 允许源、目的各一条
+        self.groups = ["default_group"]  # 设备上存在的策略组
+        self.add_groups = []  # 每次添加实际用的 group_name
+        self.add_directions = []  # 每次添加实际下发的 direction（含被拒的）
 
     def _wrap(self, body: str) -> str:
         self.counter += 1
@@ -232,8 +237,6 @@ class FakeTopsec:
             form = {key: values[0] for key, values in parse_qs(request.content.decode()).items()}
 
         if path == "/home/login/addNoCode/":
-            if self.no_addnocode:
-                return httpx.Response(404, text="not found")
             self.login_form = form
             if self.login_fails:
                 payload = base64.b64encode(
@@ -253,7 +256,11 @@ class FakeTopsec:
 
         if path == "/home/restLogin/":
             # restLogin：返回 tokens 数组，token 由服务端给出（示例取第 2 个）
+            if self.no_restlogin:
+                return httpx.Response(404, text="not found")
             self.login_form = form
+            if self.login_fails:
+                return httpx.Response(200, json={"result": False, "data": "用户名或密码错误"})
             self.last_token = "tk-1"
             return httpx.Response(
                 200,
@@ -278,18 +285,48 @@ class FakeTopsec:
 
         if path in ("/home/index/logout/", "/home/restLogout/"):
             return httpx.Response(200, text=self._wrap('{"result":true,"data":"success"}'))
-        if path == "/home/default/blackListSpread/searchpf/":
-            ip = params.get("commands[0][pf_blacklist_static_search][0]")
-            rows = [{"sip": ip, "mark": "tuple"}] if ip in self.blocked else []
+        if path == "/home/default/blackWhite/addrStaticBlackSearch/":
+            if self.reject_search:
+                return httpx.Response(
+                    200, text=self._wrap('{"result":false,"data":"无效输入，分析错误"}')
+                )
+            ip = params.get("commands[0][pf_blacklist_static_search][detail]")
+            rows = [
+                {"ipaddr": ip, "direction": direction, "mark": "ip", "status": "valid"}
+                for direction in sorted(self.blocked.get(ip, set()))
+            ]
             return httpx.Response(
                 200,
                 text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
             )
-        if path == "/home/default/blackListSpread/add/":
-            self.blocked.add(form.get("commands[0][pf_blacklist_add][sip]"))
+        if path == "/home/default/blackListSpread/showAll/":
+            rows = [
+                {"ipaddr": ip, "direction": direction, "mark": "ip"}
+                for ip, directions in sorted(self.blocked.items())
+                for direction in sorted(directions)
+            ]
+            return httpx.Response(
+                200,
+                text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
+            )
+        if path == "/home/default/blackWhite/showPolicyGroup/":
+            rows = [{"name": name} for name in self.groups]
+            return httpx.Response(
+                200,
+                text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
+            )
+        if path == "/home/default/blackWhite/whiteIpAdd/":
+            self.add_groups.append(form.get("commands[0][blacklist_cfg_add_ip][group_name]"))
+            ip = form.get("commands[0][blacklist_cfg_add_ip][ipaddr]")
+            direction = form.get("commands[0][blacklist_cfg_add_ip][direction]")
+            self.add_directions.append(direction)
+            if ip in self.blocked and not self.allow_multi:
+                # 3.7 真机行为：同一 IP 再次新增直接报错，第二个方向补不上
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"ip黑名单添加存在错误"}'))
+            self.blocked.setdefault(ip, set()).add(direction)
             return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
         if path == "/home/default/blackListSpread/deleteLots/":
-            self.blocked.discard(form.get("commands[0][pf_blacklist_delete][0][sip]"))
+            self.blocked.pop(form.get("commands[0][blacklist_cfg_delete_ip][0][ipaddr]"), None)
             return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
         return httpx.Response(404, text="not found")
 
@@ -671,57 +708,105 @@ def check_topsec(spec, fake: FakeTopsec, failures) -> None:
     result = spec.call("test_connection")(cfg)
     expect(result.ok, f"test_connection 成功：{result.message}", failures)
 
-    # 登录：密码必须是设备要求的 AES-CBC 密文（密钥/偏移量 ngfwrestapilogin、零填充、base64）
+    # 登录：restLogin 的密码与长度都是 AES-CBC 密文（密钥/偏移量 16 个 1、零填充、base64）
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    cipher = base64.b64decode(fake.login_form.get("password", ""))
-    decryptor = Cipher(
-        algorithms.AES(b"ngfwrestapilogin"), modes.CBC(b"ngfwrestapilogin")
-    ).decryptor()
-    plain = (decryptor.update(cipher) + decryptor.finalize()).rstrip(b"\x00").decode()
-    expect(plain == "secret6", "登录密码按设备要求 AES-CBC 加密", failures)
-    expect(fake.login_form.get("pwdlen") == "7", "pwdlen 传明文密码长度", failures)
+    def _decrypt_field(key: bytes, field: str) -> str:
+        raw = base64.b64decode(fake.login_form.get(field, ""))
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(key)).decryptor()
+        return (decryptor.update(raw) + decryptor.finalize()).rstrip(b"\x00").decode()
+
+    rest_key = b"1111111111111111"
+    expect(_decrypt_field(rest_key, "password") == "secret6", "登录密码按设备要求 AES-CBC 加密", failures)
+    expect(_decrypt_field(rest_key, "ngtosAuth") == "7", "ngtosAuth 传加密后的明文密码长度", failures)
+    expect("pwdlen" not in fake.login_form, "restLogin 不传明文 pwdlen", failures)
     expect(fake.login_form.get("name") == "api-admin", "登录传管理员名称", failures)
 
     fake.missing_cookie = fake.missing_code_run = fake.stale_token = 0
-    ctx = spec.call("setup")(cfg)
-    spec.call("block")("10.5.5.5", cfg, ctx)
+    spec.call("block")("10.5.5.5", cfg)
     expect("10.5.5.5" in fake.blocked, "block 写入黑名单", failures)
-    before = len(fake.calls)
-    spec.call("block")("10.5.5.5", cfg, ctx)
-    expect(len(fake.calls) - before == 1, "重复 block 只查询一次、不重复下发", failures)
-    spec.call("unblock")("10.5.5.5", cfg, ctx)
+    expect(
+        fake.blocked.get("10.5.5.5") == {"src"},
+        f"设备只允许一个方向时按源方向封禁（实际 {sorted(fake.blocked.get('10.5.5.5') or [])}）",
+        failures,
+    )
+    expect(
+        fake.add_directions == ["src", "dst"],
+        f"源方向必封、目的方向也尝试下发（实际 {fake.add_directions}）",
+        failures,
+    )
+    expect(fake.add_groups == ["default_group", "default_group"], f"添加带策略组名（实际 {fake.add_groups}）", failures)
+    fake.add_directions.clear()
+    spec.call("block")("10.5.5.5", cfg)
+    expect(fake.add_directions == ["dst"], f"重复 block 只补目的方向（实际 {fake.add_directions}）", failures)
+
+    # 旧版本允许同一 IP 源、目的各一条：两个方向都落地
+    fake.allow_multi = True
+    try:
+        spec.call("block")("10.11.11.11", cfg)
+        expect(
+            fake.blocked.get("10.11.11.11") == {"src", "dst"},
+            f"设备允许双方向时源、目的各一条（实际 {sorted(fake.blocked.get('10.11.11.11') or [])}）",
+            failures,
+        )
+    finally:
+        fake.allow_multi = False
+
+    # 设备上已有目的方向的历史条目：同一 IP 只允许一条，须先删再按源方向重建
+    fake.blocked["10.8.8.8"] = {"dst"}
+    fake.calls.clear()
+    spec.call("block")("10.8.8.8", cfg)
+    expect(fake.blocked.get("10.8.8.8") == {"src"}, "已有目的方向条目时改写为源方向", failures)
+    expect(
+        "/home/default/blackListSpread/deleteLots/" in [url for _, url in fake.calls],
+        "改写前先删除旧条目",
+        failures,
+    )
+    spec.call("unblock")("10.5.5.5", cfg)
     expect("10.5.5.5" not in fake.blocked, "unblock 解除封禁", failures)
     expect(fake.missing_cookie == 0, "非登录接口都带 Cookie", failures)
     expect(fake.missing_code_run == 0, "非登录接口都带 codeRun", failures)
     expect(fake.stale_token == 0, "使用上一次响应轮转出的 token", failures)
-    spec.call("teardown")(ctx)
 
     fake.calls.clear()
-    spec.call("block")("10.6.6.6", cfg, None)
-    expect("10.6.6.6" in fake.blocked, "无会话时自行登录并封禁", failures)
-    expect("/home/index/logout/" in [url for _, url in fake.calls], "临时会话结束后退登", failures)
+    spec.call("block")("10.6.6.6", cfg)
+    expect("10.6.6.6" in fake.blocked, "平台只传两个位置参数时自行登录并封禁", failures)
+    expect("/home/restLogout/" in [url for _, url in fake.calls], "临时会话结束后退登", failures)
 
     fake.login_fails = True
     try:
-        spec.call("block")("10.7.7.7", cfg, None)
+        spec.call("block")("10.7.7.7", cfg)
         expect(False, "登录失败应抛 DeviceError", failures)
     except DeviceError as exc:
         expect(exc.retryable is False, f"登录失败标记为不可重试（{exc.code}）", failures)
     finally:
         fake.login_fails = False
 
-    # 部分固件没有 /home/login/addNoCode/（返回 404）：应自动改走 /home/restLogin/
-    fake.no_addnocode = True
+    # 按 IP 的精确查询被设备拒绝时，回退到 showAll 全量比对
+    fake.reject_search = True
+    try:
+        spec.call("block")("10.5.5.5", cfg)
+        expect("10.5.5.5" in fake.blocked, "精确查询被拒时回退全量比对", failures)
+        expect("/home/default/blackListSpread/showAll/" in [url for _, url in fake.calls], "回退走 showAll", failures)
+    finally:
+        fake.reject_search = False
+
+    # 老固件没有 /home/restLogin/（返回 404）：应自动改走 /home/login/addNoCode/
+    fake.no_restlogin = True
     try:
         fake.calls.clear()
         fallback = spec.call("test_connection")(cfg)
-        expect(fallback.ok, f"addNoCode 404 时回退 restLogin：{fallback.message}", failures)
-        expect(bool(fake.login_form.get("ngtosAuth")), "restLogin 传 ngtosAuth（AES 加密的密码长度）", failures)
-        expect("pwdlen" not in fake.login_form, "restLogin 不再传明文 pwdlen", failures)
-        expect("/home/restLogout/" in [url for _, url in fake.calls], "restLogin 会话用 restLogout 退登", failures)
+        expect(fallback.ok, f"restLogin 404 时回退 addNoCode：{fallback.message}", failures)
+        expect(_decrypt_field(b"ngfwrestapilogin", "password") == "secret6", "回退时密码改用 ngfwrestapilogin 加密", failures)
+        expect(fake.login_form.get("pwdlen") == "7", "回退 addNoCode 时传明文 pwdlen", failures)
+        expect("ngtosAuth" not in fake.login_form, "回退 addNoCode 不再传 ngtosAuth", failures)
+        expect(
+            "/home/index/logout/" in [url for _, url in fake.calls],
+            "addNoCode 会话用 /home/index/logout/ 退登",
+            failures,
+        )
     finally:
-        fake.no_addnocode = False
+        fake.no_restlogin = False
     print()
 
 

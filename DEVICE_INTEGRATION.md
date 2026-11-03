@@ -88,6 +88,8 @@
 | 生效方式 | 上传成功即热加载（`scan(force=True)`），不需要重启；覆盖上传后已保存的设备立即用新实现 |
 | 单次执行 | 一次 `block` 调用 = 一个 IP。批量由平台循环，脚本不要自己拼批量 |
 
+想在本地先把脚本跑通再上传：把 `alert-responder/sensemind_device/` 整个目录拷到脚本同级，`import sensemind_device` 后即可用；需要假响应时用 `httpx.MockTransport` 配合 `set_transport_factory()` 注入。这两样只写在**本地测试代码**里——上传的脚本不许 `import httpx`，也不许调用 `set_transport_factory()`。
+
 ### 2.2 导入白名单（硬限制）
 
 平台用 `ast` 静态扫描脚本里的每一条 `import` / `from ... import`（**函数体里的也算**），只有下面 24 个模块可以通过：
@@ -164,6 +166,19 @@ response = send(client, "POST", "/api/login", json={"name": user, "password": pw
 
 只做一件事：把 `httpx.TimeoutException` / `httpx.HTTPError` 统一收敛成 `DeviceError(code="timeout"|"network", retryable=True)`。**它不判断 HTTP 状态码**，2xx/4xx/5xx 都会原样返回，判定要你自己写（见 5.1）。
 
+`**kwargs` 原样交给 `httpx.Client.request()`，厂商常见的几种报文形态都用它表达：
+
+| 要发的形态 | 写法 |
+| --- | --- |
+| JSON | `send(client, "POST", "/api/blacklist", json={"ip": ip})` |
+| 表单（`application/x-www-form-urlencoded`） | `send(client, "POST", "/login", data={"username": u, "password": p})` |
+| 同名键重复（`cmd=a&cmd=b`） | `send(client, "POST", "/x", data=[("cmd", "a"), ("cmd", "b")])` |
+| multipart 上传（`multipart/form-data`） | `send(client, "POST", "/upload", files={"file": ("a.conf", b"...", "text/plain")})` |
+| 查询串 | `send(client, "GET", "/api/list", params={"ip": ip})` |
+| Cookie | `http_client(cfg, cookies={"SESSION": token})` |
+
+只被捕获的是超时和网络异常；其余异常（URL 拼了中文/空格、序列化失败等）会以原类型冒泡，联动日志里记成该异常类名。
+
 #### `status_error(response, *, message="") -> DeviceError`
 
 HTTP 层失败分类器：5xx / 429 → `retryable=True`，其余 4xx → `retryable=False`。
@@ -197,7 +212,7 @@ if token:
 
 #### `check_network(value) -> str`
 
-校验并规范化 CIDR，用于白名单类接口。
+校验并规范化 CIDR，用于白名单类接口：`10.0.0.5/24` → `10.0.0.0/24`（不严格模式）。非法输入抛 `DeviceError("invalid_ip")` 或 `DeviceError("invalid_cidr")`。
 
 #### `aes_cbc_zero_base64(text, key, iv) -> str`
 
@@ -207,7 +222,7 @@ if token:
 encrypted = aes_cbc_zero_base64(password, "ngfwrestapilogin", "ngfwrestapilogin")
 ```
 
-要求：key 长度 16/24/32 字节，iv 16 字节；明文按 `\x00` 补齐到 16 的整数倍。**PKCS7 填充、URL-safe base64、hex 输出都不在这个函数的能力范围**——遇到这类算法，用 `hashlib`/`base64` 自己实现。
+要求：key 长度 16/24/32 字节，iv 16 字节；明文按 `\x00` 补齐到 16 的整数倍。key/iv 长度不对时抛的是 `ValueError`（不是 `DeviceError`），联动日志里会记成失败码 `ValueError`——尺寸常量写死，别用运行时拼接的字符串。**PKCS7 填充、URL-safe base64、hex 输出都不在这个函数的能力范围**——遇到这类算法，用 `hashlib`/`base64` 自己实现。
 
 #### `logger(name) -> logging.Logger`
 
@@ -276,6 +291,8 @@ MANIFEST = {
 
 可选模块级常量 `API_VERSION`：不写视为与平台一致；写了就必须等于 `1`。**接口不兼容变更时平台递增该值，旧脚本会被拒绝加载**——这是有意的，避免等到封堵时才炸。
 
+`MANIFEST` 里多写的键（`author`、`version` 之类）既不读取也不报错，别指望它承载语义；反过来，`key`、`display_name`、`schema_version`、`config_schema` 缺任何一项都是加载失败。
+
 ### 3.2 配置字段描述符
 
 ```python
@@ -309,6 +326,8 @@ MANIFEST = {
 2. **字段名不能重复**，否则加载失败。
 3. `depends_on` 只支持单层对象，不支持嵌套或多值。
 
+`default` 只在页面「添加设备」时预填表单，平台侧既不校验也不回填；`placeholder`、`help` 纯展示、不参与任何判断。`required` 由平台在校验保存时使用——敏感字段（`secret: True`）编辑时留空视为「沿用旧值」，不算缺失。
+
 地址字段请统一叫 **`base_url`**——`http_client(cfg)` 只认这个名字。
 
 ### 3.3 函数约定
@@ -326,18 +345,19 @@ def unblock(ip: str, cfg: dict, ctx=None) -> None:
 可选（有则自动置对应能力位）：
 
 ```python
-def setup(cfg: dict) -> dict:
-    """建立会话（登录换 token 等），返回值原样作为 ctx 传给 block/unblock。"""
-
-def teardown(ctx) -> None:
-    """释放 setup 申请的资源（退登、关连接）。block 抛异常时也必须被调用。"""
-
 def test_connection(cfg: dict) -> ProbeResult:
     """连接测试，给页面「测试连接」回显。"""
 
 def list_blocked(cfg: dict) -> list[str]:
-    """返回设备当前封堵的 IP 列表；分页行为未真机核验时不要实现。"""
+    """返回设备当前封堵的 IP 列表。只用于给页面标能力位，平台不会调用它做封堵前回读。
+    分页行为未经真机核验时不要实现。"""
 ```
+
+`ctx` 的默认值**不是可选的**：平台按 `block(ip, cfg)` 两个位置参数调用，`ctx` 恒为 `None`。写成 `def block(ip, cfg, ctx)`（没有默认值）能通过上传校验，但一调用就 `TypeError`——接口照样返回 200，只在联动日志里记一条 `failed`，很容易漏看。所以：
+
+- 两个必需函数的第三个参数一律写 `ctx=None`（保留这个形参只为签名兼容，平台不会传值）；
+- 登录与退登都写在 `block` / `unblock` 内部，几次请求复用同一个 `client`（见第四节的写法）；
+- **不要实现 `setup()` / `teardown()`**：平台不调用它们，写了也不会执行。
 
 能力位由实现反推，不在清单里声明，避免「声明了但函数没写」：
 
@@ -349,7 +369,7 @@ def list_blocked(cfg: dict) -> list[str]:
 
 - **单 IP 粒度**。批量由平台循环、逐 IP 落封堵记录，脚本不要自己拼批量请求。
 - `cfg` 由平台构造并解密后传入，**脚本不读环境变量、不自己存凭据**。
-- 有 `setup` 时，平台在同一批次的多次 `block` 之间复用同一个 `ctx`，减少重复登录；`block` 内若无 `ctx` 应能自行登录一次并在结束时退出（模板里的 `_session()` 就是这个模式）。
+- `block` / `unblock` 的返回值被忽略（写 `-> None` 即可）：成功就正常返回，失败必须抛异常，**不要靠 return 文本表达结果**。
 - `test_connection` 请走「最小验证」：只验证登录/握手成功，不要顺便跑一次真实封堵。
 
 ### 3.4 错误与 retryable
@@ -368,6 +388,8 @@ raise DeviceError("vendor_rejected", f"添加黑名单失败：{msg}", retryable
 | `status` | HTTP 状态码，可选 |
 
 `ProbeResult(ok=False, message="...")` 用于连接测试回显；连接测试失败也可以直接 `raise DeviceError`，平台会转成 `{ok: false, code, retryable}`。
+
+平台不会按 `retryable` 自动重试：这个标记只写进联动日志、并随「测试连接」回显，供人工判断或外部调度参考。**但它仍要标对**——标错的直接后果是排障时判断反向（把明确的业务拒绝当偶发故障去反复重试），而不是平台自己重放。
 
 关键点：**失败必须抛异常，不能 `return`**。静默返回会让平台把失败的封堵记成成功，还会把原告警标记 `blocked=true`，之后没人知道流量其实没被拦住。
 
@@ -520,12 +542,11 @@ def list_blocked(cfg: dict) -> list:
     return sorted(ips)
 ```
 
-需要复用登录会话（多 IP 连续封堵时避免反复登录）的版本，见下面这个骨架：
+一次 `block` 里往往要连着发好几个请求（登录 → 查询 → 添加 → 回查 → 退登）。**不要实现 `setup()` / `teardown()`**：平台调用的是 `block(ip, cfg)`，不会传 `ctx` 进来，这两个函数永远不会被执行。正确做法是在 `block` 内部登录一次，几步请求复用同一个 `client`，`finally` 里退登并 `close()`：
 
 ```python
-from contextlib import contextmanager
-
 def _login(cfg: dict):
+    """登录后返回一个已带凭据的 client；由调用方负责 close()。"""
     client = http_client(cfg, headers={"Content-Type": "application/json"})
     try:
         response = send(client, "POST", "/login", json={
@@ -537,37 +558,28 @@ def _login(cfg: dict):
         if not token:
             raise DeviceError("login_no_token", "登录成功但未返回 token", retryable=False)
     except BaseException:
-        client.close()          # 任何一个环节失败都要关掉客户端
+        client.close()          # 登录在任何一个环节失败都要关掉客户端
         raise
     client.headers["X-Token"] = token
     return client
 
 
-@contextmanager
-def _session(cfg: dict, ctx):
-    """有 setup 提供的会话就复用，否则临时登录并在结束时关闭。"""
-    if ctx and ctx.get("client") is not None:
-        yield ctx["client"]
-        return
+def block(ip: str, cfg: dict, ctx=None) -> None:
+    target = check_ip(ip)
     client = _login(cfg)
     try:
-        yield client
+        if _exists(client, target):            # 同一个 client 连着发：先查
+            log.info("%s 已在黑名单，跳过", target)
+            return
+        _add(client, target)                   # 再添加
+        if not _exists(client, target):        # 最后回查
+            raise DeviceError("block_not_effective", "写入成功但回查不到条目", retryable=True)
     finally:
-        client.close()
-
-
-def setup(cfg: dict) -> dict:
-    return {"client": _login(cfg)}
-
-
-def teardown(ctx) -> None:
-    if ctx and ctx.get("client") is not None:
         try:
-            send(ctx["client"], "POST", "/logout")
+            send(client, "POST", "/logout")
         except Exception:
-            log.warning("退出登录失败，忽略")
-        finally:
-            ctx["client"].close()
+            log.warning("退登失败，忽略")       # 退登失败不能推翻已成功的封堵
+        client.close()
 ```
 
 ---
@@ -736,7 +748,7 @@ client.cookies.set("token", token)                     # cookie
 
 **会话过期要自重登一次**：长任务里 token 可能中途失效，收到 401/403 或返回体里的 `loginError_*` 类错误时，重新登录并把当前请求重试一次，仍失败才报错。别把 401 直接抛成 `retryable=False` 让整批任务失败。
 
-`teardown` 里的退登要 `try/except` 包住：**退登失败不能影响已经成功的封堵结论**。
+退登要 `try/except` 包住再 `close()`：**退登失败不能影响已经成功的封堵结论**。
 
 ```python
 def _logout(client, cfg) -> None:
@@ -855,6 +867,19 @@ log.debug("配置：%s", mask_config(cfg))
 
 落盘流程：脚本先写进 `devices/custom/.upload/<随机目录>/` 完成全部校验，通过后才移到 `devices/custom/` 并触发热加载；校验失败则删掉临时目录，已有脚本不受影响。
 
+**上传前逐条自检**（这一层的错最容易在上传后才暴露）：
+
+1. 文件名（去掉 `.py`）与 `MANIFEST["key"]` 完全一致，且只含小写字母/数字/下划线、小写字母开头；大写、中文、连字符都会被拒。
+2. `display_name` 与已有设备类型（内置 + 已上传）不重名，重名直接拒绝上传。
+3. `import` 只出现 2.2 那 24 个模块：没有 `httpx`、`requests`、`os`、`sys`、`__future__`；连 `-> httpx.Client` 这种注解也不要写。
+4. 没有 `eval`/`exec`/`compile`/`open`/`getattr`/`setattr`/`globals`/`locals`/`vars`/`dir`，也没有任何 `.__xxx__` 形式的属性。
+5. `block`、`unblock` 存在，签名是 `(ip, cfg, ctx=None)`——**`ctx` 必须有默认值**，平台只传两个位置参数。
+6. 地址字段叫 `base_url`（`http_client()` 只认这个键），`type` 用 `url`。
+7. 每处 `http_client()` 都配 `try/finally: client.close()`，异常路径也不漏。
+8. 失败一律 `raise DeviceError(...)`，消息里带上设备返回的原因；厂商业务拒绝用 `vendor_rejected` + `retryable=False`。
+9. 判成功看设备业务码，不能只看 HTTP 200（见 5.1、5.2）。
+10. 封堵前先查已存在、解封不存在算成功（幂等，见 5.3）；接口支持回读时补一次回查（见 5.4）。
+
 ### 6.3 覆盖、删除与已保存设备的关系
 
 | 操作 | 结果 |
@@ -958,7 +983,7 @@ log.debug("配置：%s", mask_config(cfg))
 | 封堵记录成功但设备侧无记录 | 脚本把厂商业务失败当成功了，见 5.1 / 5.2；或设备侧对象组未被策略引用，见 5.13 |
 | 封堵了但流量还能通 | 写进去的只是对象组/地址簿，没被安全策略引用；或写进了与策略无关的第二张名单 |
 | 联动日志一片失败但设备侧其实封住了 | 回查逻辑判反了，或把回查的网络异常当成了"未生效"，见 5.4 |
-| 重复重试打爆设备 | 厂商业务拒绝被标成了 `retryable=True`，见 3.4 |
+| 同一个失败被反复重试、越试越乱 | 厂商业务拒绝被标成了 `retryable=True`，人工或外部调度照着重试；平台本身不重放，见 3.4 |
 | 第二次解封报错 | 没做幂等，见 5.3 |
 | 多次封堵后条目丢失 | 读-改-写接口并发覆盖，见 5.8 |
 | 容器日志里找不到脚本日志 | 用了 `print`，见 5.15 |
@@ -990,7 +1015,9 @@ log.debug("配置：%s", mask_config(cfg))
 | 密码策略 | 关闭「首次登录强制改密」与过期提醒；密码用 12 位以上强密码，保存后由平台加密存储 |
 | 证书 | 设备管理口多为自签证书，页面「高级选项」里保持「校验证书」关闭（默认已关）；若使用内部 CA，可保持开启并填 `ca_cert_pem` |
 
-### 9.2 奇安信防火墙（`qianxin_firewall.py`）
+### 9.2 奇安信防火墙
+
+脚本：`qianxin_firewall.py`。
 
 字段与填写：
 
@@ -999,19 +1026,13 @@ log.debug("配置：%s", mask_config(cfg))
 | 管理地址 | 含协议与端口，如 `https://10.0.0.1:8443`；也有 `http://<ip>:8080` 的部署，按设备实际填 |
 | 用户名 / 密码 | **RESTful API 账号**（不是普通 WebUI 管理员） |
 
-账号准备（三步，均在设备 WebUI 完成）：
+账号准备：
 
 1. **启用 RESTful API**：`系统配置` → `设备管理` → `本机设置` → `RESTful API`，开启后接口才可访问。
 2. **新建 RESTful API 用户**：`系统配置` → `设备管理` → `管理账号` → 新建账号，角色选 **`RESTful API管理员`**。账号名任意（示例用 `api-admin`）；接口权限按该角色模板授予，换成普通 WebUI 管理员角色可能缺少 API 调用权限。该账号需覆盖 `威胁处置 → 人工处置` 的读写权限，否则封禁与解封会返回非 0 的 `error_code`。
 3. **添加可信主机**（设备启用了「管理主机」时必须做）：`系统配置` → `设备管理` → `管理主机` → 添加可信主机，添加时选择 **RESTful API** 类型，并填入 `alert-responder` 所在服务器的出口 IP。
 
-接口调用顺序（脚本已实现）：
-
-1. `POST /v1.0/login`，body `{"username": ..., "password": ...}` → 返回 `__s_sessionid__` cookie 与 `result.token`。
-2. 业务请求统一 `POST /v1.0/rest/`，body 为列表，用 `head.module` + `head.function` 分发，成功判据是 `head.error_code` 为 0。
-3. 结束 `POST /v1.0/out/` 退登。
-
-封堵写入的位置是 **`处置中心` → `人工处置`** 里的网络连接处置项（`module=threat_disposal`），三条 function：
+封堵落点：**`处置中心` → `人工处置`** 里的网络连接处置项（`module=threat_disposal`），三条 function：
 
 | 动作 | function | body 要点 |
 | --- | --- | --- |
@@ -1024,9 +1045,19 @@ log.debug("配置：%s", mask_config(cfg))
 
 查询接口的 `searchkey` 未必能命中目的地址方向，脚本在按 IP 查不到时会退化为全量比对，避免重复下发或漏删。
 
+接口调用顺序：
+
+1. `POST /v1.0/login`，body `{"username": ..., "password": ...}` → 返回 `__s_sessionid__` cookie 与 `result.token`。
+2. 业务请求统一 `POST /v1.0/rest/`，body 为列表，用 `head.module` + `head.function` 分发，成功判据是 `head.error_code` 为 0。
+3. 结束 `POST /v1.0/out/` 退登。
+
+**批量**：接口形态允许，但**未真机验证，暂按单 IP 下发**。两点依据：①添加人工处置的 `threat_disposal_cfg` 是数组，一条 body 里可以放多条五元组，官方文档没有写单次上限；②`/v1.0/rest/` 的 body 本身是 command 列表，理论上一次可提交多条 command、响应按顺序返回，能逐条判成败。另外设备还有一套独立的「批量黑 IP」接口（官方规格：一次最多 1000 个），但它的落点不是「处置中心 → 人工处置」，拦截效果与解除方式都不同，**不能替代**上面的封禁落点。
+
 能力位：`test` = true（连接测试为登录 + 退登），`list_blocked` = false，`ipv6` = false。
 
-### 9.3 深信服防火墙（`sangfor_af.py`）
+### 9.3 深信服防火墙
+
+脚本：`sangfor_af.py`。
 
 字段与填写：
 
@@ -1038,7 +1069,9 @@ log.debug("配置：%s", mask_config(cfg))
 
 账号准备：为管理员账号开启 Web API 管理方式——`系统` → `管理员账号` → 选中用户 → `登录安全设置` → `管理方式` → 勾选 `Web API`（`WEB控制台` 可同时保留）。未勾选时登录返回 `无管理方式权限`，并非密码错误。多虚拟系统场景下该账号需在所填命名空间内存在。
 
-接口调用顺序（脚本已实现）：
+封堵落点：`安全运营` → `黑白名单` → `黑名单` → `永久封锁名单`（接口 `/api/v1/namespaces/{ns}/whiteblacklist`，`type=BLACK`；该接口没有有效期字段，写入的条目只出现在「永久封锁名单」，不会进「临时封锁名单」）。
+
+接口调用顺序：
 
 1. `POST /api/v1/namespaces/{ns}/login`，body `{"name": ..., "password": ...}` → `data.loginResult.token`，后续请求带 `Cookie: token=<token>`。
 2. 黑名单：`POST/DELETE/GET .../whiteblacklist`，body `{"type": "BLACK", "url": "<ip>", "enable": true, "description": "SenseMind联动封禁"}`。
@@ -1052,7 +1085,21 @@ log.debug("配置：%s", mask_config(cfg))
 
 「资源不存在」优先看语义码 `code=1004`，中文文案（`黑白名单[...] 不存在`）只作兜底，这样设备换固件或语言包仍可用。`list_blocked` 已实现，按 `data.totalPages` 每页 200 翻页，逐页记 INFO 日志并在结尾记总条数。
 
-### 9.4 天融信防火墙（`topsec_firewall.py`）
+**批量**：**支持**（官方 8.2.4 / 8.2.5）。添加走 `POST /api/batch/v1/namespaces/{ns}/whiteblacklist`，body 与单条相同但 `obj` 是数组：
+
+```json
+{"obj": [{"url": "1.1.1.1", "type": "BLACK", "enable": true, "description": "SenseMind联动封禁"}]}
+```
+
+可选 query `override` 决定冲突处理：`PROMPT`（默认，冲突报错）、`REPLACE`（冲突替换）、`SKIP`（冲突跳过）、`SKIPBACK`（冲突返回）、`PROMPTALL`（返回全部冲突原因）。批量删除是 `POST /api/batch/v1/namespaces/{ns}/whiteblacklist?_method=delete`，body 同为 `obj` 数组。
+
+判成败时注意：响应顶层的 `code`/`message` 只代表整体受理结果，每个 `obj` 会带回 `blockRes`（封锁结果）和 `blockMsg`（原因），**要按条目逐个看**，不能只凭顶层 `code` 判定全部成功。
+
+上面只是设备能力，`block` 仍然只封一个 IP：平台不会把 IP 列表传进来，别在脚本里攒批次再下发（攒批次会把“哪个 IP 失败”这一个信息丢掉）。
+
+### 9.4 天融信防火墙
+
+脚本：`topsec_firewall.py`。
 
 字段与填写：
 
@@ -1061,30 +1108,42 @@ log.debug("配置：%s", mask_config(cfg))
 | 管理地址 | 含协议与端口，如 `https://10.0.0.1:443` |
 | 用户名 / 密码 | 设备管理员账号；密码填**明文**，脚本按设备要求自行加密后提交 |
 
-账号准备：用设备管理员账号，需具备「资源管理 → 黑名单传播」的读写权限。设备若启用了**登录验证码**须关闭，平台走免验证码登录接口 `/home/login/addNoCode/`。
+账号准备：用设备管理员账号，需具备「资源管理 → 黑名单传播」的读写权限。设备若启用了**登录验证码**须关闭，平台走免验证码登录接口 `/home/restLogin/`（老固件无此接口时自动改用 `/home/login/addNoCode/`）。
 
-调用约定（官方文档「注意事项 → 统一参数获取」）：
-
-1. **登录** `POST /home/login/addNoCode/`，表单 `name` + `password` + `pwdlen`。密码用 AES-CBC（密钥与偏移量均为 `ngfwrestapilogin`、零填充、输出 base64），`pwdlen` 是明文长度。响应正文是 base64 JSON：`data.authid` 作为 userMark，`data.secret` 参与 codeRun 计算。
-   该接口在部分固件上不存在（返回 HTTP 404），此时脚本自动改走 `POST /home/restLogin/`：表单 `name` + `password` + `ngtosAuth`，`password` 与 `ngtosAuth`（加密后的明文长度）都用 AES-CBC 加密，但密钥与偏移量换成 16 个 `1`；响应是普通 JSON，`data.authid` 同为 userMark，`secret` 在顶层或 `data` 内，token 取 `tokens` 数组（优先第 2 个）。该方式建立的会话必须用 `GET /home/restLogout/` 退登（`commands` 为 `{}` 且参与 codeRun），用 `/home/index/logout/` 会返回 `Parameter tampered`。
-2. **公共参数**：除登录外每个请求都必须带登录返回的 Cookie、`Referer: <base>/html/webui/home.html/?userMark=<userMark>`、`Content-Type: application/x-www-form-urlencoded`。
-3. **token**：取响应里 `?[` 与 `}?` 之间的字符串；**每次请求都会换新的**，下一次请求必须用最新的。
-4. **codeRun** = `md5(secret + token + url + commands 的 JSON)`，`url` 是不带参数的路径。`commands` 必须按**设备侧的数组形态**序列化：`commands[0][pf_blacklist_add][sip]=<ip>` 对应 `[{"pf_blacklist_add":{"sip":"<ip>"}}]`，**不能**把下标当对象键写成 `{"0":{...}}`，否则设备返回 `Parameter tampered`。
-5. **封堵落点**：`资源管理` → `黑名单传播`（`blackListSpread`），按五元组下发：
+封堵落点：`安全策略` → `黑白名单` → `静态黑名单`（查询与添加在 `blackWhite` 模块，删除在 `blackListSpread`）：
 
 | 动作 | 请求 |
 | --- | --- |
-| 查是否已存在 | `GET /home/default/blackListSpread/searchpf/?commands[0][pf_blacklist_static_search][0]=<ip>` |
-| 添加 | `POST /home/default/blackListSpread/add/`，`commands[0][pf_blacklist_add][sip]=<ip>` |
-| 删除 | `POST /home/default/blackListSpread/deleteLots/`，`commands[0][pf_blacklist_delete][0][sip]=<ip>`（其余四元组字段传空串） |
+| 查是否已存在 | `GET /home/default/blackWhite/addrStaticBlackSearch/`，`commands[0][pf_blacklist_static_search][detail]=<ip>`（可选 `[from]=1`、`[num]=20`）；返回 `rows[]` 里看 `ipaddr` 与 `direction`。被拒时退化为 `GET /home/default/blackListSpread/showAll/?commands[0][pf_blacklist_show_all]=` 拉全量再本地比对 |
+| 添加 | `POST /home/default/blackWhite/whiteIpAdd/`，`commands[0][blacklist_cfg_add_ip][ipaddr]=<ip>`，另带 `enable=yes`、`direction=src\|dst`、`except_priv_ip=off`、`group_name`、`comment` |
+| 删除 | `POST /home/default/blackListSpread/deleteLots/`，`commands[0][blacklist_cfg_delete_ip][0][ipaddr]=<ip>`（按 IP 下发，该地址各方向条目一并清掉） |
 
-   `token` 与 `codeRun` 一律放 query，命令字段放表单（GET 则全部在 query）——设备按这个形态校验，放错位置同样报 `Parameter tampered`。
+**源方向必封，目的方向尽力**：3.7 设备同一 IP 只允许存在一条记录，`direction` 是这条记录的属性，再下发第二条会返回 `ip黑名单添加存在错误`；旧版本两个方向可各存一条。脚本先下发源方向（只有它拦得住攻击源主动发来的流量，目的方向只匹配「发往该 IP」的报文），再尝试目的方向——被设备拒绝只记日志，封禁结论仍为成功。设备上已有条目方向不是源地址时（如历史遗留的目的方向），先删再按源地址重建。`except_priv_ip=off` 对应弹窗里的「去掉源IP：否」。
 
-6. **判成功**：响应 `{"result":true,...}`；`{"result":false,"data":"原因"}` 为失败。查询结果在 `rows[]` 里，五元组记录看 `sip`、地址段记录看 `ip_start`/`ip_end`。
+**策略组要查出来再填**：`group_name` 在接口里标为可选，但文档没说不填会归到哪，因此封禁前先 `GET /home/default/blackWhite/showPolicyGroup/`（`commands[0][blacklist_profile_group_show][from]=1`、`[num]=20`，响应 `rows[].name`）取设备上实际存在的组名——有 `default_group` 就用它，否则用第一个组，查询失败才回退 `default_group`；同一会话内只查一次。`showAddrPolicy/`（`show_blacklist_by_profile` 带 `groupname`）用于按组列策略，本脚本不需要：`addrStaticBlackSearch` 的 `detail` 直接按 IP 搜、返回里带 `group_name`，跨组都能命中。
+
+`token` 与 `codeRun` 一律放 query，命令字段放表单（GET 则全部在 query）——设备按这个形态校验，放错位置同样报 `Parameter tampered`。
+
+**token 是链式轮转的**：官方文档原文「每执行一个 api 都会生成新的 token，执行下一个 api 时，需将上一个 api 产生的 token 作为参数赋予新的 api」。所以一次处置里必须从每个响应前缀 `?[TOKEN}?` 里取最新 token 再算下一次的 `codeRun`，不能登录后一直用同一个；也因此**同一台设备不能并发处置**——两条处置线会互相覆盖 token 状态。
+
+参数键必须保持**字面量**：`commands[0][pf_blacklist_add][sip]` 里的 `[` `]` 不能被百分号编码（`%5B`/`%5D`），否则设备解析不出命令，返回 `{"result":false,"data":"无效输入，分析错误"}`。所以 query 与表单串都要手工拼（只编码值），不能用现成的 `urlencode(dict)`。
+
+调用约定：
+
+1. **登录** `POST /home/restLogin/`，表单 `name` + `password` + `ngtosAuth`。`password` 与 `ngtosAuth`（加密后的明文长度）都用 AES-CBC 加密（密钥与偏移量均为 16 个 `1`、零填充、输出 base64）。响应是普通 JSON：`data.authid` 作为 userMark，`secret` 在顶层或 `data` 内并参与 codeRun 计算，token 取 `tokens` 数组（优先第 2 个）。该方式建立的会话必须用 `GET /home/restLogout/` 退登（`commands` 为 `{}` 且参与 codeRun），用 `/home/index/logout/` 会返回 `Parameter tampered`。
+   老固件没有该接口（返回 HTTP 404），此时脚本自动改走 `POST /home/login/addNoCode/`，表单 `name` + `password` + `pwdlen`；密码用 AES-CBC 但密钥与偏移量换成 `ngfwrestapilogin`，`pwdlen` 是明文长度。响应正文是 base64 JSON：`data.authid` 作为 userMark，`data.secret` 参与 codeRun 计算，退登用 `/home/index/logout/`。
+2. **公共参数**：除登录外每个请求都必须带登录返回的 Cookie、`Referer: <base>/html/webui/home.html/?userMark=<userMark>`、`Content-Type: application/x-www-form-urlencoded`。
+3. **token**：取响应里 `?[` 与 `}?` 之间的字符串；**每次请求都会换新的**，下一次请求必须用最新的。
+4. **codeRun** = `md5(secret + token + url + commands 的 JSON)`，`url` 是不带参数的路径。`commands` 必须按**设备侧的数组形态**序列化：`commands[0][pf_blacklist_add][sip]=<ip>` 对应 `[{"pf_blacklist_add":{"sip":"<ip>"}}]`，**不能**把下标当对象键写成 `{"0":{...}}`，否则设备返回 `Parameter tampered`。
+5. **判成功**：响应 `{"result":true,...}`；`{"result":false,"data":"原因"}` 为失败。查询结果在 `rows[]` 里：IP 条目看 `ipaddr`（`mark=ip`）与 `direction`，五元组条目看 `sip`，地址段条目看 `ip_start`/`ip_end`。
+
+**批量**：**不支持**。token 是链式轮转的（见「封堵落点」里的说明），每个请求都必须用上一条响应用的 token 重新算 `codeRun`，一次请求只承载一条命令；同一个 IP 在静态黑名单里又只允许存在一条记录。所以只能逐 IP 下发。
 
 能力位：`test` = true，`list_blocked` = false，`ipv6` = false。
 
-### 9.5 绿盟 NF 防火墙（`nsfocus_nf.py`）
+### 9.5 绿盟 NF 防火墙
+
+脚本：`nsfocus_nf.py`。
 
 字段与填写：
 
@@ -1113,7 +1172,9 @@ log.debug("配置：%s", mask_config(cfg))
 
 能力位：`test` = true，`list_blocked` = true（`size=-1` 全量拉取），`ipv6` = false（接口带 `ipv6` 参数，未经真机验证不声明）。
 
-### 9.6 山石网科防火墙（`hillstone_fw.py`）
+### 9.6 山石网科防火墙
+
+脚本：`hillstone_fw.py`。
 
 字段与填写：
 
@@ -1126,7 +1187,7 @@ log.debug("配置：%s", mask_config(cfg))
 
 前置条件：地址簿只是对象容器，**该组必须被安全策略引用**（源或目的地址）才会真正阻断流量。建议先手动建组并在策略里选好，再交给平台维护组内 IP；否则接口会返回成功但流量不受影响。
 
-调用约定（认证按 MCP 客户端实现，另对老固件留兜底）：
+调用约定：
 
 1. **登录**：`POST /rest/api/login`，三种 body 按顺序尝试——
    - Token：`{"api_token":"..."}`
@@ -1150,7 +1211,8 @@ log.debug("配置：%s", mask_config(cfg))
 ## 十、设计与约束
 
 - 传输层只有 HTTP/HTTPS；只提供 CLI/SSH 处置入口的设备不适用本规范。
-- `block` 只接受单 IP，不支持一次批量下发；`unblock` 必须幂等。
+- `http_client()` 只做单向 TLS（可校验服务端证书、可带自定义 CA / 跳过校验），**不支持客户端证书（mTLS）**，也不支持 SOCKS 代理；厂商强制双向证书时当前接不了。
+- `block` 只接受单 IP，不支持一次批量下发；`unblock` 必须幂等。部分厂商提供批量接口（见 9.2、9.3），但平台当前仍按单 IP 逐个下发，脚本不要假设会收到 IP 列表。
 - 内置设备类型随镜像发布（改代码要重建镜像）；自定义脚本存在独立的命名卷里，重建容器不丢，上传即生效。
 - 一台设备对应一条配置记录；同一物理设备上的多个虚拟系统按不同命名空间建多条记录。
 - 设备类型保存后不可修改；换类型要删了重建，避免存量 `config` 语义错位。
