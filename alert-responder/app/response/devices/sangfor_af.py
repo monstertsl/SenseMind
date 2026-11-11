@@ -158,6 +158,26 @@ def _is_not_found(payload: dict) -> bool:
         return False
 
 
+def _entry_kind(entry: dict) -> str:
+    """条目的实际形态，用于「同名条目冲突」的提示。"""
+    whitelist = entry.get("type") == "WHITE"
+    enabled = bool(entry.get("enable"))
+    if whitelist:
+        return "白名单条目" if enabled else "已停用的白名单条目"
+    if not enabled:
+        return "已停用的黑名单条目"
+    return "非 IP 类型的名单条目"
+
+
+def _conflict_message(ip: str, entry: dict) -> str:
+    """给运维看的冲突说明：说清「已经在白名单里」这类事实，不描述接口内部实现。"""
+    if entry.get("type") == "WHITE":
+        return f"{ip} 已经在设备白名单里，与封禁冲突，请先在设备上移除这条白名单（或改成黑名单）再下发封禁"
+    if not entry.get("enable"):
+        return f"{ip} 在设备黑名单里但处于停用状态，请先在设备上启用或删除该条目再下发封禁"
+    return f"{ip} 在设备上已有同名条目（{_entry_kind(entry)}），请先在设备上处理该条目再下发封禁"
+
+
 def _query_entry(client, cfg: dict, ip: str) -> dict | None:
     """查单 IP 条目：不存在（404 / code=1004 / 文案含「不存在」）时返回 None。"""
     response = send(client, "GET", f"{_base_path(cfg)}/whiteblacklist/{ip}")
@@ -212,9 +232,14 @@ def _require_effective(client, cfg: dict, ip: str, expect_blocked: bool) -> None
 def block(ip: str, cfg: dict, ctx=None) -> None:
     target = check_ip(ip)
     with _session(cfg, ctx) as client:
-        if _query_ip(client, cfg, target):
-            log.info("IP 已在黑名单，跳过：%s", target)
-            return
+        entry = _query_entry(client, cfg, target)
+        if entry is not None:
+            if _is_blocked(entry):
+                log.info("IP 已在黑名单，跳过：%s", target)
+                return
+            # 不替用户改配置，明确报冲突（设备也会以「已存在」拒绝新增）
+            log.warning("设备上已有同名条目（%s），无法直接封禁：%s", _entry_kind(entry), target)
+            raise DeviceError("blacklist_conflict", _conflict_message(target, entry), retryable=False)
         response = send(
             client,
             "POST",
@@ -235,8 +260,13 @@ def block(ip: str, cfg: dict, ctx=None) -> None:
 def unblock(ip: str, cfg: dict, ctx=None) -> None:
     target = check_ip(ip)
     with _session(cfg, ctx) as client:
-        if not _query_ip(client, cfg, target):
+        entry = _query_entry(client, cfg, target)
+        if entry is None:
             log.info("IP 不在黑名单，跳过：%s", target)
+            return
+        if not _is_blocked(entry):
+            # 白名单/停用条目不是我们下发的，删掉等于改人工配置，只提示不动它
+            log.info("%s 在设备上是%s，不是本平台下发的条目，不删除", target, _entry_kind(entry))
             return
         response = send(client, "DELETE", f"{_base_path(cfg)}/whiteblacklist/{target}")
         if response.status_code >= 400:

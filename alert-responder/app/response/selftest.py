@@ -22,6 +22,7 @@ class FakeSangfor:
 
     def __init__(self) -> None:
         self.blocked = set()
+        self.whitelisted = set()  # 设备上已存在的白名单条目（黑白名单同一张表，url 唯一）
         self.calls = []
         self.login_fails = False
         self.network_down = False
@@ -56,15 +57,32 @@ class FakeSangfor:
                         200,
                         json={"code": 0, "message": "成功", "data": self._entry(ip)},
                     )
+                if ip in self.whitelisted:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "code": 0,
+                            "message": "成功",
+                            "data": {"enable": True, "type": "WHITE", "urlType": "ip", "url": ip},
+                        },
+                    )
                 return httpx.Response(200, json={"code": 1, "message": "黑名单不存在"})
             if request.method == "DELETE":
                 if not self.ignore_unblock:
                     self.blocked.discard(ip)
+                    self.whitelisted.discard(ip)
                 return httpx.Response(200, json={"code": 0, "message": "成功"})
         if path == f"{self.prefix}/whiteblacklist":
             if request.method == "POST":
+                url = json.loads(request.content)["url"]
+                if url in self.whitelisted:
+                    # 真机行为：同一 url 只能有一条，白名单占位时回 code=17
+                    return httpx.Response(
+                        200,
+                        json={"code": 17, "message": f'黑白名单["{url}"] 已存在', "data": ""},
+                    )
                 if not self.ignore_block:
-                    self.blocked.add(json.loads(request.content)["url"])
+                    self.blocked.add(url)
                 return httpx.Response(200, json={"code": 0, "message": "成功"})
             if request.method == "GET":
                 items = [self._entry(ip) for ip in sorted(self.blocked)]
@@ -208,7 +226,8 @@ class FakeTopsec:
     """天融信 WebUI 表单接口：响应带 `?[token}?` 前缀且 token 轮转，非登录接口必须带 cookie 与 codeRun。"""
 
     def __init__(self) -> None:
-        self.blocked = {}  # ip -> {direction}；3.7 同一 IP 只允许一条记录，旧版本可两条
+        self.static = {}  # 静态黑名单（blackWhite）：ip -> {direction}
+        self.blocked = {}  # 黑名单传播（blackListSpread）五元组：ip -> {direction}
         self.calls = []
         self.counter = 0
         self.login_fails = False
@@ -218,16 +237,51 @@ class FakeTopsec:
         self.stale_token = 0
         self.last_token = ""
         self.no_restlogin = False  # 模拟老固件没有 restLogin 接口（返回 404）
-        self.reject_search = False  # 模拟按 IP 精确查询被拒（如保留段地址）
-        self.allow_multi = False  # 模拟旧版本：同一 IP 允许源、目的各一条
-        self.groups = ["default_group"]  # 设备上存在的策略组
-        self.add_groups = []  # 每次添加实际用的 group_name
-        self.add_directions = []  # 每次添加实际下发的 direction（含被拒的）
+        self.static_ok = True  # 模拟新固件：静态黑名单可用；False = 老固件只有黑名单传播
+        self.groups = ["default_group"]  # 静态黑名单的策略组
+        self.allow_multi = False  # 静态黑名单同一 IP 是否允许源、目的各一条（3.7 只允许一条）
+        self.reject_add = False  # 模拟设备拒绝目的方向五元组
+        self.reject_search = False  # 模拟按 IP 精确查询被拒
+        self.ranges = []  # 人工建的地址段条目 [(start, end)]，删除接口不支持
+        self.add_directions = []  # 每次添加实际用到的方向（含被拒的）
+        self.add_groups = []  # 静态黑名单每次添加带的 group_name
+        self.deleted = []  # 每次删除的载荷（ipaddr 或五元组）
 
     def _wrap(self, body: str) -> str:
         self.counter += 1
         self.last_token = f"tp-{self.counter}"
         return "?[" + self.last_token + "}?" + body
+
+    @staticmethod
+    def _tuple_row(sip: str, dip: str) -> dict:
+        """真机的五元组条目：有值的维度是字符串，不限的维度是空数组。"""
+        return {
+            "sip": sip or [],
+            "dip": dip or [],
+            "l4_protocol": [],
+            "sport": [],
+            "dport": [],
+            "smac": [],
+            "ip_start": [],
+            "ip_end": [],
+            "app_name": [],
+            "role_name": [],
+            "count": "0",
+            "status": "valid",
+            "mark": "tuple",
+        }
+
+    def all_rows(self) -> list:
+        """黑名单传播模块的全量条目：五元组 + 人工建的地址段。"""
+        rows = []
+        for ip, directions in sorted(self.blocked.items()):
+            for direction in sorted(directions):
+                rows.append(self._tuple_row(ip if direction == "src" else "", ip if direction == "dst" else ""))
+        for start, end in self.ranges:
+            row = self._tuple_row("", "")
+            row.update({"ip_start": start, "ip_end": end, "mark": "range"})
+            rows.append(row)
+        return rows
 
     def handle(self, request: httpx.Request):
         path = request.url.path
@@ -285,48 +339,86 @@ class FakeTopsec:
 
         if path in ("/home/index/logout/", "/home/restLogout/"):
             return httpx.Response(200, text=self._wrap('{"result":true,"data":"success"}'))
-        if path == "/home/default/blackWhite/addrStaticBlackSearch/":
-            if self.reject_search:
-                return httpx.Response(
-                    200, text=self._wrap('{"result":false,"data":"无效输入，分析错误"}')
-                )
-            ip = params.get("commands[0][pf_blacklist_static_search][detail]")
-            rows = [
-                {"ipaddr": ip, "direction": direction, "mark": "ip", "status": "valid"}
-                for direction in sorted(self.blocked.get(ip, set()))
-            ]
-            return httpx.Response(
-                200,
-                text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
-            )
         if path == "/home/default/blackListSpread/showAll/":
-            rows = [
-                {"ipaddr": ip, "direction": direction, "mark": "ip"}
-                for ip, directions in sorted(self.blocked.items())
-                for direction in sorted(directions)
-            ]
+            rows = self.all_rows()
             return httpx.Response(
                 200,
                 text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
             )
+        if path == "/home/default/blackListSpread/add/":
+            source = form.get("commands[0][pf_blacklist_add][sip]") or ""
+            dest = form.get("commands[0][pf_blacklist_add][dip]") or ""
+            direction = "src" if source else "dst"
+            ip = source or dest
+            self.add_directions.append(direction)
+            if self.reject_add and direction == "dst":
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"五元组添加存在错误"}'))
+            if not ip:
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"无效输入，分析错误"}'))
+            if direction in self.blocked.get(ip, set()):
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"五元组已存在"}'))
+            self.blocked.setdefault(ip, set()).add(direction)
+            return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
+        # ---------- 静态黑名单（新固件）----------
         if path == "/home/default/blackWhite/showPolicyGroup/":
+            if not self.static_ok:
+                # 真机没有这套配置时就是这个回复，用作落点探测
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"cfg文件不存在"}'))
             rows = [{"name": name} for name in self.groups]
             return httpx.Response(
                 200,
                 text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
             )
+        if path == "/home/default/blackWhite/addrStaticBlackSearch/":
+            if not self.static_ok or self.reject_search:
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"无效输入，分析错误"}'))
+            ip = params.get("commands[0][pf_blacklist_static_search][detail]")
+            rows = [
+                {"ipaddr": ip, "direction": direction, "mark": "ip", "status": "valid"}
+                for direction in sorted(self.static.get(ip, set()))
+            ]
+            return httpx.Response(
+                200,
+                text=self._wrap(json.dumps({"rows": rows, "total": len(rows), "result": True})),
+            )
         if path == "/home/default/blackWhite/whiteIpAdd/":
-            self.add_groups.append(form.get("commands[0][blacklist_cfg_add_ip][group_name]"))
-            ip = form.get("commands[0][blacklist_cfg_add_ip][ipaddr]")
-            direction = form.get("commands[0][blacklist_cfg_add_ip][direction]")
+            group = form.get("commands[0][blacklist_cfg_add_ip][group_name]")
+            ip = form.get("commands[0][blacklist_cfg_add_ip][ipaddr]") or ""
+            direction = form.get("commands[0][blacklist_cfg_add_ip][direction]") or ""
+            self.add_groups.append(group)
             self.add_directions.append(direction)
-            if ip in self.blocked and not self.allow_multi:
+            if not self.static_ok:
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"cfg文件不存在"}'))
+            if group and group not in self.groups:
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"cfg文件不存在"}'))
+            if ip in self.static and not self.allow_multi:
                 # 3.7 真机行为：同一 IP 再次新增直接报错，第二个方向补不上
                 return httpx.Response(200, text=self._wrap('{"result":false,"data":"ip黑名单添加存在错误"}'))
-            self.blocked.setdefault(ip, set()).add(direction)
+            self.static.setdefault(ip, set()).add(direction)
             return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
         if path == "/home/default/blackListSpread/deleteLots/":
-            self.blocked.pop(form.get("commands[0][blacklist_cfg_delete_ip][0][ipaddr]"), None)
+            # 静态黑名单按 ipaddr 删
+            ipaddr = form.get("commands[0][blacklist_cfg_delete_ip][0][ipaddr]")
+            if ipaddr:
+                self.deleted.append({"ipaddr": ipaddr})
+                if not self.static.pop(ipaddr, None):
+                    # 真机在只有黑名单传播模块时就是这个回复
+                    return httpx.Response(200, text=self._wrap('{"result":false,"data":"c"}'))
+                return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
+            # 五元组删除：五个维度都要带回，按 sip/dip 定位是哪一条
+            tuple_ = {
+                field: form.get(f"commands[0][pf_blacklist_delete][0][{field}]") or ""
+                for field in ("sip", "sport", "dip", "dport", "l4_protocol")
+            }
+            self.deleted.append(tuple_)
+            ip = tuple_["sip"] or tuple_["dip"]
+            direction = "src" if tuple_["sip"] else "dst"
+            directions = self.blocked.get(ip) or set()
+            if direction not in directions:
+                return httpx.Response(200, text=self._wrap('{"result":false,"data":"c"}'))
+            directions.discard(direction)
+            if not directions:
+                self.blocked.pop(ip, None)
             return httpx.Response(200, text=self._wrap('{"result":true,"data":[]}'))
         return httpx.Response(404, text="not found")
 
@@ -549,6 +641,27 @@ def check_sangfor(spec, fake: FakeSangfor, failures) -> None:
     finally:
         fake.missing_url_type = False
 
+    # 设备上已有同名白名单条目：不改人工配置，明确报冲突，且不盲目 POST
+    fake.whitelisted.add("10.8.8.8")
+    try:
+        fake.calls.clear()
+        try:
+            spec.call("block")("10.8.8.8", cfg, ctx)
+            expect(False, "白名单冲突应抛 DeviceError", failures)
+        except DeviceError as exc:
+            expect(exc.code == "blacklist_conflict", f"白名单冲突的失败码（{exc.code}）", failures)
+            expect(exc.retryable is False, "白名单冲突不可重试", failures)
+            expect("白名单" in exc.message, f"错误信息点明白名单（{exc.message}）", failures)
+        expect(
+            not [1 for method, path in fake.calls if method == "POST" and path.endswith("/whiteblacklist")],
+            "冲突时不盲目下发添加",
+            failures,
+        )
+        spec.call("unblock")("10.8.8.8", cfg, ctx)
+        expect("10.8.8.8" in fake.whitelisted, "解封不动白名单条目", failures)
+    finally:
+        fake.whitelisted.discard("10.8.8.8")
+
     spec.call("teardown")(ctx)
 
     spec.call("block")("10.2.2.2", cfg, None)
@@ -722,12 +835,12 @@ def check_topsec(spec, fake: FakeTopsec, failures) -> None:
     expect("pwdlen" not in fake.login_form, "restLogin 不传明文 pwdlen", failures)
     expect(fake.login_form.get("name") == "api-admin", "登录传管理员名称", failures)
 
+    # ---- 新固件：静态黑名单可用，走 whiteIpAdd（3.7 同一 IP 只允许一条记录）----
     fake.missing_cookie = fake.missing_code_run = fake.stale_token = 0
     spec.call("block")("10.5.5.5", cfg)
-    expect("10.5.5.5" in fake.blocked, "block 写入黑名单", failures)
     expect(
-        fake.blocked.get("10.5.5.5") == {"src"},
-        f"设备只允许一个方向时按源方向封禁（实际 {sorted(fake.blocked.get('10.5.5.5') or [])}）",
+        fake.static.get("10.5.5.5") == {"src"},
+        f"静态黑名单可用时按源方向封禁（实际 {sorted(fake.static.get('10.5.5.5') or [])}）",
         failures,
     )
     expect(
@@ -735,42 +848,88 @@ def check_topsec(spec, fake: FakeTopsec, failures) -> None:
         f"源方向必封、目的方向也尝试下发（实际 {fake.add_directions}）",
         failures,
     )
-    expect(fake.add_groups == ["default_group", "default_group"], f"添加带策略组名（实际 {fake.add_groups}）", failures)
+    expect(fake.add_groups == ["default_group", "default_group"], f"静态黑名单带策略组名（实际 {fake.add_groups}）", failures)
     fake.add_directions.clear()
     spec.call("block")("10.5.5.5", cfg)
     expect(fake.add_directions == ["dst"], f"重复 block 只补目的方向（实际 {fake.add_directions}）", failures)
 
-    # 旧版本允许同一 IP 源、目的各一条：两个方向都落地
+    # 旧版本允许同一 IP 源、目的各一条
     fake.allow_multi = True
     try:
         spec.call("block")("10.11.11.11", cfg)
         expect(
-            fake.blocked.get("10.11.11.11") == {"src", "dst"},
-            f"设备允许双方向时源、目的各一条（实际 {sorted(fake.blocked.get('10.11.11.11') or [])}）",
+            fake.static.get("10.11.11.11") == {"src", "dst"},
+            f"设备允许双方向时源、目的各一条（实际 {sorted(fake.static.get('10.11.11.11') or [])}）",
             failures,
         )
     finally:
         fake.allow_multi = False
 
-    # 设备上已有目的方向的历史条目：同一 IP 只允许一条，须先删再按源方向重建
-    fake.blocked["10.8.8.8"] = {"dst"}
+    # 已有目的方向的历史条目：同一 IP 只允许一条，须先删再按源方向重建
+    fake.static["10.8.8.8"] = {"dst"}
     fake.calls.clear()
     spec.call("block")("10.8.8.8", cfg)
-    expect(fake.blocked.get("10.8.8.8") == {"src"}, "已有目的方向条目时改写为源方向", failures)
+    expect(fake.static.get("10.8.8.8") == {"src"}, "已有目的方向条目时改写为源方向", failures)
     expect(
         "/home/default/blackListSpread/deleteLots/" in [url for _, url in fake.calls],
         "改写前先删除旧条目",
         failures,
     )
     spec.call("unblock")("10.5.5.5", cfg)
-    expect("10.5.5.5" not in fake.blocked, "unblock 解除封禁", failures)
+    expect("10.5.5.5" not in fake.static, "静态黑名单按 ipaddr 解封", failures)
+    expect(
+        {"ipaddr": "10.5.5.5"} in fake.deleted,
+        f"静态条目解封下发 ipaddr（实际 {fake.deleted[:2]}）",
+        failures,
+    )
     expect(fake.missing_cookie == 0, "非登录接口都带 Cookie", failures)
     expect(fake.missing_code_run == 0, "非登录接口都带 codeRun", failures)
     expect(fake.stale_token == 0, "使用上一次响应轮转出的 token", failures)
 
+    # ---- 老固件：静态黑名单模块不可用（cfg文件不存在），自动改走黑名单传播五元组 ----
+    fake.static_ok = False
+    try:
+        fake.add_directions.clear()
+        fake.calls.clear()
+        spec.call("block")("10.6.6.6", cfg)
+        expect(
+            fake.blocked.get("10.6.6.6") == {"src", "dst"},
+            f"静态黑名单不可用时按五元组封禁（实际 {sorted(fake.blocked.get('10.6.6.6') or [])}）",
+            failures,
+        )
+        expect(
+            "/home/default/blackWhite/whiteIpAdd/" not in [url for _, url in fake.calls],
+            "探测失败后不再打静态黑名单的添加接口",
+            failures,
+        )
+
+        # 人工建的地址段条目已覆盖该地址：两个方向都算封住
+        fake.ranges = [("10.9.0.0", "10.9.255.255")]
+        fake.add_directions.clear()
+        spec.call("block")("10.9.1.1", cfg)
+        expect(fake.add_directions == [], f"地址段已覆盖该地址时不再下发（实际 {fake.add_directions}）", failures)
+        fake.ranges = []
+
+        # 设备不允许目的方向五元组：源方向成功即算封禁成功
+        fake.reject_add = True
+        spec.call("block")("10.12.12.12", cfg)
+        expect(fake.blocked.get("10.12.12.12") == {"src"}, "目的方向被拒不影响封禁结论", failures)
+        fake.reject_add = False
+
+        fake.deleted.clear()
+        spec.call("unblock")("10.6.6.6", cfg)
+        expect("10.6.6.6" not in fake.blocked, "五元组条目按原值解封", failures)
+        expect(
+            [row for row in fake.deleted if row.get("sip") == "10.6.6.6" or row.get("dip") == "10.6.6.6"],
+            f"解封下发的是条目五元组（实际 {fake.deleted}）",
+            failures,
+        )
+    finally:
+        fake.static_ok = True
+
     fake.calls.clear()
-    spec.call("block")("10.6.6.6", cfg)
-    expect("10.6.6.6" in fake.blocked, "平台只传两个位置参数时自行登录并封禁", failures)
+    spec.call("block")("10.13.13.13", cfg)
+    expect("10.13.13.13" in fake.static, "平台只传两个位置参数时自行登录并封禁", failures)
     expect("/home/restLogout/" in [url for _, url in fake.calls], "临时会话结束后退登", failures)
 
     fake.login_fails = True
@@ -781,15 +940,6 @@ def check_topsec(spec, fake: FakeTopsec, failures) -> None:
         expect(exc.retryable is False, f"登录失败标记为不可重试（{exc.code}）", failures)
     finally:
         fake.login_fails = False
-
-    # 按 IP 的精确查询被设备拒绝时，回退到 showAll 全量比对
-    fake.reject_search = True
-    try:
-        spec.call("block")("10.5.5.5", cfg)
-        expect("10.5.5.5" in fake.blocked, "精确查询被拒时回退全量比对", failures)
-        expect("/home/default/blackListSpread/showAll/" in [url for _, url in fake.calls], "回退走 showAll", failures)
-    finally:
-        fake.reject_search = False
 
     # 老固件没有 /home/restLogin/（返回 404）：应自动改走 /home/login/addNoCode/
     fake.no_restlogin = True

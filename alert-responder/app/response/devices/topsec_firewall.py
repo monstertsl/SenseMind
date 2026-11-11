@@ -2,19 +2,27 @@
 
 调用约定：
 
-- 登录首选 `POST /home/restLogin/`：表单 `name` + `password` + `ngtosAuth`，两者都用 AES-CBC
-  加密（密钥/偏移量均为 16 个 `1`、零填充、输出 base64），`ngtosAuth` 是加密后的明文长度；
-  token 由响应的 `tokens` 数组给出而非响应前缀。
-- 老固件没有该接口（HTTP 404），此时改走 `POST /home/login/addNoCode/`：`name` + `password` +
-  `pwdlen`，密码用 AES-CBC 但密钥/偏移量换成 `ngfwrestapilogin`，`pwdlen` 是明文长度。
-  响应正文是 base64 JSON，`data.authid` 即 userMark，`data.secret` 参与 codeRun。
+- 登录有两个接口：优先 `POST /home/restLogin/`，该接口不存在（HTTP 404）时回落到
+  `POST /home/login/addNoCode/`。
+  - `restLogin`：表单 `name` + `password` + `ngtosAuth`，两者都用 AES-CBC 加密（密钥/偏移量均为
+    16 个 `1`、零填充、输出 base64），`ngtosAuth` 是加密后的明文长度；token 由响应的 `tokens`
+    数组给出而非响应前缀。
+  - `addNoCode`（老固件）：`name` + `password` + `pwdlen`，密码用 AES-CBC 但密钥/偏移量换成
+    `ngfwrestapilogin`，`pwdlen` 是明文长度；响应正文是 base64 JSON，`data.authid` 即 userMark，
+    `data.secret` 参与 codeRun。
+- 建议在设备上关掉登录验证码：不同版本固件的验证码机制不一样，开着可能挡住其中一个接口。
 - 除登录外每个接口都必须带登录返回的 Cookie、`Referer` 与 `Content-Type` 表头。
 - `token`：响应里 `?[` 与 `}?` 之间的字符串，每次请求都会换新的，下一次请求必须用最新的。
 - `codeRun` = `md5(secret + token + url + commands 的 JSON)`，JSON 按设备侧的数组形态
   （`[{"pf_blacklist_add":{"sip":"1.1.1.1"}}]`）序列化，不能带数字键。
 - 参数键保留字面量：`commands[0][pf_blacklist_add][sip]` 里的 `[` `]` 不能百分号编码，
   否则设备解析不出命令，返回「无效输入，分析错误」。
-- 黑名单落点：`资源管理 → 黑名单传播`（`blackListSpread`），按五元组下发与删除。
+- 黑名单落点：「安全策略 → 黑白名单 → 静态黑名单」。可用的 HTTP 接口有两套，由 `_use_static()` 探测后二选一：
+  - 接口 A `blackWhite`（3.7 起提供）：`whiteIpAdd` 添加（`ipaddr` + `direction`，策略组名只能用策略组
+    接口返回的），`addrStaticBlackSearch` 按 IP 查，删除用 `blacklist_cfg_delete_ip`。
+  - 接口 B `blackListSpread`（老固件只有这套）：`add` 下五元组 `sip`/`dip`，`showAll` 拉全量本地比对，
+    删除按条目原值下发 `pf_blacklist_delete`（五个维度都要带，不限的传空串）。
+- 探测看「查策略组」：该接口报 `cfg文件不存在` 说明 `blackWhite` 这套接口在设备上不可用，添加也必然失败。
 """
 
 import base64
@@ -59,7 +67,7 @@ MANIFEST = {
             "help": "登录密码明文，脚本按设备要求自行加密",
         },
     ],
-    # 未实现 list_blocked：搜索接口未提供稳定分页，需真机核验后再开放
+    # 未实现 list_blocked：设备返回的是五元组条目，与平台「已封禁 IP 列表」的语义不对应
     "capabilities": {"ipv6": False},
 }
 
@@ -68,16 +76,25 @@ log = logger("topsec_firewall")
 LOGIN_PATH = "/home/login/addNoCode/"
 LOGOUT_PATH = "/home/index/logout/"
 RESTLOGOUT_PATH = "/home/restLogout/"
-# 静态黑名单（WebUI：安全策略 → 黑名单 → 静态黑名单）：查/加在 blackWhite 模块，删除在 blackListSpread
-BLACKLIST_SEARCH = "/home/default/blackWhite/addrStaticBlackSearch/"
-BLACKLIST_ADD = "/home/default/blackWhite/whiteIpAdd/"
+# 落点：安全策略 → 黑白名单 → 静态黑名单。能操作这份名单的 HTTP 接口有两套，按设备能力二选一
+# （详见 _use_static）：
+#   static = blackWhite，新固件，条目 mark=ip、带 ipaddr + direction
+#   spread = blackListSpread，老固件，条目 mark=tuple、是五元组 sip/dip
+STATIC_SEARCH = "/home/default/blackWhite/addrStaticBlackSearch/"
+STATIC_ADD = "/home/default/blackWhite/whiteIpAdd/"
+STATIC_POLICY_GROUP = "/home/default/blackWhite/showPolicyGroup/"
+SPREAD_ADD = "/home/default/blackListSpread/add/"
+SPREAD_SHOW_ALL = "/home/default/blackListSpread/showAll/"
+# 两套落点共用同一个删除入口，靠命令名区分：静态黑名单 blacklist_cfg_delete_ip、五元组 pf_blacklist_delete
 BLACKLIST_DELETE = "/home/default/blackListSpread/deleteLots/"
-BLACKLIST_SHOW_ALL = "/home/default/blackListSpread/showAll/"
-POLICY_GROUP = "/home/default/blackWhite/showPolicyGroup/"
-# 源方向必须封住（只有它拦得住攻击源主动发来的流量）；目的方向尽力下发，
-# 3.7 设备同一 IP 只允许一条记录，第二条会被拒，属设备限制而非失败
+# 源方向必须封住（只有它拦得住攻击源主动发来的流量）；目的方向尽力下发，被拒只记日志
 BLOCK_DIRECTIONS = ("src", "dst")
-GROUP_NAME = "default_group"
+# 五元组里方向对应的维度
+DIRECTION_FIELDS = {"src": "sip", "dst": "dip"}
+# 五元组删除要原样带回的维度，空数组表示该维度不限，下发空串
+TUPLE_FIELDS = ("sip", "sport", "dip", "dport", "l4_protocol")
+# 静态黑名单的策略组：只能用设备列表里实际存在的名字，查不到就不传
+DEFAULT_GROUP = "default_group"
 BLOCK_COMMENT = "SenseMind联动封禁"
 
 # 设备登录表单的口令加密参数（官方文档固定值）
@@ -179,7 +196,8 @@ class _Session:
         self.user_mark = user_mark
         self.secret = secret
         self.rest_login = rest_login
-        self.group_name = ""  # 首次封禁时从策略组接口取，避免把组名写死
+        self.mode = ""  # ""=还没探测；"static"=静态黑名单；"spread"=黑名单传播五元组
+        self.group = ""  # 静态黑名单的策略组，空串表示不传
 
     def _headers(self) -> dict:
         base = str(self.client.base_url).rstrip("/")
@@ -323,31 +341,41 @@ def test_connection(cfg: dict) -> ProbeResult:
     return ProbeResult(ok=True, message="登录成功")
 
 
-def _matches(row: dict, ip: str) -> bool:
-    """判断查询返回的一条记录是否就是这个 IP。
+def _value(row: dict, key: str) -> str:
+    """取条目里某个维度的值：单值字段是字符串，多值字段是数组（空数组表示该维度不限）。"""
+    value = row.get(key)
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    return "" if value is None else str(value).strip()
 
-    静态黑名单 IP 条目看 `ipaddr`（`mark=ip`），五元组条目看 `sip`，地址段条目看 `ip_start`/`ip_end`。
-    """
-    if str(row.get("ipaddr") or "").strip() == ip:
-        return True
 
-    value = row.get("sip")
-    singles = value if isinstance(value, list) else [value]
-    for item in singles:
-        if item and str(item) == ip:
-            return True
+def _holds(row: dict, key: str, ip: str) -> bool:
+    """条目的某个维度里是否包含这个 IP（多值字段逐个比）。"""
+    value = row.get(key)
+    items = value if isinstance(value, list) else [value]
+    return any(item and str(item).strip() == ip for item in items)
 
-    start = row.get("ip_start")
-    end = row.get("ip_end")
-    start = start[0] if isinstance(start, list) and start else start
-    end = end[0] if isinstance(end, list) and end else end
+
+def _range_covers(row: dict, ip: str) -> bool:
+    start = _value(row, "ip_start")
+    end = _value(row, "ip_end")
     if not start or not end:
         return False
     try:
         target = ipaddress.ip_address(ip)
-        return ipaddress.ip_address(str(start)) <= target <= ipaddress.ip_address(str(end))
+        return ipaddress.ip_address(start) <= target <= ipaddress.ip_address(end)
     except ValueError:
         return False
+
+
+def _matches(row: dict, ip: str) -> bool:
+    """条目是否命中该 IP：静态黑名单看 ipaddr，五元组看 sip/dip，地址段看 ip_start/ip_end。"""
+    return (
+        _holds(row, "ipaddr", ip)
+        or _holds(row, "sip", ip)
+        or _holds(row, "dip", ip)
+        or _range_covers(row, ip)
+    )
 
 
 def _query(session: _Session, path: str, commands: dict, action: str) -> dict:
@@ -359,27 +387,6 @@ def _query(session: _Session, path: str, commands: dict, action: str) -> dict:
     return payload
 
 
-def _query_rows(session: _Session, ip: str) -> list:
-    """按 IP 查询静态黑名单；设备解析不了该地址（如 240/4 保留段）时退化为拉全量比对。"""
-    commands = [{"pf_blacklist_static_search": {"detail": ip, "from": "1", "num": "20"}}]
-    try:
-        payload = _query(session, BLACKLIST_SEARCH, commands, "查询黑名单")
-        return payload.get("rows") or []
-    except DeviceError as exc:
-        if exc.code != "vendor_rejected":
-            raise
-        log.warning("%s，改为拉取全部记录比对", exc)
-    payload = _query(session, BLACKLIST_SHOW_ALL, {"0": {"pf_blacklist_show_all": ""}}, "查询全部黑名单")
-    rows = payload.get("rows") or []
-    log.info("全量查询返回 %s 条（total=%s）", len(rows), payload.get("total"))
-    return rows
-
-
-def _entries(session: _Session, ip: str) -> list:
-    rows = [row for row in _query_rows(session, ip) if isinstance(row, dict)]
-    return [row for row in rows if _matches(row, ip)]
-
-
 def _expect_result(body: str, action: str) -> None:
     payload = _json_body(body, action)
     if payload.get("result") is not True:
@@ -388,82 +395,186 @@ def _expect_result(body: str, action: str) -> None:
         raise DeviceError("vendor_rejected", f"{action}失败：{reason}", retryable=False)
 
 
-def _group_name(session: _Session) -> str:
-    """取设备上实际存在的策略组名：优先默认组，其次第一个组，查不到再用文档示例值。"""
-    if session.group_name:
-        return session.group_name
-    names = []
+def _use_static(session: _Session) -> bool:
+    """探测该设备能用的落点，返回 True 表示走静态黑名单，False 表示走黑名单传播五元组。
+
+    探针用「查策略组」而不是「添加」：3.7 的静态黑名单同一 IP 只允许一条记录，添加被拒
+    不等于模块不可用；而策略组接口报「cfg文件不存在」就说明这套配置在设备上根本不存在，
+    此时 whiteIpAdd 无论带不带 group_name 都加不进去（真机实测）。
+    """
+    if session.mode:
+        return session.mode == "static"
     try:
         payload = _query(
             session,
-            POLICY_GROUP,
+            STATIC_POLICY_GROUP,
             [{"blacklist_profile_group_show": {"from": "1", "num": "20"}}],
             "查询策略组",
         )
-        names = [
-            str(row.get("name") or "").strip()
-            for row in (payload.get("rows") or [])
-            if isinstance(row, dict) and str(row.get("name") or "").strip()
-        ]
     except DeviceError as exc:
-        log.warning("查询策略组失败，沿用 %s：%s", GROUP_NAME, exc)
-    session.group_name = GROUP_NAME if GROUP_NAME in names or not names else names[0]
-    log.info("使用策略组：%s（设备上的组：%s）", session.group_name, ", ".join(names) or "未知")
-    return session.group_name
+        log.warning("静态黑名单接口 blackWhite 不可用（%s），改用黑名单传播接口 blackListSpread", exc)
+        session.mode = "spread"
+        return False
+    names = [
+        str(row.get("name") or "").strip()
+        for row in (payload.get("rows") or [])
+        if isinstance(row, dict) and str(row.get("name") or "").strip()
+    ]
+    if DEFAULT_GROUP in names:
+        session.group = DEFAULT_GROUP
+    else:
+        session.group = names[0] if names else ""
+    session.mode = "static"
+    log.info("使用静态黑名单接口 blackWhite（策略组：%s）", session.group or "不传")
+    return True
 
 
-def _add_rule(ip: str, direction: str, group: str) -> dict:
-    return {
-        "blacklist_cfg_add_ip": {
-            "ipaddr": ip,
-            "enable": "yes",
-            "direction": direction,
-            "except_priv_ip": "off",
-            "group_name": group,
-            "comment": BLOCK_COMMENT,
-        }
+def _entries(session: _Session, ip: str) -> list:
+    """该 IP 命中的全部条目。
+
+    静态黑名单先按 IP 精确搜（`detail`），设备解析不了该输入时退化为 `showAll` 拉全量本地比对；
+    五元组没有可按 IP 搜的可用接口，直接 `showAll` 全量比对。
+    """
+    if _use_static(session):
+        try:
+            payload = _query(
+                session,
+                STATIC_SEARCH,
+                [{"pf_blacklist_static_search": {"detail": ip, "from": "1", "num": "20"}}],
+                "查询黑名单",
+            )
+            rows = [row for row in (payload.get("rows") or []) if isinstance(row, dict)]
+            hits = [row for row in rows if _matches(row, ip)]
+            log.info("静态黑名单返回 %s 条，命中 %s 条", len(rows), len(hits))
+            return hits
+        except DeviceError as exc:
+            log.warning("%s，改为拉取全部记录比对", exc)
+    payload = _query(session, SPREAD_SHOW_ALL, {"0": {"pf_blacklist_show_all": ""}}, "查询全部黑名单")
+    rows = [row for row in (payload.get("rows") or []) if isinstance(row, dict)]
+    hits = [row for row in rows if _matches(row, ip)]
+    log.info("黑名单共 %s 条（total=%s），命中该地址 %s 条", len(rows), payload.get("total"), len(hits))
+    return hits
+
+
+def _covered(entries: list, ip: str) -> set:
+    """已封住的方向。
+
+    静态黑名单条目自带 `direction`；五元组条目没有方向字段，`sip=<ip>` 即源方向、`dip=<ip>` 即目的方向。
+    地址段条目两个方向都算封住。
+    """
+    have = set()
+    for row in entries:
+        if _range_covers(row, ip):
+            have.update(BLOCK_DIRECTIONS)
+            continue
+        direction = str(row.get("direction") or "").strip()
+        if direction in BLOCK_DIRECTIONS:
+            have.add(direction)
+            continue
+        if _holds(row, "sip", ip):
+            have.add("src")
+        if _holds(row, "dip", ip):
+            have.add("dst")
+    return have
+
+
+def _add_static(session: _Session, ip: str, direction: str) -> None:
+    rule = {
+        "ipaddr": ip,
+        "enable": "yes",
+        "direction": direction,
+        "except_priv_ip": "off",
+        "comment": BLOCK_COMMENT,
     }
+    if session.group:
+        rule["group_name"] = session.group
+    _expect_result(session.post(STATIC_ADD, [{"blacklist_cfg_add_ip": rule}]), "添加黑名单")
 
 
-def _add_direction(session: _Session, ip: str, direction: str, group: str) -> None:
-    _expect_result(session.post(BLACKLIST_ADD, [_add_rule(ip, direction, group)]), "添加黑名单")
+def _add_tuple(session: _Session, ip: str, direction: str) -> None:
+    _expect_result(
+        session.post(SPREAD_ADD, [{"pf_blacklist_add": {DIRECTION_FIELDS[direction]: ip}}]),
+        "添加黑名单",
+    )
+
+
+def _delete_entry(session: _Session, row: dict) -> None:
+    """按条目形态选删除命令：静态黑名单按 ipaddr 删，五元组按条目原值删。"""
+    if _value(row, "ip_start"):
+        log.warning("地址段条目不支持按 IP 删除，需在设备上处理")
+        return
+    ipaddr = _value(row, "ipaddr")
+    if ipaddr:
+        log.info("删除静态黑名单条目：ipaddr=%s", ipaddr)
+        _expect_result(
+            session.post(BLACKLIST_DELETE, [{"blacklist_cfg_delete_ip": [{"ipaddr": ipaddr}]}]),
+            "删除黑名单",
+        )
+        return
+    tuple_ = {field: _value(row, field) for field in TUPLE_FIELDS}
+    log.info("删除五元组条目：%s", " ".join(f"{key}={value or '不限'}" for key, value in tuple_.items()))
+    _expect_result(session.post(BLACKLIST_DELETE, [{"pf_blacklist_delete": [tuple_]}]), "删除黑名单")
+
+
+def _block_static(session: _Session, target: str, entries: list, have: set) -> None:
+    if "src" not in have:
+        try:
+            _add_static(session, target, "src")
+        except DeviceError as exc:
+            if not have:
+                raise
+            # 3.7 同一 IP 只允许一条记录，旧条目占着位置，删掉才有位置放源方向
+            log.warning("源方向被拒（%s），已有方向 %s，删除后重建：%s", exc, "/".join(sorted(have)), target)
+            for row in entries:
+                _delete_entry(session, row)
+            have.clear()
+            _add_static(session, target, "src")
+        log.info("源方向封禁成功：%s", target)
+    if "dst" not in have:
+        try:
+            _add_static(session, target, "dst")
+            log.info("目的方向封禁成功：%s", target)
+        except DeviceError as exc:
+            log.warning("目的方向未下发（设备只允许一个方向时属正常）：%s（%s）", target, exc)
+
+
+def _block_tuple(session: _Session, target: str, have: set) -> None:
+    for direction in BLOCK_DIRECTIONS:
+        if direction in have:
+            log.info("%s 方向已封禁，跳过：%s", direction, target)
+            continue
+        try:
+            _add_tuple(session, target, direction)
+            log.info("%s 方向封禁成功：%s（%s=%s）", direction, target, DIRECTION_FIELDS[direction], target)
+        except DeviceError as exc:
+            # 源方向封不住等于没封，抛给平台记失败；目的方向只匹配「发往该 IP」的报文，尽力即可
+            if direction == BLOCK_DIRECTIONS[0]:
+                raise
+            log.warning("目的方向未下发（设备不允许该五元组时属正常）：%s（%s）", target, exc)
 
 
 def block(ip: str, cfg: dict, ctx=None) -> None:
     """ctx 仅为签名兼容：平台按 block(ip, cfg) 调用，不会传值。"""
     target = check_ip(ip)
     with _session(cfg) as session:
-        have = {str(row.get("direction") or "") for row in _entries(session, target)}
+        entries = _entries(session, target)
+        have = _covered(entries, target)
         if all(direction in have for direction in BLOCK_DIRECTIONS):
             log.info("IP 已按源、目的封禁，跳过：%s", target)
             return
-        group = _group_name(session)
-        if BLOCK_DIRECTIONS[0] not in have:
-            try:
-                _add_direction(session, target, BLOCK_DIRECTIONS[0], group)
-            except DeviceError as exc:
-                if not have:
-                    raise
-                # 设备只留一条记录时旧条目占着位置，删掉才有位置放源方向
-                log.warning("源方向被拒（%s），已有方向 %s，删除后重建：%s", exc, "/".join(sorted(have)), target)
-                body = session.post(BLACKLIST_DELETE, [{"blacklist_cfg_delete_ip": [{"ipaddr": target}]}])
-                _expect_result(body, "删除黑名单")
-                have.clear()
-                _add_direction(session, target, BLOCK_DIRECTIONS[0], group)
-        if BLOCK_DIRECTIONS[1] not in have:
-            try:
-                _add_direction(session, target, BLOCK_DIRECTIONS[1], group)
-            except DeviceError as exc:
-                log.warning("目的方向未下发（设备只允许一个方向时属正常）：%s（%s）", target, exc)
+        if _use_static(session):
+            _block_static(session, target, entries, have)
+        else:
+            _block_tuple(session, target, have)
 
 
 def unblock(ip: str, cfg: dict, ctx=None) -> None:
     """ctx 仅为签名兼容：平台按 unblock(ip, cfg) 调用，不会传值。"""
     target = check_ip(ip)
     with _session(cfg) as session:
-        if not _entries(session, target):
+        entries = _entries(session, target)
+        if not entries:
             log.info("IP 不在黑名单，跳过：%s", target)
             return
-        # 删除按 IP 下发，设备会一并清掉该地址的各方向条目
-        body = session.post(BLACKLIST_DELETE, [{"blacklist_cfg_delete_ip": [{"ipaddr": target}]}])
-        _expect_result(body, "删除黑名单")
+        for row in entries:
+            _delete_entry(session, row)

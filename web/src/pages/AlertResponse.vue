@@ -552,8 +552,7 @@ onMounted(refreshAll)
           </el-table-column>
         </el-table>
         <div v-else class="empty-tip">
-          暂无设备，点击右上角「添加联动设备」接入防火墙。当前可用类型：
-          {{ drivers.map((item) => item.display_name).join('、') || '无' }}
+          暂无设备，点击右上角「添加联动设备」接入。
         </div>
       </div>
     </section>

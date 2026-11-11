@@ -4,13 +4,17 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 from typing import Optional
-from elasticsearch import BadRequestError
+from elasticsearch import BadRequestError, NotFoundError
 from .es_reader import get_es_reader
 from . import get_cache
 from ..schemas import AlertListData, AlertItemData, AggregationData
 
 logger = logging.getLogger(__name__)
+
+# 详情按索引直取时只接受本系统的告警索引名，避免前端传入任意索引
+_AI_INDEX_RE = re.compile(r"^soc-ai-\d{4}\.\d{2}\.\d{2}$")
 
 
 def _hash_query(params: dict) -> str:
@@ -377,44 +381,47 @@ class QueryService:
         self.cache.set(cache_key, data.model_dump(by_alias=True, mode="json"), ttl=15)
         return data
 
-    def get_alert(self, doc_id: str) -> Optional[dict]:
-        """告警详情 + 关联原始日志"""
-        cache_key = f"alerts:detail:{doc_id}"
+    def get_alert(self, doc_id: str, doc_index: str = "") -> Optional[dict]:
+        """告警详情。
+
+        doc_index 取列表返回的 _index：soc-ai-* 下每天一个索引，跨索引按 _id
+        检索要广播到所有索引的所有分片，按索引直取只打单个分片。
+        """
+        doc_index = doc_index if _AI_INDEX_RE.match(doc_index or "") else ""
+        cache_key = f"alerts:detail:{doc_index}:{doc_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
+
+        h = self._get_ai_hit(doc_id, doc_index)
+        if h is None:
+            return None
+
+        result = {
+            "_id": h["_id"],
+            "_index": h["_index"],
+            "ai": h["_source"].get("ai", {}),
+        }
+        self.cache.set(cache_key, result, ttl=60)
+        return result
+
+    def _get_ai_hit(self, doc_id: str, doc_index: str) -> Optional[dict]:
+        """按索引直取文档；索引缺省或文档不存在时回退跨索引检索"""
+        if doc_index:
+            try:
+                resp = self.es.client.get(index=doc_index, id=doc_id)
+                return {"_id": resp["_id"], "_index": resp["_index"], "_source": resp["_source"]}
+            except NotFoundError:
+                pass
+            except Exception as e:
+                logger.warning("按索引读取告警失败，回退跨索引查询: %s", e)
 
         resp = self.es.client.search(
             index=self.es.ai_index,
             body={"query": {"term": {"_id": doc_id}}, "size": 1},
         )
         hits = resp["hits"]["hits"]
-        if not hits:
-            return None
-        h = hits[0]
-        ai = h["_source"].get("ai", {})
-        source_alert_id = ai.get("source_alert_id", "")
-
-        related_logs = []
-        if source_alert_id:
-            try:
-                rel = self.es.client.search(
-                    index=self.es.source_index,
-                    body={"query": {"term": {"_id": source_alert_id}}, "size": 1},
-                )
-                for r in rel["hits"]["hits"]:
-                    related_logs.append({"_id": r["_id"], "_index": r["_index"], "_source": r["_source"]})
-            except Exception as e:
-                logger.warning("关联原始日志查询失败: %s", e)
-
-        result = {
-            "_id": h["_id"],
-            "_index": h["_index"],
-            "ai": ai,
-            "related_logs": related_logs,
-        }
-        self.cache.set(cache_key, result, ttl=60)
-        return result
+        return hits[0] if hits else None
 
     def aggregations(self, field: str, time_range: str, time_from: str = None, time_to: str = None) -> AggregationData:
         """列内筛选项聚合"""

@@ -113,9 +113,13 @@ def rule_contents(
 
 
 @router.get("/{doc_id}")
-def get_alert(doc_id: str, current_user: AuthContext = Depends(get_current_user)):
+def get_alert(
+    doc_id: str,
+    index: str = Query("", description="文档所在索引，取列表返回的 _index"),
+    current_user: AuthContext = Depends(get_current_user),
+):
     service = get_query_service()
-    data = service.get_alert(doc_id)
+    data = service.get_alert(doc_id, index)
     if data is None:
         return ApiResponse(code=404, message="告警不存在", data=None, request_id=str(uuid.uuid4()))
     return ApiResponse(code=0, message="ok", data=data, request_id=str(uuid.uuid4()))

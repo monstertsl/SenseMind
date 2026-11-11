@@ -1081,6 +1081,8 @@ log.debug("配置：%s", mask_config(cfg))
 
 **「是否已封禁」要兼容固件差异**：部分固件返回 `urlType: "ip"`，部分固件**不回 `urlType`**，改用 `domain: 0` 表示非域名（即 IP 对象）。只认 `urlType` 会把已封禁误判成未封禁——表现为解封被"跳过"、封堵重复下发、回查永远判未生效。判定条件应为 `enable=true` 且 `type=BLACK` 且（`urlType == "ip"`，或 `urlType` 缺失时 `domain` 为 0）。
 
+**IP 已经在白名单里就封不掉，报冲突不报成功**：同一个 IP 在设备上只能有一条名单记录，已经在白名单里的 IP 加不进黑名单。此时 `GET .../whiteblacklist/<ip>` 会返回**存在但 `type=WHITE`** 的条目（不算已封禁），而 `POST` 新增会被设备拒绝并回 `{"code": 17, "message": "黑白名单[\"<ip>\"] 已存在"}`。脚本的做法是：查到同名非黑名单条目就直接抛 `blacklist_conflict`（不可重试），提示「`<ip>` 已经在设备白名单里，与封禁冲突，请先在设备上移除这条白名单（或改成黑名单）再下发封禁」，**不替用户改配置**；解封时遇到白名单/停用条目也只是记 INFO、不删除（那是人工配置，不是平台下发的）。设备侧确实要改的话，官方接口是 `PATCH /api/v1/namespaces/{ns}/whiteblacklist/{url}`（8.2.7），body `{"obj": {"url": ..., "type": "BLACK", "enable": true, "description": ...}}`——但转换后原白名单条目就没了，需人工确认后再做。
+
 **处置后回查**：设备返回成功后脚本会再 `GET` 一次确认实际状态——封禁后须查到 `enable=true` 且 `type=BLACK` 且为 IP 对象，解封后须查不到条目；明确不符则抛 `block_not_effective` / `unblock_not_effective`（可重试），联动日志记 `failed`，**不会写 `blocked=true`**。回查请求本身异常（网络抖动、查询接口报错）只记 WARNING、仍按设备返回结果处理，避免把已生效的操作误判成失败而与设备实际状态相反。
 
 「资源不存在」优先看语义码 `code=1004`，中文文案（`黑白名单[...] 不存在`）只作兜底，这样设备换固件或语言包仍可用。`list_blocked` 已实现，按 `data.totalPages` 每页 200 翻页，逐页记 INFO 日志并在结尾记总条数。
@@ -1108,19 +1110,33 @@ log.debug("配置：%s", mask_config(cfg))
 | 管理地址 | 含协议与端口，如 `https://10.0.0.1:443` |
 | 用户名 / 密码 | 设备管理员账号；密码填**明文**，脚本按设备要求自行加密后提交 |
 
-账号准备：用设备管理员账号，需具备「资源管理 → 黑名单传播」的读写权限。设备若启用了**登录验证码**须关闭，平台走免验证码登录接口 `/home/restLogin/`（老固件无此接口时自动改用 `/home/login/addNoCode/`）。
+账号准备：用设备管理员账号，需具备「安全策略 → 黑白名单 → 静态黑名单」的读写权限。登录有两个接口：优先 `POST /home/restLogin/`，该接口不存在（404）时自动改走 `POST /home/login/addNoCode/`。**建议把设备上的登录验证码关掉**——不同版本固件的验证码机制不一样，开着可能挡住其中一个接口。
 
-封堵落点：`安全策略` → `黑白名单` → `静态黑名单`（查询与添加在 `blackWhite` 模块，删除在 `blackListSpread`）：
+封堵落点：`安全策略 → 黑白名单 → 静态黑名单`。
+
+**接口 A：`blackWhite`**（新固件，条目 `mark=ip`，带 `ipaddr` + `direction`）：
 
 | 动作 | 请求 |
 | --- | --- |
-| 查是否已存在 | `GET /home/default/blackWhite/addrStaticBlackSearch/`，`commands[0][pf_blacklist_static_search][detail]=<ip>`（可选 `[from]=1`、`[num]=20`）；返回 `rows[]` 里看 `ipaddr` 与 `direction`。被拒时退化为 `GET /home/default/blackListSpread/showAll/?commands[0][pf_blacklist_show_all]=` 拉全量再本地比对 |
-| 添加 | `POST /home/default/blackWhite/whiteIpAdd/`，`commands[0][blacklist_cfg_add_ip][ipaddr]=<ip>`，另带 `enable=yes`、`direction=src\|dst`、`except_priv_ip=off`、`group_name`、`comment` |
+| 查是否已存在 | `GET /home/default/blackWhite/addrStaticBlackSearch/`，`commands[0][pf_blacklist_static_search][detail]=<ip>`（可选 `[from]=1`、`[num]=20`）；返回 `rows[]` 里看 `ipaddr` 与 `direction` |
+| 添加 | `POST /home/default/blackWhite/whiteIpAdd/`，`commands[0][blacklist_cfg_add_ip][ipaddr]=<ip>`，另带 `enable=yes`、`direction=src\|dst`、`except_priv_ip=off`、`comment`；`group_name` 只在策略组接口查到组时才带（见下） |
 | 删除 | `POST /home/default/blackListSpread/deleteLots/`，`commands[0][blacklist_cfg_delete_ip][0][ipaddr]=<ip>`（按 IP 下发，该地址各方向条目一并清掉） |
 
-**源方向必封，目的方向尽力**：3.7 设备同一 IP 只允许存在一条记录，`direction` 是这条记录的属性，再下发第二条会返回 `ip黑名单添加存在错误`；旧版本两个方向可各存一条。脚本先下发源方向（只有它拦得住攻击源主动发来的流量，目的方向只匹配「发往该 IP」的报文），再尝试目的方向——被设备拒绝只记日志，封禁结论仍为成功。设备上已有条目方向不是源地址时（如历史遗留的目的方向），先删再按源地址重建。`except_priv_ip=off` 对应弹窗里的「去掉源IP：否」。
+**接口 B：`blackListSpread`**（老固件，条目 `mark=tuple`，是五元组：封源写 `sip`、封目的写 `dip`，其余维度不填即「不限」）：
 
-**策略组要查出来再填**：`group_name` 在接口里标为可选，但文档没说不填会归到哪，因此封禁前先 `GET /home/default/blackWhite/showPolicyGroup/`（`commands[0][blacklist_profile_group_show][from]=1`、`[num]=20`，响应 `rows[].name`）取设备上实际存在的组名——有 `default_group` 就用它，否则用第一个组，查询失败才回退 `default_group`；同一会话内只查一次。`showAddrPolicy/`（`show_blacklist_by_profile` 带 `groupname`）用于按组列策略，本脚本不需要：`addrStaticBlackSearch` 的 `detail` 直接按 IP 搜、返回里带 `group_name`，跨组都能命中。
+| 动作 | 请求 |
+| --- | --- |
+| 查是否已存在 | `GET /home/default/blackListSpread/showAll/`，`commands[0][pf_blacklist_show_all]=`（空值，一次返回全量，不分页）；`rows[]` 里五元组看 `sip`/`dip`，地址段看 `ip_start`/`ip_end`（`mark=range`） |
+| 添加 | `POST /home/default/blackListSpread/add/`，源方向 `commands[0][pf_blacklist_add][sip]=<ip>`，目的方向 `commands[0][pf_blacklist_add][dip]=<ip>` |
+| 删除 | `POST /home/default/blackListSpread/deleteLots/`，`commands[0][pf_blacklist_delete][0][sip]=…&[sport]=…&[dip]=…&[dport]=…&[l4_protocol]=…`，**按查询返回的那一条原值下发完整五元组**，不限的维度传空串 |
+
+**怎么选**：先用 `GET /home/default/blackWhite/showPolicyGroup/`（`commands[0][blacklist_profile_group_show][from]=1`、`[num]=20`）探路——返回 `result:true` 说明 `blackWhite` 接口可用，走 A；返回 `{"result":false,"data":"cfg文件不存在"}` 说明该设备没有这套接口配置，走 B。**探针不能用「添加」**：3.7 的静态黑名单同一 IP 只允许一条记录，添加被拒（`ip黑名单添加存在错误`）不等于接口不可用。老固件上 `blackWhite` 的三个接口会分别回 `无效输入，分析错误` / `cfg文件不存在`，添加侧无论带不带 `group_name` 都拿不到 `result:true`；同一台设备上 `blackListSpread` 的增删查全部可用，页面手动建的条目也是这套接口的五元组形态（`mark=tuple`）。
+
+**策略组要查出来再填，查不到就不填**：`group_name` 在接口里标为可选，但填设备上不存在的组，设备会去打开该组的 cfg 文件并回 `cfg文件不存在`，添加直接失败。所以组名只能来自策略组接口返回——有 `default_group` 就用它，否则用第一个组；返回空列表则不传。
+
+**源方向必封，目的方向尽力**：接口 A 先下发 `direction=src`（只有它拦得住攻击源主动发来的流量，`dst` 只匹配「发往该 IP」的报文），设备拒绝只记日志；若因已有其它方向条目被拒（3.7 同一 IP 只允许一条记录），先删旧条目再按 `src` 重建。接口 B 则先下发 `sip=<ip>`、再尝试 `dip=<ip>`，`sip` 那条被拒算失败，`dip` 被拒只记日志。
+
+**五元组只能按条目删**：该模块上没有「按 IP 删」的可用命令（`commands[0][blacklist_cfg_delete_ip][0][ipaddr]` 在这里回 `{"result":false,"data":"c"}`），必须用查询返回的原值下发 `pf_blacklist_delete`。人工建的地址段条目接口不支持删除，脚本只记告警。
 
 `token` 与 `codeRun` 一律放 query，命令字段放表单（GET 则全部在 query）——设备按这个形态校验，放错位置同样报 `Parameter tampered`。
 
@@ -1135,9 +1151,9 @@ log.debug("配置：%s", mask_config(cfg))
 2. **公共参数**：除登录外每个请求都必须带登录返回的 Cookie、`Referer: <base>/html/webui/home.html/?userMark=<userMark>`、`Content-Type: application/x-www-form-urlencoded`。
 3. **token**：取响应里 `?[` 与 `}?` 之间的字符串；**每次请求都会换新的**，下一次请求必须用最新的。
 4. **codeRun** = `md5(secret + token + url + commands 的 JSON)`，`url` 是不带参数的路径。`commands` 必须按**设备侧的数组形态**序列化：`commands[0][pf_blacklist_add][sip]=<ip>` 对应 `[{"pf_blacklist_add":{"sip":"<ip>"}}]`，**不能**把下标当对象键写成 `{"0":{...}}`，否则设备返回 `Parameter tampered`。
-5. **判成功**：响应 `{"result":true,...}`；`{"result":false,"data":"原因"}` 为失败。查询结果在 `rows[]` 里：IP 条目看 `ipaddr`（`mark=ip`）与 `direction`，五元组条目看 `sip`，地址段条目看 `ip_start`/`ip_end`。
+5. **判成功**：响应 `{"result":true,...}`；`{"result":false,"data":"原因"}` 为失败。查询结果在 `rows[]` 里：静态黑名单条目看 `ipaddr`（`mark=ip`）与 `direction`，五元组条目看 `sip`/`dip`（有值的维度是字符串，不限的维度是空数组），地址段条目看 `ip_start`/`ip_end`（`mark=range`）。
 
-**批量**：**不支持**。token 是链式轮转的（见「封堵落点」里的说明），每个请求都必须用上一条响应用的 token 重新算 `codeRun`，一次请求只承载一条命令；同一个 IP 在静态黑名单里又只允许存在一条记录。所以只能逐 IP 下发。
+**批量**：**不支持**。token 是链式轮转的（见「封堵落点」里的说明），每个请求都必须用上一条响应用的 token 重新算 `codeRun`，一次请求只承载一条命令。所以只能逐 IP 下发。
 
 能力位：`test` = true，`list_blocked` = false，`ipv6` = false。
 

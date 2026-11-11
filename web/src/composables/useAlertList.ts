@@ -82,10 +82,10 @@ export function useAlertList() {
   const detail = ref<AlertDetail | null>(null)
   const detailLoading = ref(false)
 
-  async function fetchDetail(id: string) {
+  async function fetchDetail(id: string, index?: string) {
     detailLoading.value = true
     try {
-      detail.value = await getAlertDetail(id)
+      detail.value = await getAlertDetail(id, index)
       // 从列表中查找该告警的 alert_count（前端连续聚合时已计算）
       const item = list.value.find((i) => i._id === id)
       if (item?.ai?.alert_count && detail.value?.ai) {

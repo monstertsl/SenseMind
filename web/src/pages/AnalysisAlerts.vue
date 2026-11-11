@@ -7,6 +7,7 @@ import AlertTable from '@/components/analysis/AlertTable.vue'
 import AlertDetailDrawer from '@/components/analysis/AlertDetailDrawer.vue'
 import SkeletonTable from '@/components/common/SkeletonTable.vue'
 import { useAlertList } from '@/composables/useAlertList'
+import { prefetchRuleContents } from '@/api/alerts'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import { ALERT_FILTER_KEYS, pickAlertFilters } from '@/constants/alertFilters'
@@ -91,7 +92,9 @@ function handleSizeChange(size: number) {
 function handleRowClick(row: any) {
   selectedRowId.value = row._id
   drawerVisible.value = true
-  fetchDetail(row._id)
+  // 规则字面量按列表里已有的 sid 先发，与详情请求并行
+  prefetchRuleContents(row?.ai?.alert_signature_id)
+  fetchDetail(row._id, row._index)
 }
 
 function handleIpClick(ip: string) {

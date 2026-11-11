@@ -232,6 +232,7 @@ class RuleLookup:
         self._stamp: tuple = ()
         self._built_at = 0.0
         self._lock = threading.Lock()
+        self._refreshing = False
 
     def _rule_files(self) -> list:
         """现行规则 + 备份文件
@@ -260,6 +261,23 @@ class RuleLookup:
     def _rebuild(self):
         with self._lock:
             self._build()
+
+    def _refresh_async(self):
+        """后台重建：全量解析规则约 2~3s，不能占用响应请求的线程"""
+        with self._lock:
+            if self._refreshing:
+                return
+            self._refreshing = True
+
+        def _run():
+            try:
+                self._rebuild()
+            except Exception as e:
+                logger.warning("规则字面量索引后台重建失败: %s", e)
+            finally:
+                self._refreshing = False
+
+        threading.Thread(target=_run, daemon=True, name="rule-lookup-refresh").start()
 
     def _build(self):
         index: dict = {}
@@ -313,9 +331,13 @@ class RuleLookup:
             return {"sid": 0, "contents": [], "nocase": False}
 
         expired = time.time() - self._built_at > CACHE_TTL_SECONDS
-        if not self._index or expired:
-            if not self._index or self._stamp != self._stamp_now():
-                self._rebuild()
+        if not self._index:
+            self._rebuild()
+        elif expired:
+            # 规则池会被持续追加，指纹一变就全量重建 2~3s；
+            # 此时先用旧索引响应、后台刷新，高亮片段最多滞后一次刷新
+            if self._stamp != self._stamp_now():
+                self._refresh_async()
             else:
                 self._built_at = time.time()
 

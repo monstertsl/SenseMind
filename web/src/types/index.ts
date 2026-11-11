@@ -156,15 +156,7 @@ export interface AlertSearchPreset {
   updated_at: string | null
 }
 
-export interface RelatedLog {
-  _id: string
-  _index: string
-  _source: Record<string, any>
-}
-
-export interface AlertDetail extends AlertItem {
-  related_logs: RelatedLog[]
-}
+export type AlertDetail = AlertItem
 
 export interface AggregationBucket {
   key: string
