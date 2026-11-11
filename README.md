@@ -2,8 +2,8 @@
 
 <h1 align="center">SenseMind</h1>
 
-<p align="center"><strong>一个以 AI 为核心的轻量级 SOC 平台</strong><br>
-告警自动完成标准化、威胁研判、跨源关联与知识增强；确认攻击后自动生成并热加载低误报检测规则，让检测能力从自身流量中持续沉淀，不依赖外部规则集或人工逐条编写。</p>
+<p align="center"><strong>自托管的 AI SOC 平台</strong><br>
+关联 Suricata 告警、Zeek 协议上下文与历史事件，通过 AI 辅助研判攻击脉络，结果在监控中心汇集呈现。确认的攻击会转化为本地检测规则，经历史流量回放复核误报后热加载生效；检测能力随自身流量积累，不依赖外部规则集与人工逐条编写。</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
@@ -19,19 +19,17 @@
 
 ---
 
-开源检测栈（Suricata + ELK）在中小安全团队落地时的常见情况是：告警每天数百上千条，其中大部分为误报，人工跟进很难长期维持；存量规则依赖外部规则集更新，对自身环境中出现的真实攻击覆盖有限；而商业 SOC 平台的报价又超出这类团队的预算。真正发生入侵时，告警往往已经产生过，只是没有人看到。
-
-SenseMind 针对的正是这一环节：告警自动完成标准化、威胁研判、跨源关联与知识增强；确认攻击后自动生成低误报检测规则并热加载生效，检测能力随自身流量持续沉淀，不依赖外部规则集与人工逐条编写。基于既有安全设备完成多厂商设备与处置通道（防火墙封禁、终端隔离、邮件与工单通知）的整合，正在把「发现 → 研判 → 处置 → 归档」打通为规则触发的全自动流程，替代人工逐条确认处置。已支持的设备、配置方式，以及自行接入新设备的方法，见 [设备接入指南](DEVICE_INTEGRATION.md)。
+单条告警往往只呈现攻击的一段线索。SenseMind 将 Suricata 告警、Zeek 协议日志与历史事件关联起来，由 AI 辅助判断威胁并梳理攻击脉络，让值得关注的事件更易识别和跟进。平台支持邮件告警、基于防火墙的攻击 IP 封禁等响应措施；确认攻击后，可生成并热加载本地规则。项目可自托管，专注网络流量检测与研判，不试图替代全功能企业 SIEM。支持的设备与响应方式见 [设备接入指南](DEVICE_INTEGRATION.md)。
 
 ## 它如何工作
 
-核心是一条闭环：**告警进入 AI 研判，研判确认攻击后生成规则并热加载，检测能力随之积累。**
+核心是一条闭环：**发现 → 关联 → 研判 → 规则沉淀**。一次确认过的攻击不仅得到分析结论，也可以转化为持续生效的本地检测规则。
 
 1. **流量采集**：Suricata 输出告警与 payload，Zeek 输出协议元数据，两者通过 Community ID 关联。
 2. **分类与投递**：Logstash 按 SOC 14 大类为告警打标，映射 MITRE ATT&CK 战术阶段，命中重点分类的告警自动推送至 AI 分析中心。
 3. **AI 研判**：五个阶段依次执行——标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 输出结论。关联查询包含 Community ID 精确关联、源/目的 IP 时间窗口关联、24 小时历史告警三个维度，跨 Suricata 与 Zeek 还原一次攻击的完整链路。
 4. **规则生成与加载**：确认攻击后，AI 生成对应的 Suricata 规则（HTTP sticky buffer 精确匹配 + 动态地址组），写入规则池并热加载，无需重启引擎。
-5. **规则沉淀**：仅保留低误报规则，检测能力持续积累。
+5. **规则沉淀**：仅保留通过回放复核的规则，检测能力持续积累。
 
 本地生成规则示例：
 
@@ -55,14 +53,8 @@ alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权
 
 <p align="center">
   <img src="联动外发.png" alt="联动外发" width="100%">
-  <br><sub>联动外发：邮件告警、命中后自动封禁攻击 IP、IP 白名单、联动日志</sub>
+  <br><sub>响应能力：邮件告警、攻击 IP 自动封禁、IP 白名单与操作日志</sub>
 </p>
-
-### 它不做什么
-
-- 不采集主机日志。syslog / Beats 接入在规划中，当前仅覆盖网络流量。
-- 不生成合规报表，不引入外部威胁情报订阅——检测能力来自自身流量中沉淀的规则。
-- 不追求商业 SIEM 的全量功能覆盖，重点解决告警研判与规则积累两个环节。
 
 ## 快速开始
 
@@ -70,12 +62,13 @@ alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权
 
 - Docker Engine + Docker Compose V2
 - `curl`、`jq`、`unzip`、`openssl`、`ethtool`
-- 最低配置：**16 核 CPU、16 GiB 内存**。若核数不足 16，删除 `suricata/patch_yaml.py` 中 af-packet 的 `threads: 16` 配置项（`("set", ["af-packet"], "threads", "16", ...)` 一行），抓包线程数改由程序按可用核数自动分配。
+- 低流量部署建议从 **4 核 CPU** 起。若核数不足 16，删除 `suricata/patch_yaml.py` 中 af-packet 的 `threads: 16` 配置项（`("set", ["af-packet"], "threads", "16", ...)` 一行）。
 - 一台能收到待检测流量的 Linux 主机。**监听接口需要接镜像口（SPAN）、分光器或 TAP**。
 
 ### 配置参考（10 Gbps 内网镜像流量）
 
-以下配置来自一套实际运行环境，可作为选型与容量规划的参考。
+以下是**面向 10 Gbps 内网镜像流量**的一套实际运行配置，可作为大流量场景的容量参考，不是 SenseMind 的最低要求。
+该环境的 CPU 与内存实测峰值占用均低于 50%。
 
 | 项目 | 配置 | 实测占用 |
 |------|------|----------|
@@ -84,7 +77,7 @@ alert http any any -> any any (msg:"auth bypass：Swagger UI API 文档未授权
 | 系统盘 | 1.1 TB（单块 `sda`，LVM 卷组 `ubuntu-vg`） | 已用 49%，其中 Elasticsearch 数据卷约 367 GB |
 | 监听网卡 | 10 Gb 全双工 | — |
 
-磁盘占用主要来自原始日志（默认保留 7 天），可在「系统设置」中调小**原始日志保留天数**以压缩占用。
+该实测环境可满足告警日志保留 180 天的需求。磁盘占用主要来自原始日志（默认保留 7 天）；如需压缩占用，可在「系统设置」中调小**原始日志保留天数**。
 
 相关参数：Suricata af-packet 16 线程，flow 2 GiB / stream 4 GiB / reassembly 8 GiB memcap；Elasticsearch `-Xms2g -Xmx2g`、Logstash `-Xms4g -Xmx4g`（`docker-compose.yml` 内置）。
 
@@ -191,6 +184,7 @@ SenseMind/
 │   ├── config.yaml              # LLM/ES/知识库/Suricata/去重 配置
 │   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
 │   └── app/                     # FastAPI + LangChain 5阶段 Chain
+├── alert-responder/             # 响应服务：邮件告警、防火墙设备脚本、自动封禁
 └── web/                         # Vue 3 前端（监控中心/分析中心/日志中心/系统设置）
 ```
 
@@ -209,10 +203,7 @@ SenseMind/
 ## 日常操作
 
 ```bash
-# 更新 Suricata 规则
-sudo docker exec --user suricata suricata suricata-update -f
-
-# 热加载规则
+# 热加载规则（修改规则文件后执行）
 sudo docker exec suricata suricatasc -c reload-rules
 
 # 查看 AI 生成的规则
@@ -220,6 +211,12 @@ cat /data/suricata/lib/rules/local.rules
 
 # 手动触发某条告警分析
 curl -X POST http://localhost:9090/api/v1/analyze/<doc_id>
+```
+
+规则文件目录为 `/data/suricata/lib/rules/`（容器内 `/var/lib/suricata/rules/`），当前只加载 `combined.rules` 与 `local.rules`。新增独立规则文件时，需先在 `/data/suricata/etc/suricata.yaml` 的 `rule-files` 中登记，再执行校验与热加载：
+
+```bash
+sudo docker exec suricata suricata -T -c /etc/suricata/suricata.yaml
 ```
 
 ### 采样排错
@@ -375,6 +372,8 @@ sudo bash remove.sh
 ## 贡献
 
 欢迎提交 Issue / PR。反馈问题时，附上部署方式、监听接口类型（镜像口 / TAP）、Suricata 版本与相关日志，便于定位。
+
+如果这个项目对你有用，欢迎点一个 Star。
 
 ## 参考实现
 

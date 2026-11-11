@@ -2,8 +2,8 @@
 
 <h1 align="center">SenseMind</h1>
 
-<p align="center"><strong>An AI-centric lightweight SOC platform</strong><br>
-Alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Confirmed attacks generate low-false-positive detection rules that are hot-reloaded, allowing detection capability to grow from observed traffic without external rule sets or rule-by-rule manual authoring.</p>
+<p align="center"><strong>A self-hosted AI SOC platform</strong><br>
+Correlates Suricata alerts, Zeek protocol context, and historical events, and uses AI-assisted triage to reconstruct attack activity, with the results assembled in the monitoring dashboard. A confirmed attack becomes a local detection rule, checked against historical traffic for false positives and hot-reloaded; detection grows with the traffic it sees, without external rule sets or rule-by-rule manual authoring.</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
@@ -19,19 +19,17 @@ Alerts are automatically normalized, triaged, correlated across sources, and enr
 
 ---
 
-An open-source detection stack (Suricata + ELK) deployed by a small or mid-sized security team usually runs into the same situation: hundreds to thousands of alerts a day, most of them false positives, and sustained manual follow-up is not realistic. Detection content depends on external rule sets, which cover little of the attacks that actually reach the local environment, while commercial SOC platforms are priced well beyond what such a team can budget. When a real intrusion does occur, the alert has often already fired — nobody saw it.
-
-SenseMind targets that specific gap: alerts are automatically normalized, triaged, correlated across sources, and enriched with knowledge. Once an attack is confirmed, the system generates and hot-reloads a low-false-positive detection rule, allowing detection capability to continuously grow from its own traffic without relying on external rule sets or rule-by-rule manual authoring. SenseMind also integrates multi-vendor security products and response channels—including firewall blocking, endpoint isolation, email, and ticketing—and is working toward a rule-triggered automated workflow from detection and triage through response and case closure, replacing manual handling of each alert. Supported devices, how to configure them, and how to add a new one are covered in the [Device Integration Guide](DEVICE_INTEGRATION.md).
+An individual alert often shows only one part of an attack. SenseMind correlates Suricata alerts, Zeek protocol logs, and historical events, then uses AI to help assess threats and reconstruct attack activity. It supports response actions including email alerting and firewall-based IP blocking; confirmed attacks can produce hot-reloaded local rules. Self-hosted and focused on network detection and triage, SenseMind is not intended to replace a full enterprise SIEM. See the [Device Integration Guide](DEVICE_INTEGRATION.md) for supported devices and response methods.
 
 ## How it works
 
-The core is a closed loop: **an alert enters AI triage; if the attack is confirmed, a rule is generated and hot-reloaded, and detection capability accumulates with it.**
+The core is a closed loop: **detect → correlate → triage → retain a rule**. A confirmed attack yields not only an investigation result but also a local detection rule that stays active.
 
 1. **Traffic collection**: Suricata emits alerts and payloads, Zeek emits protocol metadata, and the two are correlated through Community ID.
 2. **Tagging and dispatch**: Logstash tags alerts with the 14 SOC categories and maps them to MITRE ATT&CK tactics; alerts that fall into key categories are pushed to the AI Analysis Center automatically.
 3. **AI triage**: five stages run in sequence — normalization → triage → dynamic correlation queries → RAG knowledge augmentation → verdict. Correlation covers three dimensions (exact Community ID correlation, source/destination IP time-window correlation, and 24-hour alert history), reconstructing the full chain of an attack across Suricata and Zeek.
 4. **Rule generation and loading**: once an attack is confirmed, the AI generates the corresponding Suricata rule (precise HTTP sticky-buffer matching plus dynamic address groups), writes it into the rule pool and hot-reloads it. No engine restart is required.
-5. **Rule retention**: only low-false-positive rules are kept, so detection capability keeps accumulating.
+5. **Rule retention**: only rules that pass the replay review are kept, so detection capability keeps accumulating.
 
 Examples of locally generated rules:
 
@@ -58,24 +56,19 @@ Beyond alerts matched by rules, SenseMind also provides a **semantic detection e
   <br><sub>Outbound response: email alerting, automated blocking of attacking IPs, IP allowlist, response log</sub>
 </p>
 
-### What it does not do
-
-- It does not collect host logs. syslog / Beats ingestion is planned; today it covers network traffic only.
-- It does not produce compliance reports and does not consume external threat-intelligence feeds — detection capability comes from rules distilled from its own traffic.
-- It does not chase full feature parity with commercial SIEM products; it focuses on alert triage and rule accumulation.
-
 ## Getting started
 
 ### Requirements
 
 - Docker Engine + Docker Compose V2
 - `curl`, `jq`, `unzip`, `openssl`, `ethtool`
-- Minimum configuration: **16 CPU cores and 16 GiB RAM**. With fewer than 16 cores, remove the af-packet `threads: 16` entry from `suricata/patch_yaml.py` (the `("set", ["af-packet"], "threads", "16", ...)` line); the capture thread count then falls back to automatic allocation based on available cores.
+For low-volume deployments, **4 CPU cores** is a recommended starting point. If fewer than 16 cores are available, remove the af-packet `threads: 16` entry from `suricata/patch_yaml.py` (the `("set", ["af-packet"], "threads", "16", ...)` line).
 - A Linux host able to receive the traffic to be inspected. **The capture interface must be connected to a SPAN port, an optical splitter, or a network TAP.**
 
 ### Reference configuration (10 Gbps internal mirrored traffic)
 
-The configuration below comes from a production deployment and can be used as a sizing reference.
+The following is one real deployment serving **10 Gbps of mirrored internal traffic**; it is a capacity reference for high-volume scenarios, not a minimum requirement for SenseMind.
+Measured CPU and memory peaks in this environment stayed below 50%.
 
 | Item | Configuration | Measured usage |
 |------|---------------|----------------|
@@ -84,7 +77,7 @@ The configuration below comes from a production deployment and can be used as a 
 | System disk | 1.1 TB (single `sda`, LVM volume group `ubuntu-vg`) | 49% used, of which the Elasticsearch volume takes about 367 GB |
 | Capture NIC | 10 Gb full duplex | — |
 
-Disk usage is dominated by raw logs (7-day default retention). It can be reduced by lowering **raw log retention days** under Settings.
+This environment retains alert logs for 180 days. Disk usage is dominated by raw logs (7-day default retention); it can be reduced by lowering **raw log retention days** under Settings.
 
 Related parameters: Suricata runs af-packet with 16 threads and memcap values of flow 2 GiB / stream 4 GiB / reassembly 8 GiB; Elasticsearch uses `-Xms2g -Xmx2g` and Logstash `-Xms4g -Xmx4g` (set in `docker-compose.yml`).
 
@@ -193,6 +186,7 @@ SenseMind/
 │   ├── config.yaml              # LLM / ES / knowledge base / Suricata / dedup config
 │   ├── knowledge/               # RAG knowledge base (MITRE + SOC playbooks)
 │   └── app/                     # FastAPI + LangChain 5-stage chain
+├── alert-responder/             # Response service: email alerts, firewall device scripts, auto blocking
 └── web/                         # Vue 3 frontend (monitoring / analysis / logs / settings)
 ```
 
@@ -211,10 +205,7 @@ SenseMind/
 ## Routine operations
 
 ```bash
-# Update Suricata rules
-sudo docker exec --user suricata suricata suricata-update -f
-
-# Hot-reload rules
+# Hot-reload rules (after editing a rule file)
 sudo docker exec suricata suricatasc -c reload-rules
 
 # Inspect AI-generated rules
@@ -222,6 +213,12 @@ cat /data/suricata/lib/rules/local.rules
 
 # Manually trigger analysis for a single alert
 curl -X POST http://localhost:9090/api/v1/analyze/<doc_id>
+```
+
+Rule files live in `/data/suricata/lib/rules/` on the host (`/var/lib/suricata/rules/` in the container). Only `combined.rules` and `local.rules` are loaded. To add a separate rule file, list it under `rule-files` in `/data/suricata/etc/suricata.yaml`, then validate and hot-reload:
+
+```bash
+sudo docker exec suricata suricata -T -c /etc/suricata/suricata.yaml
 ```
 
 ### Sampling and troubleshooting
@@ -377,6 +374,8 @@ Removes containers, networks, data volumes, local data and certificates (downloa
 ## Contributing
 
 Issues and pull requests are welcome. When reporting a problem, include your deployment method, capture interface type (SPAN / TAP), Suricata version and the relevant logs so it can be reproduced.
+
+If this project is useful to you, a Star is appreciated.
 
 ## Reference implementations
 
