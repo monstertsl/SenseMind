@@ -63,7 +63,11 @@ class AlertAnalyzer:
         llm_cfg = get_llm_config_from_db()
 
         if not llm_cfg.get("base_url"):
-            logger.warning("LLM 未配置，请在系统设置 > 集成配置中配置 LLM 模型")
+            logger.warning("LLM 未配置，请在系统设置 > 集成配置中配置 LLM 模型（分析将走降级路径，秒级完成）")
+
+        # LLM 可用开关：base_url 为空时所有 LLM 阶段直接跳过，
+        # 避免空 base_url 回退到 api.openai.com 后白等连接超时（~42s/条）
+        self.llm_enabled = bool(llm_cfg.get("base_url"))
 
         # api_key 为空时传一个占位值，ChatOpenAI 要求非空
         api_key = llm_cfg.get("api_key", "") or "not-needed"
@@ -183,13 +187,17 @@ class AlertAnalyzer:
 
         # === Stage 2: 告警研判 ===
         # severity >= 2 的告警直接查关联日志，跳过 Triage LLM 调用，节省 token
-        if ctx.severity >= 2:
-            logger.info("=== Stage 2: 跳过 Triage (severity=%d >= 2) ===", ctx.severity)
+        if ctx.severity >= 2 or not self.llm_enabled:
+            logger.info("=== Stage 2: 跳过 Triage (severity=%d, llm_enabled=%s) ===",
+                        ctx.severity, self.llm_enabled)
             triage = TriageResult(
                 need_session_query=True,
                 need_history_query=(ctx.severity >= 3),
                 risk="high" if ctx.severity >= 2 else "medium",
-                triage_reason=f"severity={ctx.severity}，跳过 Triage 直接查询关联日志",
+                triage_reason=(
+                    f"severity={ctx.severity}，跳过 Triage 直接查询关联日志"
+                    if ctx.severity >= 2 else "LLM 未配置，跳过 Triage 使用默认策略"
+                ),
             )
         else:
             logger.info("=== Stage 2: 告警研判 (Triage) ===")
@@ -265,28 +273,32 @@ class AlertAnalyzer:
 
         # === Stage 5: 最终分析 ===
         logger.info("=== Stage 5: 最终分析 ===")
-        analysis_input = {
-            "alert_summary": ctx.to_summary(),
-            "soc_category": ctx.soc_category,
-            "soc_name": ctx.soc_name,
-            "mitre_id": ctx.mitre_id,
-            "attack_stage": ctx.attack_stage,
-            "risk": triage.risk,
-            "related_count": len(related_logs),
-            "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
-            "knowledge": knowledge,
-        }
-        try:
-            t0 = time.time()
-            result = self.analysis_chain(analysis_input)
-            logger.info("分析完成 (%.1fs): 判定=%s, 置信度=%s",
-                        time.time() - t0,
-                        result.threat_verdict,
-                        result.confidence)
-            analysis = result.model_dump()
-        except Exception as e:
-            logger.error("分析 Chain 失败: %s", e, exc_info=True)
-            analysis = self._fallback_result(ctx, str(e))
+        if not self.llm_enabled:
+            logger.info("LLM 未配置，跳过分析 Chain，直接降级")
+            analysis = self._fallback_result(ctx, "LLM 未配置，已跳过 AI 分析（降级模式）")
+        else:
+            analysis_input = {
+                "alert_summary": ctx.to_summary(),
+                "soc_category": ctx.soc_category,
+                "soc_name": ctx.soc_name,
+                "mitre_id": ctx.mitre_id,
+                "attack_stage": ctx.attack_stage,
+                "risk": triage.risk,
+                "related_count": len(related_logs),
+                "related_logs": format_logs(related_logs) if related_logs else "无关联日志",
+                "knowledge": knowledge,
+            }
+            try:
+                t0 = time.time()
+                result = self.analysis_chain(analysis_input)
+                logger.info("分析完成 (%.1fs): 判定=%s, 置信度=%s",
+                            time.time() - t0,
+                            result.threat_verdict,
+                            result.confidence)
+                analysis = result.model_dump()
+            except Exception as e:
+                logger.error("分析 Chain 失败: %s", e, exc_info=True)
+                analysis = self._fallback_result(ctx, str(e))
 
         # 补充元数据
         self._enrich_metadata(analysis, ctx, alert, related_logs, is_manual=is_manual)
@@ -413,32 +425,35 @@ class AlertAnalyzer:
 
         # 批量轻量 LLM 研判（单次调用处理所有漏报事件）
         llm_results = []
-        try:
-            t0 = time.time()
-            unalerted_list_text = "\n".join(
-                f"{i + 1}. 攻击类型: {', '.join(item['attack_types'])} | "
-                f"事件: {item['event_type']} | URL: {item['url']} | "
-                f"Payload: {item['payload'][:200]}"
-                + (f" | 响应状态码: {item['http_status']}" if item.get('http_status') else "")
-                + (f" | 响应体: {item['response_body'][:500]}" if item.get('response_body') else "")
-                + (
-                    f" | 动态基线预判: 响应长度={item['baseline_length']}B, "
-                    f"基线样本={item['baseline_sample_count']}, "
-                    f"预判结果={item['baseline_judgment']}"
-                    if item.get('baseline_judgment')
-                    else ""
+        if not self.llm_enabled:
+            logger.info("LLM 未配置，跳过漏报轻量分析，使用默认字段")
+        else:
+            try:
+                t0 = time.time()
+                unalerted_list_text = "\n".join(
+                    f"{i + 1}. 攻击类型: {', '.join(item['attack_types'])} | "
+                    f"事件: {item['event_type']} | URL: {item['url']} | "
+                    f"Payload: {item['payload'][:200]}"
+                    + (f" | 响应状态码: {item['http_status']}" if item.get('http_status') else "")
+                    + (f" | 响应体: {item['response_body'][:500]}" if item.get('response_body') else "")
+                    + (
+                        f" | 动态基线预判: 响应长度={item['baseline_length']}B, "
+                        f"基线样本={item['baseline_sample_count']}, "
+                        f"预判结果={item['baseline_judgment']}"
+                        if item.get('baseline_judgment')
+                        else ""
+                    )
+                    for i, item in enumerate(unalerted)
                 )
-                for i, item in enumerate(unalerted)
-            )
-            llm_results = self.unalerted_chain({
-                "main_alert_summary": ctx.to_summary(),
-                "count": len(unalerted),
-                "unalerted_list": unalerted_list_text,
-            })
-            logger.info("漏报轻量分析完成 (%.1fs): %d 条结果",
-                        time.time() - t0, len(llm_results))
-        except Exception as e:
-            logger.warning("漏报轻量分析失败，使用默认值: %s", e)
+                llm_results = self.unalerted_chain({
+                    "main_alert_summary": ctx.to_summary(),
+                    "count": len(unalerted),
+                    "unalerted_list": unalerted_list_text,
+                })
+                logger.info("漏报轻量分析完成 (%.1fs): %d 条结果",
+                            time.time() - t0, len(llm_results))
+            except Exception as e:
+                logger.warning("漏报轻量分析失败，使用默认值: %s", e)
 
         # 为每个漏报事件构建独立分析记录（不含规则生成，避免阻塞）
         records = []
@@ -837,7 +852,8 @@ class AlertAnalyzer:
                     candidates.append(log)
             if candidates:
                 # 按时间戳与当前告警的差值排序，取最接近的
-                from datetime import datetime
+                # 注意：不能在此处再 import datetime，否则 datetime 变成本函数局部变量，
+                # 前面 L833 的 datetime.now() 会抛 UnboundLocalError（模块顶部已导入）
                 try:
                     target_ts = datetime.fromisoformat(ctx.timestamp.replace("Z", "+00:00"))
                 except Exception:
