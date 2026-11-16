@@ -26,6 +26,7 @@ from .routers import audit_log as audit_log_router
 from .routers import llm_config as llm_config_router
 from .routers import ai_bypass_rule as ai_bypass_rule_router
 from .routers import alert_search_preset as alert_search_preset_router
+from .routers import probes as probes_router
 from .scheduler import start_scheduler, shutdown_scheduler
 from .core.database import init_db, SessionLocal
 from .services.mail_percolator import (
@@ -105,6 +106,9 @@ app.include_router(audit_log_router.router)
 app.include_router(llm_config_router.router)
 app.include_router(ai_bypass_rule_router.router)
 app.include_router(alert_search_preset_router.router)
+# 探针管理（F16 设备管理）与探针接入（F9 注册/续签）
+app.include_router(probes_router.admin_router)
+app.include_router(probes_router.probe_router)
 
 
 class MailPercolatorWatch(BaseModel):

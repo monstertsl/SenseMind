@@ -27,6 +27,7 @@ def list_alerts(
     time_range: str = Query("today"),
     time_from: str = Query(None),
     time_to: str = Query(None),
+    probe_id: str = Query(None),
     source_ip: str = Query(None),
     destination_ip: str = Query(None),
     soc_name: str = Query(None),
@@ -50,6 +51,7 @@ def list_alerts(
 ):
     params = AlertQueryParams(
         time_range=time_range, time_from=time_from, time_to=time_to,
+        probe_id=probe_id,
         source_ip=source_ip, destination_ip=destination_ip, soc_name=soc_name,
         threat_verdict=threat_verdict,
         confidence=confidence, confidence_min=confidence_min, confidence_max=confidence_max,

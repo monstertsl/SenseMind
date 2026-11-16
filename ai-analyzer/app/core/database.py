@@ -43,6 +43,7 @@ def init_db() -> None:
     from ..db_models.ai_bypass_rule import AiBypassRule  # noqa
     from ..db_models.alert_search_preset import AlertSearchPreset  # noqa
     from ..db_models.system_metric import SystemMetric  # noqa
+    from ..db_models.probe_registry import ProbeRegistry  # noqa
     from .auth import hash_password
 
     Base.metadata.create_all(bind=engine)
@@ -98,6 +99,21 @@ def init_db() -> None:
             ))
     except Exception as e:  # noqa: BLE001
         logger.warning("system_config 邮件配置字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
+
+    # 迁移：为已存在的 system_metrics 表补充探针行归属列（幂等）
+    # probe_id NULL=中心自身；非空=探针批量上报（POST /probe/health）。见 system_metric.py。
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE system_metrics "
+                "ADD COLUMN IF NOT EXISTS probe_id VARCHAR(64), "
+                "ADD COLUMN IF NOT EXISTS disk_percent DOUBLE PRECISION"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_system_metrics_probe_id ON system_metrics (probe_id)"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("system_metrics 探针列迁移失败（首次建表会自动包含，可忽略）: %s", e)
 
     with SessionLocal() as db:
         # 初始化 admin 用户

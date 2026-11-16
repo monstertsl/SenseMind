@@ -15,6 +15,7 @@ import {
 } from '@/api/auditLog'
 import UserManage from '@/pages/UserManage.vue'
 import AiBypassManage from '@/pages/AiBypassManage.vue'
+import DeviceManage from '@/pages/DeviceManage.vue'
 import SkeletonLines from '@/components/common/SkeletonLines.vue'
 import SkeletonTable from '@/components/common/SkeletonTable.vue'
 
@@ -340,6 +341,10 @@ const ACTION_LABELS: Record<string, string> = {
   update_security_policy: '安全策略',
   update_storage_policy: '存储优化',
   update_ntp_config: 'NTP 设置',
+  probe_token_create: '设备管理',
+  probe_update: '设备管理',
+  probe_revoke: '设备管理',
+  probe_delete: '设备管理',
   create_bypass_rule: '创建白名单',
   update_bypass_rule: '修改白名单',
   delete_bypass_rule: '删除白名单',
@@ -650,7 +655,7 @@ onBeforeUnmount(() => {
     <div v-show="activeTab === 'devices'" class="tab-panel">
       <div class="section-block">
         <div class="block-title">设备管理</div>
-        <div class="device-empty">设备管理功能建设中：探针节点接入、运行状态与联动设备将在此统一管理</div>
+        <DeviceManage />
       </div>
     </div>
   </div>

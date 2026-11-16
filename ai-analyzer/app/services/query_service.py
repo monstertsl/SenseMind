@@ -79,6 +79,11 @@ class QueryService:
 
         if params.source_ip:
             must.append(_ip_filter("ai.source_ip", params.source_ip))
+        # 探针过滤（F12）：probe_id 为 root keyword 字段（F11），空=跨全部探针
+        if params.probe_id:
+            clause = _multi_terms("probe_id", params.probe_id)
+            if clause:
+                must.append(clause)
         if params.destination_ip:
             must.append(_ip_filter("ai.destination_ip", params.destination_ip))
         if params.soc_name:

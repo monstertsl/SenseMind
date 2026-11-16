@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { Search, RefreshLeft, Collection } from '@element-plus/icons-vue'
 import KqlInput from '@/components/common/KqlInput.vue'
+import { listProbes } from '@/api/probes'
+import type { ProbeItem } from '@/api/probes'
 import {
   ALERT_FILTER_KEYS,
   ATTACK_RESULT_OPTIONS,
@@ -27,6 +29,7 @@ type ConfidenceOp = 'gte' | 'eq' | 'lte'
 
 const form = reactive({
   kql: '',
+  probe_id: '',
   source_ip: '',
   destination_ip: '',
   soc_name: [] as string[],
@@ -38,11 +41,23 @@ const form = reactive({
   confidence_value: undefined as number | undefined,
 })
 
+// 探针选项（F12）：注册表映射，label=备注名（内部ID）
+const probeOptions = ref<ProbeItem[]>([])
+onMounted(async () => {
+  try {
+    const res = await listProbes()
+    probeOptions.value = res.filter((p) => p.status !== 'pending')
+  } catch {
+    // 静默失败：下拉为空不影响其他筛选
+  }
+})
+
 function emitSearch() {
   // 搜索时把表单筛选值通过 search 事件传给父组件，由父组件应用到 query
   // 排除条件：值以 ! 或 ！ 开头（源IP/目的IP/威胁名）
   const filters: Partial<AlertQuery> = {
     kql: form.kql.trim() || undefined,
+    probe_id: form.probe_id || undefined,
     source_ip: undefined,
     destination_ip: undefined,
     alert_signature: undefined,
@@ -92,6 +107,7 @@ function emitSearch() {
 
 function reset() {
   form.kql = ''
+  form.probe_id = ''
   form.source_ip = ''
   form.destination_ip = ''
   form.soc_name = []
@@ -107,6 +123,7 @@ function reset() {
 /** 把 query 中的筛选条件回填到表单（含排除条件与多选值） */
 function fillForm(q: AlertQuery) {
   form.kql = q.kql || ''
+  form.probe_id = q.probe_id || ''
   form.source_ip = q.exclude_source_ip ? `！${q.exclude_source_ip}` : q.source_ip || ''
   form.destination_ip = q.exclude_destination_ip ? `！${q.exclude_destination_ip}` : q.destination_ip || ''
   form.alert_signature = q.exclude_alert_signature ? `！${q.exclude_alert_signature}` : q.alert_signature || ''
@@ -185,6 +202,23 @@ watch(
           clearable
           @keyup.enter="emitSearch"
         />
+      </div>
+      <div class="field field-selected-value">
+        <label>探针</label>
+        <el-select
+          v-model="form.probe_id"
+          clearable
+          filterable
+          placeholder="全部探针"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="p in probeOptions"
+            :key="p.probe_uid"
+            :label="p.name ? `${p.name} (${p.probe_uid})` : p.probe_uid"
+            :value="p.probe_uid"
+          />
+        </el-select>
       </div>
       <div class="field field-selected-value">
         <label>告警类型</label>

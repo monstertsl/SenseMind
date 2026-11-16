@@ -55,6 +55,7 @@ const OPERATOR_BY_TYPE: Record<string, { value: string; label: string }[]> = {
 // 其他分组（Suricata、其他等）全部隐藏
 const ALLOWED_FIELDS: Record<string, string> = {
   '_id': '原始日志ID',
+  'probe_id': '探针',
   'source.ip': '源地址',
   'source.port': '源端口',
   'destination.ip': '目的地址',
@@ -100,9 +101,18 @@ const allFields = computed(() => {
     group: '基础',
     available: true,
   }
+  // probe_id（F12）：存量索引 mapping 可能没有该字段，本地兜底始终可用
+  const probeIdField = {
+    name: 'probe_id',
+    alias: '探针',
+    type: 'keyword' as const,
+    example: 'center',
+    group: '基础',
+    available: true,
+  }
   // 去重（按 name）
   const seen = new Set<string>()
-  const merged = [idField, ...fromEs, ...local].filter((f) => {
+  const merged = [idField, probeIdField, ...fromEs, ...local].filter((f) => {
     if (seen.has(f.name)) return false
     seen.add(f.name)
     return true

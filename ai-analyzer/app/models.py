@@ -22,6 +22,9 @@ class AlertContext(BaseModel):
     protocol: str = ""
     community_id: str = ""
 
+    # 探针来源标识（F12）：filebeat-probe 携带 / Logstash 补默认值 center（F10）
+    probe_id: str = ""
+
     # SOC 分类
     soc_category: str = ""
     soc_name: str = ""
@@ -92,6 +95,7 @@ class AlertContext(BaseModel):
 
         return cls(
             timestamp=alert.get("@timestamp", ""),
+            probe_id=alert.get("probe_id") or "center",
             signature=alert_info.get("signature", ""),
             signature_id=alert_info.get("signature_id", 0),
             category=alert_info.get("category", ""),

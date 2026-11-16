@@ -36,7 +36,8 @@ filebeat.modules:
 
 output.logstash:
   hosts:
-    - "logstash:5044"
+    # 中心自身走内网明文通道 5045（5044 已升级为探针 TLS+mTLS 专用，F8）
+    - "logstash:5045"
 
 # =========================
 setup.template.enabled: true

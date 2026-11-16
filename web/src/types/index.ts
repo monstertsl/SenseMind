@@ -115,6 +115,8 @@ export interface AlertQuery {
   time_to?: string
   custom_start?: string
   custom_end?: string
+  /** 探针过滤（F12）：内部 probe_id，空=跨全部探针 */
+  probe_id?: string
   source_ip?: string
   destination_ip?: string
   soc_name?: string

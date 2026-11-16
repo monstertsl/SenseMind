@@ -6,6 +6,7 @@ import type { AlertQuery } from '@/types'
 
 /** 可保存 / 可清空的筛选键（不含时间范围、分页与排序） */
 export const ALERT_FILTER_KEYS = [
+  'probe_id',
   'source_ip',
   'destination_ip',
   'soc_name',
@@ -26,6 +27,7 @@ export type AlertFilterKey = (typeof ALERT_FILTER_KEYS)[number]
 
 /** 筛选键的中文标签（用于快捷方式条件摘要展示） */
 export const ALERT_FILTER_LABELS: Record<AlertFilterKey, string> = {
+  probe_id: '探针',
   source_ip: '源IP',
   destination_ip: '目的IP',
   soc_name: '告警类型',

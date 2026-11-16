@@ -91,6 +91,23 @@ sudo bash deploy.sh <interface>   # capture interface, e.g. eno1np0, ns192
 
 `deploy.sh` configures the NIC, generates certificates, bootstraps the password, updates rules and starts the full stack. The first run pulls images, so it takes as long as the network allows.
 
+### Probe deployment
+
+> Note: probes are only needed in multi-node scenarios; a standalone deployment (the `deploy.sh` one-command setup above) already includes the capture stack — skip this section.
+
+**1. Center side: issue the enrollment credentials**
+
+In the center web UI, open `Device Management` and click "Add Probe" to get a one-time enrollment token (valid for 24h); also copy `certs/ca.crt` from the center machine into the probe deployment directory (the CA public key is safe to distribute).
+
+**2. Probe side: run the deployment**
+
+```bash
+sudo bash deploy-probe.sh <interface> <center_addr> <token>
+# Example: sudo bash deploy-probe.sh ens192 192.168.1.10 xxxxxx
+```
+
+The script handles the mirror-port configuration, mTLS client certificate generation and registration, and starts the full container stack. It is idempotent: re-run it after changing the center address or certificates. Once registered, the probe shows as online under `Device Management`; rule updates and log retention changes are pushed automatically from the center afterwards.
+
 ### Sign-in
 
 | Service | URL | Credentials |
@@ -168,11 +185,13 @@ Any OpenAI-compatible endpoint works (vLLM / DashScope included).
 ```
 SenseMind/
 ├── deploy.sh                    # one-command deployment script
+├── deploy-probe.sh              # probe deployment script (multi-node)
 ├── remove.sh                    # full cleanup script
 ├── docker-compose.yml           # full-stack orchestration
+├── docker-compose-probe.yml     # probe orchestration (multi-node)
 ├── DEVICE_INTEGRATION.md        # device integration guide (supported devices, configuration, adding your own)
 ├── certs/                       # ES SSL certificates (generated)
-├── filebeat/filebeat.yml        # collection configuration
+├── filebeat/                    # Filebeat collection config (filebeat.yml / filebeat-probe.yml for probes)
 ├── logstash/
 │   ├── logstash.conf            # main pipeline
 │   ├── ai-push.conf             # AI push pipeline
@@ -180,6 +199,9 @@ SenseMind/
 ├── suricata/
 │   ├── combined.rules           # custom rules
 │   └── patch_yaml.py            # idempotent suricata.yaml patching script
+├── zeek/
+│   └── zeek-log-filter.zeek     # Zeek log filter script (keeps conn/http only)
+├── probe-agent/                 # probe agent container (health collection, reporting, config delivery, log rotation)
 ├── scripts/
 │   └── suri_monitor.py          # troubleshooting script: sampling monitor
 ├── ai-analyzer/
@@ -187,7 +209,7 @@ SenseMind/
 │   ├── knowledge/               # RAG knowledge base (MITRE + SOC playbooks)
 │   └── app/                     # FastAPI + LangChain 5-stage chain
 ├── alert-responder/             # Response service: email alerts, firewall device scripts, auto blocking
-└── web/                         # Vue 3 frontend (monitoring / analysis / logs / settings)
+└── web/                         # Vue 3 frontend (monitoring / analysis / logs / alert outbound / settings)
 ```
 
 `ai-analyzer/knowledge` ships with a basic RAG knowledge base only; it needs maintenance to keep detection accuracy up.

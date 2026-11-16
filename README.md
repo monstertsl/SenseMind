@@ -91,6 +91,23 @@ sudo bash deploy.sh <interface>   # 流量监听接口 如 eno1np0、ns192
 
 `deploy.sh` 会自动完成网卡配置、证书生成、密码引导、规则更新与全栈启动。首次部署需要拉取镜像，耗时取决于网络。
 
+### 探针部署
+
+> 备注：多节点场景才需要探针部署；单机部署（`deploy.sh` 一键部署）已内置采集能力，跳过本节即可。
+
+**1. 中心侧：生成接入凭证**
+
+在中心 Web 的 `设备管理` 页点击"添加探针"，获得一次性接入 token（24h 有效）；同时把中心机的 `certs/ca.crt` 拷贝到探针部署目录（CA 公钥可安全分发）。
+
+**2. 探针侧：执行部署**
+
+```bash
+sudo bash deploy-probe.sh <interface> <center_addr> <token>
+# 例：sudo bash deploy-probe.sh ens192 192.168.1.10 xxxxxx
+```
+
+脚本自动完成镜像口配置、mTLS 客户端证书生成与注册、全栈容器启动。幂等：更换中心地址或证书后重复运行即可。注册成功后中心 `设备管理` 页探针变为在线，后续规则更新、日志保留天数调整均由中心自动下发。
+
 ### 访问
 
 | 服务 | 地址 | 凭据 |
@@ -166,11 +183,13 @@ cat .env | grep ELASTIC_PASSWORD
 ```
 SenseMind/
 ├── deploy.sh                    # 一键部署脚本
+├── deploy-probe.sh              # 探针部署脚本（多节点）
 ├── remove.sh                    # 彻底清理脚本
 ├── docker-compose.yml           # 全栈编排
+├── docker-compose-probe.yml     # 探针编排（多节点）
 ├── DEVICE_INTEGRATION.md        # 设备接入指南（支持的设备、配置与自行接入）
 ├── certs/                       # ES SSL 证书（自动生成）
-├── filebeat/filebeat.yml        # 采集配置
+├── filebeat/                    # Filebeat 采集配置（filebeat.yml / filebeat-probe.yml 探针）
 ├── logstash/
 │   ├── logstash.conf            # 主管道
 │   ├── ai-push.conf             # AI 推送管道
@@ -178,6 +197,9 @@ SenseMind/
 ├── suricata/
 │   ├── combined.rules           # 自定义规则
 │   └── patch_yaml.py            # suricata.yaml 补丁脚本（幂等）
+├── zeek/
+│   └── zeek-log-filter.zeek     # Zeek 日志过滤脚本（仅保留 conn/http）
+├── probe-agent/                 # 探针 agent 容器（采集/上报/配置下发/日志轮转）
 ├── scripts/
 │   └── suri_monitor.py          # 排错脚本：采样监控
 ├── ai-analyzer/
@@ -185,7 +207,7 @@ SenseMind/
 │   ├── knowledge/               # RAG 知识库（MITRE + SOC Playbook）
 │   └── app/                     # FastAPI + LangChain 5阶段 Chain
 ├── alert-responder/             # 响应服务：邮件告警、防火墙设备脚本、自动封禁
-└── web/                         # Vue 3 前端（监控中心/分析中心/日志中心/系统设置）
+└── web/                         # Vue 3 前端（监测中心/分析中心/日志中心/联动外发/系统设置）
 ```
 
 `ai-analyzer/knowledge` 仅有基础 RAG 知识，需对其进行维护提高检测准确性。

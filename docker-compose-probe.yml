@@ -1,0 +1,143 @@
+# SenseMind 探针节点编排（F1/F2）
+# 与中心共用同一项目仓库；本文件为探针专用，仅运行 Suricata + Zeek + Filebeat 三个容器。
+# 部署/变更统一由 deploy-probe.sh 驱动，不手动编辑本文件。
+
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+networks:
+  probe-net:
+    driver: bridge
+
+volumes:
+  filebeat-probe-data:
+
+services:
+
+  suricata:
+    <<: *default-logging
+    image: jasonish/suricata:latest
+    container_name: probe-suricata
+    restart: unless-stopped
+    network_mode: host
+
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+
+    volumes:
+      - /data/suricata/logs:/var/log/suricata
+      - /data/suricata/lib:/var/lib/suricata
+      - /data/suricata/etc:/etc/suricata
+
+    command:
+      - -i
+      - ${INTERFACE:-ens192}
+
+  zeek:
+    <<: *default-logging
+    image: zeek/zeek:latest
+    container_name: probe-zeek
+    restart: unless-stopped
+    network_mode: host
+    user: root
+    working_dir: /opt/logs
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    volumes:
+      - /data/zeek/logs:/opt/logs
+      # 与单机版一致的日志过滤脚本（conn + http）
+      - /data/zeek/zeek-log-filter.zeek:/opt/zeek-log-filter.zeek:ro
+
+    command:
+      - zeek
+      - -i
+      - ${INTERFACE:-ens192}
+      - policy/tuning/json-logs
+      - policy/protocols/conn/community-id-logging
+      - LogAscii::json_timestamps=JSON::TS_ISO8601
+    # 与单机版一致：仅输出 conn/http，其余由挂载的 zeek-log-filter.zeek 过滤
+
+  filebeat:
+    <<: *default-logging
+    image: docker.elastic.co/beats/filebeat:8.19.16
+    container_name: probe-filebeat
+    user: root
+    restart: unless-stopped
+
+    networks:
+      - probe-net
+
+    environment:
+      # 来源标识（F4）：注册成功后由中心返回的内部 ID
+      - PROBE_UID=${PROBE_UID:-unset}
+      # 中心地址（仅主机名/IP，5044 日志通道目标）
+      - CENTER_HOST=${CENTER_HOST:-127.0.0.1}
+
+    volumes:
+      - ./filebeat/filebeat-probe.yml:/usr/share/filebeat/filebeat.yml:ro
+      # 中心 CA：校验 Logstash 5044 服务端证书（verification_mode: full，F8）
+      - ./certs/ca.crt:/usr/share/filebeat/certs/ca.crt:ro
+      # 探针客户端证书（mTLS，F3 注册签发）
+      - ./certs/probe/client.crt:/usr/share/filebeat/certs/client.crt:ro
+      - ./certs/probe/client.key:/usr/share/filebeat/certs/client.key:ro
+      - /data/suricata/logs:/var/log/suricata:ro
+      - /data/zeek/logs:/var/log/zeek:ro
+      - filebeat-probe-data:/usr/share/filebeat/data
+
+    # 等待中心 5044 端口就绪后再启动（与单机版入口逻辑一致，目标为中心节点）
+    entrypoint: >
+      bash -c "
+      echo '[*] 等待中心 ${CENTER_HOST:-127.0.0.1}:5044 就绪...';
+      until bash -c 'echo > /dev/tcp/${CENTER_HOST:-127.0.0.1}/5044' 2>/dev/null; do
+        echo '[-] 中心 5044 未就绪，3秒后重试...';
+        sleep 3;
+      done;
+      exec /usr/bin/tini -- /usr/local/bin/docker-entrypoint --strict.perms=false;
+      "
+
+  # 探针 agent 容器（合并原宿主机 timer 脚本 + probe-logrotate 工具容器）：
+  # Python 长驻，每 10 秒采集健康指标（与中心 metrics_common 同源同口径：Suricata 抓包面），
+  # 本地暂存未上报点、每 5 分钟 mTLS 心跳批量上报（中心落 PG system_metrics 时序）；
+  # 拉清单（吊销检查优先/保留天数同步/哈希比对/下载应用）；每小时检查 logrotate 轮转
+  # （按 state 判定每日一次，保留天数由中心清单下发动态渲染）。
+  # 吊销 = 停兄弟容器 + 自停（unless-stopped 手动 stop 后宿主机重启不复活）。
+  probe-agent:
+    <<: *default-logging
+    build: ./probe-agent
+    image: sensemind/probe-agent:latest
+    container_name: probe-agent
+    restart: unless-stopped
+    network_mode: host
+
+    environment:
+      - TZ=Asia/Shanghai
+      - CENTER_HOST=${CENTER_HOST:-127.0.0.1}
+
+    volumes:
+      # mTLS 身份（注册签发的探针客户端证书）+ 中心 CA
+      - ./certs/ca.crt:/certs/ca.crt:ro
+      - ./certs/probe/client.crt:/certs/client.crt:ro
+      - ./certs/probe/client.key:/certs/client.key:ro
+      # agent state：配置哈希 state / 健康暂存 buffer / retention / logrotate state
+      - /data/probe-agent:/data/probe-agent
+      # Suricata 热加载 exec + 吊销停服 + zeek 轮转 restart（与中心 ai-analyzer 同权限语义）
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 原始日志轮转目标目录 + 规则目录（下载解包写入 + suricata 热加载目标）
+      - /data/suricata/logs:/data/suricata/logs
+      - /data/suricata/lib:/data/suricata/lib
+      - /data/zeek/logs:/data/zeek/logs
+      # NTP 配置写入（写完后 touch ntp.pending，宿主机 path unit 触发 restart timesyncd）
+      - /etc/systemd/timesyncd.conf:/etc/systemd/timesyncd.conf
