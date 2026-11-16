@@ -67,6 +67,16 @@ def init_db() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("system_config.metric_retention_days 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
 
+    # 迁移：为已有 system_config 表补充 NTP 服务器字段（幂等）
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE system_config "
+                "ADD COLUMN IF NOT EXISTS ntp_servers TEXT NOT NULL DEFAULT ''"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("system_config.ntp_servers 字段迁移失败（首次建表会自动包含，可忽略）: %s", e)
+
     # 迁移：为已有 system_config 表补充邮件配置字段。
     try:
         with engine.begin() as conn:

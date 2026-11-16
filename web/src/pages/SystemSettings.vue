@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
@@ -21,6 +21,13 @@ import SkeletonTable from '@/components/common/SkeletonTable.vue'
 const route = useRoute()
 const router = useRouter()
 
+// ---- 页内 tab：通用配置 / 设备管理（与联动外发页同款样式） ----
+const activeTab = ref<'general' | 'devices'>('general')
+const pageTabs = [
+  { key: 'general', label: '通用配置' },
+  { key: 'devices', label: '设备管理' },
+] as const
+
 // ---- 集成配置 ----
 const configLoading = ref(false)
 const configSaving = ref(false)
@@ -32,6 +39,7 @@ const config = reactive<SystemConfig>({
   inactive_days_limit: 90,
   idle_timeout_minutes: 30,
   allowed_login_ips: '',
+  ntp_servers: '',
   updated_at: null,
 })
 
@@ -71,7 +79,47 @@ function checkIpWhitelist(value: string) {
 
 watch(() => config.allowed_login_ips, (val) => checkIpWhitelist(val))
 
+// ---- NTP 服务器格式校验（与后端规则一致：主机名或IP[:端口]，逗号分隔）----
+const NTP_ENTRY_RE = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5})?$/
+
+// 点分全数字形式必须按 IPv4 严格校验（4 段、每段 0-255），拦住 11111.111.1111.111 这类
+function isValidNtpHost(host: string): boolean {
+  if (/^\d+(\.\d+)+$/.test(host)) {
+    const parts = host.split('.')
+    return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+  }
+  return true
+}
+
+function validateNtpServers(raw: string): string {
+  const value = raw.trim()
+  if (!value) return ''
+  if (/[\r\n]/.test(value)) return 'NTP 服务器配置不能包含换行符'
+  for (const entry of value.split(',')) {
+    const item = entry.trim()
+    if (!item) return 'NTP 服务器配置存在空项，请检查逗号分隔格式'
+    if (!NTP_ENTRY_RE.test(item)) {
+      return `NTP 服务器格式无效：${item}（应为 主机名或IP[:端口]，如 ntp.aliyun.com 或 192.168.1.10）`
+    }
+    const port = item.match(/:(\d{1,5})$/)
+    if (port && !(Number(port[1]) >= 1 && Number(port[1]) <= 65535)) {
+      return `NTP 服务器端口无效：${item}（端口范围 1-65535）`
+    }
+    const host = port ? item.slice(0, -port[0].length) : item
+    if (!isValidNtpHost(host)) {
+      return `IP 地址无效：${host}（需为 IPv4 格式，4 段、每段 0-255）`
+    }
+  }
+  return ''
+}
+
+const ntpServersInvalid = computed(() => validateNtpServers(config.ntp_servers))
+
 async function handleSaveConfig() {
+  if (ntpServersInvalid.value) {
+    ElMessage.warning(ntpServersInvalid.value)
+    return
+  }
   configSaving.value = true
   try {
     await updateConfig({
@@ -82,6 +130,7 @@ async function handleSaveConfig() {
       inactive_days_limit: config.inactive_days_limit,
       idle_timeout_minutes: config.idle_timeout_minutes,
       allowed_login_ips: config.allowed_login_ips,
+      ntp_servers: config.ntp_servers,
     })
     ElMessage.success('配置已保存')
   } catch (e: any) {
@@ -119,6 +168,32 @@ const llmForm = reactive<LLMConfig>({
 // 是否使用自定义模型名称（手动输入而非从列表选择）
 const useCustomModel = ref(false)
 
+// ---- API Endpoint 格式校验（保存/测试时拦截，与后端规则一致）----
+const LLM_ENDPOINT_ERROR = '格式无效：需以 http:// 或 https:// 开头的URL地址'
+
+function llmEndpointInvalidOf(value: string): boolean {
+  const v = value.trim()
+  if (!v) return false
+  if (!/^https?:\/\//i.test(v)) return true
+  let hostname = ''
+  try {
+    hostname = new URL(v).hostname
+  } catch {
+    return true
+  }
+  if (!hostname) return true
+  // 纯数字且不含点的主机名（如 http://1232424）不可能是真实 API 服务器
+  if (!hostname.includes('.') && /^\d+$/.test(hostname)) return true
+  return false
+}
+
+function isValidLLMEndpoint(value: string): boolean {
+  return !llmEndpointInvalidOf(value)
+}
+
+// 输入即实时标红（文案统一，保存/测试时同样拦截）
+const llmEndpointInvalid = computed(() => llmEndpointInvalidOf(llmForm.api_endpoint))
+
 async function fetchLLMConfig() {
   llmLoading.value = true
   try {
@@ -147,17 +222,18 @@ function handleModelChange(val: string) {
   }
 }
 
-// 每次展开下拉框时自动获取模型列表
+// 每次展开下拉框时自动获取模型列表（endpoint 格式合法才请求）
 function handleModelVisible(visible: boolean) {
-  if (visible && llmForm.api_endpoint.trim()) {
+  if (visible && llmForm.api_endpoint.trim() && isValidLLMEndpoint(llmForm.api_endpoint)) {
     fetchLLMModels(llmForm.api_endpoint.trim(), (llmForm.api_key || '').trim())
   }
 }
 
-// 当 endpoint 或 key 变化时自动获取模型列表
+// 当 endpoint 或 key 变化时自动获取模型列表（endpoint 格式合法才请求）
 watch(() => [llmForm.api_endpoint, llmForm.api_key], ([ep, key]) => {
-  if (ep && ep.trim()) {
-    fetchLLMModels(ep.trim(), (key || '').trim())
+  const value = (ep || '').trim()
+  if (value && isValidLLMEndpoint(value)) {
+    fetchLLMModels(value, (key || '').trim())
   } else {
     llmModelOptions.value = []
     llmModelsLoaded.value = false
@@ -178,6 +254,10 @@ async function fetchLLMModels(endpoint: string, apiKey: string) {
 async function handleSaveLLM() {
   if (!llmForm.api_endpoint.trim()) {
     ElMessage.warning('API Endpoint 不能为空')
+    return
+  }
+  if (llmEndpointInvalidOf(llmForm.api_endpoint)) {
+    ElMessage.warning('API Endpoint ' + LLM_ENDPOINT_ERROR)
     return
   }
   if (useCustomModel.value && !llmForm.model.trim()) {
@@ -208,6 +288,10 @@ async function handleSaveLLM() {
 async function handleTestLLM() {
   if (!llmForm.api_endpoint.trim()) {
     ElMessage.warning('API Endpoint 不能为空')
+    return
+  }
+  if (llmEndpointInvalidOf(llmForm.api_endpoint)) {
+    ElMessage.warning('API Endpoint ' + LLM_ENDPOINT_ERROR)
     return
   }
   if (useCustomModel.value && !llmForm.model.trim()) {
@@ -255,6 +339,7 @@ const ACTION_LABELS: Record<string, string> = {
   cleanup_audit_log: '清理审计日志',
   update_security_policy: '安全策略',
   update_storage_policy: '存储优化',
+  update_ntp_config: 'NTP 设置',
   create_bypass_rule: '创建白名单',
   update_bypass_rule: '修改白名单',
   delete_bypass_rule: '删除白名单',
@@ -340,6 +425,19 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="system-settings">
+    <!-- 页内 tab：与联动外发页同款样式 -->
+    <div class="page-tabs">
+      <button
+        v-for="tab in pageTabs"
+        :key="tab.key"
+        type="button"
+        class="page-tab"
+        :class="{ active: activeTab === tab.key }"
+        @click="activeTab = tab.key"
+      >{{ tab.label }}</button>
+    </div>
+
+    <div v-show="activeTab === 'general'" class="tab-panel">
     <!-- 用户管理 -->
     <div class="section-block">
       <div class="block-title">用户管理</div>
@@ -373,6 +471,7 @@ onBeforeUnmount(() => {
                 v-model="config.allowed_login_ips"
                 type="textarea"
                 :rows="2"
+                class="input-mono"
                 placeholder="留空=全部允许，多个 IP 用逗号分隔"
               />
               <div v-if="ipWarning" class="ip-warning">{{ ipWarning }}</div>
@@ -380,7 +479,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 右列：存储优化 + LLM 模型 -->
+        <!-- 右列：存储优化（整宽）+ LLM 模型 | NTP 设置（左右各半） -->
         <div class="config-right-col">
           <!-- 存储优化 -->
           <div class="config-section">
@@ -401,14 +500,31 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- LLM 模型 -->
-          <div class="config-section config-section-llm">
-            <div class="section-title">LLM 模型</div>
-            <SkeletonLines v-if="llmLoading" :rows="1" />
-            <div v-else class="llm-info">
-              <span v-if="llmSaved.model" class="llm-model-name">{{ llmSaved.model }}</span>
-              <span v-else class="llm-model-empty">未配置</span>
-              <el-button type="primary" text @click="openLLMDialog">设置</el-button>
+          <!-- LLM 模型 + NTP 设置：LLM 仅展示模型名（配置走弹窗），宽度减半不碍事 -->
+          <div class="config-duo-row">
+            <!-- LLM 模型 -->
+            <div class="config-section config-section-llm">
+              <div class="section-title">LLM 模型</div>
+              <SkeletonLines v-if="llmLoading" :rows="1" />
+              <div v-else class="llm-info">
+                <span v-if="llmSaved.model" class="llm-model-name">{{ llmSaved.model }}</span>
+                <span v-else class="llm-model-empty">未配置</span>
+                <el-button type="primary" text @click="openLLMDialog">设置</el-button>
+              </div>
+            </div>
+
+            <!-- NTP 设置 -->
+            <div class="config-section">
+              <div class="section-title">NTP 设置</div>
+              <el-input
+                v-model="config.ntp_servers"
+                type="textarea"
+                :rows="2"
+                class="input-mono"
+                :class="{ 'ntp-input-invalid': !!ntpServersInvalid }"
+                placeholder="留空=使用系统默认，多个服务器用逗号分隔，如 ntp.aliyun.com,192.168.1.10"
+              />
+              <div v-if="ntpServersInvalid" class="ntp-error">{{ ntpServersInvalid }}</div>
             </div>
           </div>
         </div>
@@ -422,7 +538,14 @@ onBeforeUnmount(() => {
     <el-dialog v-model="llmDialogVisible" title="LLM 模型配置" width="560px" :close-on-click-modal="false" class="llm-config-dialog">
       <el-form label-width="120px" label-position="left">
         <el-form-item label="API Endpoint">
-          <el-input v-model="llmForm.api_endpoint" placeholder="https://api.example.com/v1" />
+          <el-input
+            v-model="llmForm.api_endpoint"
+            placeholder="https://api.example.com/v1"
+            :class="{ 'llm-endpoint-invalid': llmEndpointInvalid }"
+          />
+          <div v-if="llmEndpointInvalid" class="llm-endpoint-error">
+            {{ LLM_ENDPOINT_ERROR }}
+          </div>
         </el-form-item>
         <el-form-item label="API Key">
           <el-input v-model="llmForm.api_key" type="password" show-password placeholder="本地模型可留空" />
@@ -521,6 +644,15 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+    </div><!-- /tab-panel: 通用配置 -->
+
+    <!-- 设备管理 -->
+    <div v-show="activeTab === 'devices'" class="tab-panel">
+      <div class="section-block">
+        <div class="block-title">设备管理</div>
+        <div class="device-empty">设备管理功能建设中：探针节点接入、运行状态与联动设备将在此统一管理</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -549,6 +681,104 @@ onBeforeUnmount(() => {
   color: $color-text-primary;
   padding-left: 10px;
   border-left: 4px solid $color-primary;
+}
+
+// 页内 tab：与联动外发页同款样式
+.page-tabs {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 2px;
+  border-bottom: 1px solid $color-border;
+}
+
+.page-tab {
+  position: relative;
+  padding: 6px 2px 10px;
+  border: none;
+  background: transparent;
+  color: $color-text-secondary;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s;
+
+  &:hover {
+    color: $color-primary;
+  }
+
+  &.active {
+    color: $color-primary;
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 3px;
+      border-radius: 2px;
+      background: $color-primary;
+    }
+  }
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.device-empty {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 13px;
+  color: $color-text-secondary;
+}
+
+// LLM | NTP 左右各半的行，吸收右列剩余高度与左列对齐
+.config-duo-row {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 1100px) {
+  .config-duo-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+// 等宽输入框（IP 白名单 / NTP 服务器）：与表格数据列同规格 14px/600 + tnum
+.input-mono :deep(.el-textarea__inner),
+.input-mono :deep(.el-input__inner) {
+  font-family: $font-mono;
+  font-feature-settings: 'tnum';
+  font-weight: 600;
+}
+
+// NTP / LLM endpoint 校验失败态
+.ntp-input-invalid :deep(.el-textarea__inner) {
+  box-shadow: 0 0 0 1px $color-danger inset;
+}
+
+.ntp-error {
+  font-size: 12px;
+  color: $color-danger;
+  margin-top: 6px;
+}
+
+// LLM endpoint 校验失败态（输入即提示，文案统一）
+.llm-endpoint-invalid :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px $color-danger inset;
+}
+
+.llm-endpoint-error {
+  font-size: 12px;
+  color: $color-danger;
+  margin-top: 4px;
+  width: 100%;
 }
 
 .config-row {
