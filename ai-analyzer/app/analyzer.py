@@ -571,6 +571,7 @@ class AlertAnalyzer:
 
         record = {
             "analysis_source": "semantic_unalerted",
+            "probe_id": ctx.probe_id,
             "threat_verdict": "确认威胁",
             "attack_technique": technique,
             "attack_stage": ctx.attack_stage,
@@ -828,6 +829,9 @@ class AlertAnalyzer:
         analysis["alert_signature_id"] = ctx.signature_id
         analysis["alert_category"] = ctx.category
         analysis["alert_severity"] = ctx.severity
+        # 探针来源标识（F12）：原始事件由 filebeat-probe 携带 probe_id，
+        # 中心自身事件经 Logstash 补默认值 center（F10）；AI 记录随告警透传
+        analysis["probe_id"] = ctx.probe_id
         # alert_timestamp 为 date 类型，空字符串会触发 ES 400（cannot parse empty datetime），
         # 告警无 @timestamp 时回退为当前时间
         analysis["alert_timestamp"] = ctx.timestamp or datetime.now(timezone.utc).isoformat()
@@ -987,6 +991,7 @@ class AlertAnalyzer:
     def _fallback_result(self, ctx: AlertContext, error: str) -> dict:
         """分析失败降级结果"""
         return {
+            "probe_id": ctx.probe_id,
             "threat_verdict": "可疑",
             "confidence": 0.3,
             "attack_result": "未知",

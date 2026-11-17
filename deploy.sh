@@ -205,6 +205,49 @@ else
 fi
 
 ########################################
+# 0.1.2 多探针基础设施初始化（F15）
+#     ① 探针 CA（probe-ca）：为探针客户端证书注册签发/续签
+#     ② Logstash TLS 服务端证书（logstash.crt/key）：5044 对外 TLS，SAN 含本机 IP
+#     5044 准入仅依赖 mTLS 客户端证书（F8 方案 A）：不做宿主机防火墙白名单，
+#     避免"运维关闭防火墙导致防线失效"的隐患；如需网络收口由部署环境外围设备处理
+########################################
+if [ ! -f "$CERTS_DIR/probe-ca.crt" ] || [ ! -f "$CERTS_DIR/probe-ca.key" ]; then
+    echo "[*] 生成探针 CA（probe-ca，有效期 5 年）..."
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "$CERTS_DIR/probe-ca.key" -out "$CERTS_DIR/probe-ca.crt" \
+        -days 1825 -subj "/CN=SenseMind Probe CA" 2>/dev/null
+    chmod 644 "$CERTS_DIR/probe-ca.crt"
+    chmod 600 "$CERTS_DIR/probe-ca.key"
+    echo "[+] 探针 CA 已生成: probe-ca.crt / probe-ca.key"
+else
+    echo "[+] 探针 CA 已存在，跳过生成"
+fi
+
+if [ ! -f "$CERTS_DIR/logstash.crt" ] || [ ! -f "$CERTS_DIR/logstash.key" ]; then
+    echo "[*] 为 Logstash 5044 签发 TLS 服务端证书（复用 ES CA，SAN 含本机 IP）..."
+    LS_SAN="DNS:localhost,IP:127.0.0.1"
+    for ip in $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -v '^127\.' | sort -u); do
+        LS_SAN="${LS_SAN},IP:${ip}"
+    done
+    openssl genrsa -out "$CERTS_DIR/logstash.key" 2048 2>/dev/null
+    openssl req -new -key "$CERTS_DIR/logstash.key" -out "$CERTS_DIR/logstash.csr" \
+        -subj "/CN=sensemind-logstash" 2>/dev/null
+    printf "subjectAltName=%s\nextendedKeyUsage=serverAuth\n" "$LS_SAN" > "$CERTS_DIR/logstash.ext"
+    openssl x509 -req -in "$CERTS_DIR/logstash.csr" \
+        -CA "$CERTS_DIR/ca/ca.crt" -CAkey "$CERTS_DIR/ca/ca.key" \
+        -CAcreateserial -out "$CERTS_DIR/logstash.crt" -days 3650 -sha256 \
+        -extfile "$CERTS_DIR/logstash.ext" 2>/dev/null
+    rm -f "$CERTS_DIR/logstash.csr" "$CERTS_DIR/logstash.ext" "$CERTS_DIR/ca/ca.srl"
+    chmod 644 "$CERTS_DIR/logstash.crt"
+    # logstash 容器以 uid 1000 运行，私钥属主需为其可读
+    chown 1000:1000 "$CERTS_DIR/logstash.key"
+    chmod 600 "$CERTS_DIR/logstash.key"
+    echo "[+] Logstash TLS 证书已签发，SAN: $LS_SAN"
+else
+    echo "[+] Logstash TLS 证书已存在，跳过签发"
+fi
+
+########################################
 # 0.2 清理残留容器
 #     - 非全新部署时，上次失败可能残留容器，按服务名强制移除避免重名冲突
 ########################################
@@ -243,76 +286,17 @@ fi
 mkdir -p /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
 chmod 755 /data /data/suricata /data/zeek /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc /data/zeek/logs
 
-# 创建 Zeek 日志过滤脚本（仅保留 conn 做全流量记录，dns/http/ssl 不再输出）。
+# 部署 Zeek 日志过滤脚本（仅保留 conn 做全流量记录，dns/http/ssl 不再输出）。
 # 注意：必须创建为"文件"，docker 才会把宿主机路径作为文件挂载到 /opt/zeek-log-filter.zeek；
 # 若此处漏建，docker 会自动用同名"空目录"挂载，导致 zeek 把目录当包加载而崩溃循环。
-if [ ! -f /data/zeek/zeek-log-filter.zeek ]; then
-    cat > /data/zeek/zeek-log-filter.zeek <<'ZEEK_FILTER_EOF'
-# SenseMind Zeek 日志过滤脚本
-# 保留 conn + http 日志；dns / ssl / packet_filter 不再输出。
-# 本脚本随 zeek 启动命令加载（未经过 site/local.zeek）。
-#
-# 实现：
-#   1. 运行时遍历 Log::active_streams 反向保留（priority=-10），禁用基础协议流
-#   2. PacketFilter::LOG 在 zeek_init &priority=5 创建（晚于 -10），且第一条记录在
-#      zeek_init 期间就写入，disable_stream 来不及。改用 hook PacketFilter::log_policy
-#      直接 break 否决所有写入，从根本上阻止 packet_filter.log 产生。
-#   注：zeek priority 数值越小越先执行。
-
-# Zeek 日志轮转统一由 logrotate 管理（create 模式 + postrotate docker restart zeek）。
-redef LogAscii::enable_leftover_log_rotation = T;
-
-module SenseMindFilter;
-
-# 保留的日志流：conn（全流量记录）+ http（联合查询语义分析）
-const keep_streams: set[Log::ID] = {
-    Conn::LOG,
-    HTTP::LOG,
-};
-
-# 禁用基础协议流（在默认 priority 的 zeek_init 之后执行）
-event zeek_init() &priority=-10
-    {
-    # 先收集待禁用的流，再统一禁用；避免在遍历 active_streams 的同时
-    # disable_stream 修改该表引发迭代器失效（iterator invalidation）。
-    local to_disable: set[Log::ID] = set();
-    for ( sid in Log::active_streams )
-        {
-        if ( sid !in keep_streams )
-            add to_disable[sid];
-        }
-    for ( sid in to_disable )
-        Log::disable_stream(sid);
-    }
-
-# PacketFilter::LOG 在 zeek_init &priority=5 创建，第一条记录在 install() 里立即写入，
-# disable_stream（即使 priority=10）来不及拦截。直接 hook 其 log_policy 用 break 否决。
-hook PacketFilter::log_policy(rec: PacketFilter::Info, id: Log::ID, filter: Log::Filter)
-    {
-    break;
-    }
-
-# 减少 conn.log 体积：写盘前剔除与 SOC 分析冗余或纯噪音的连接。
-const conn_noise_ports: set[port] = {
-    53/udp, 53/tcp,
-    5355/udp, 5353/udp, 1900/udp,
-    137/udp, 138/udp, 139/tcp,
-    123/udp, 67/udp, 68/udp,
-};
-
-# Zeek 8.2 移除 filter$invalidate 字段，改用 break 否决该记录写入。
-hook Conn::log_policy(rec: Conn::Info, id: Log::ID, filter: Log::Filter)
-    {
-    if ( ! rec?$id ) return;
-    if ( rec$id$resp_p in conn_noise_ports )
-        break;
-    if ( rec$id$resp_h in 224.0.0.0/4 )
-        break;
-    }
-
-ZEEK_FILTER_EOF
-    chmod 644 /data/zeek/zeek-log-filter.zeek
+# 脚本内容在项目内 zeek/zeek-log-filter.zeek（与探针部署包共用同一份）。
+if [ -f "$BASE_DIR/zeek/zeek-log-filter.zeek" ]; then
+    cp "$BASE_DIR/zeek/zeek-log-filter.zeek" /data/zeek/zeek-log-filter.zeek
+elif [ ! -f /data/zeek/zeek-log-filter.zeek ]; then
+    echo "[-] 错误：缺少 $BASE_DIR/zeek/zeek-log-filter.zeek（Zeek 日志过滤脚本）"
+    exit 1
 fi
+chmod 644 /data/zeek/zeek-log-filter.zeek
 
 chown -R "$PUID:$PGID" /data/suricata/logs /data/suricata/lib /data/suricata/lib/rules /data/suricata/etc
 

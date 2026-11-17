@@ -7,17 +7,22 @@ import {
   type BypassRuleItem,
 } from '@/api/bypassRule'
 import SkeletonTable from '@/components/common/SkeletonTable.vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 
 const rules = ref<BypassRuleItem[]>([])
 const duplicateRules = ref<BypassRuleItem[]>([])
 const loading = ref(false)
 const keyword = ref('')
+const { spinning: listSpinning, spin: spinList } = useButtonSpin()
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 
+let firstFetch = true // 首屏加载由骨架屏反馈，刷新按钮不转
 async function fetchRules() {
   loading.value = true
+  if (!firstFetch) spinList()
+  firstFetch = false
   try {
     const params: Record<string, unknown> = {
       page: page.value,
@@ -397,7 +402,7 @@ function formatTime(t: string | null): string {
           class="search-input"
           @keyup.enter="handleSearch"
         />
-        <el-button :icon="Refresh" @click="fetchRules">刷新</el-button>
+        <el-button :icon="Refresh" :class="{ 'refresh-loading': loading || listSpinning }" @click="fetchRules">刷新</el-button>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建白名单</el-button>
     </div>

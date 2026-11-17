@@ -12,6 +12,8 @@
       "dynamic": true,
       "properties": {
         "@timestamp": { "type": "date" },
+        "probe_id": { "type": "keyword" },
+        "site": { "type": "keyword" },
         "source": {
           "properties": {
             "ip": { "type": "ip" },

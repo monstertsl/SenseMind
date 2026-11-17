@@ -9,8 +9,10 @@ export function getSystemInfo(): Promise<SystemInfo> {
   return request.get('/system/info')
 }
 
-export function getSystemMetrics(range: MetricRange): Promise<SystemMetrics> {
-  return request.get('/system/metrics', { params: { range } })
+export function getSystemMetrics(range: MetricRange, probeId?: string): Promise<SystemMetrics> {
+  return request.get('/system/metrics', {
+    params: { range, probe_id: probeId || undefined },
+  })
 }
 
 export function getClientIp(): Promise<{ ip: string }> {

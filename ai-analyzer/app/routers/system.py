@@ -24,16 +24,18 @@ def system_info(current_user: AuthContext = Depends(get_current_user)):
 @router.get("/metrics")
 def system_metrics(
     range: str = Query("24h"),
+    probe_id: str | None = Query(None),
     current_user: AuthContext = Depends(get_current_user),
 ):
     """系统资源时序数据（趋势图用）。
 
     range: 1h（5秒原始点）/ 24h（2分钟桶）/ 7d（30分钟桶）
+    probe_id: 空=中心自身时序；传设备ID=该探针时序（设备管理健康详情用）
     丢包用 SUM 聚合，CPU/内存/流量用 AVG（附带 max）。
     """
     if range not in ("1h", "24h", "7d"):
         range = "24h"
-    data = query_metrics(range)
+    data = query_metrics(range, probe_id=probe_id)
     return ApiResponse(
         code=0, message="ok",
         data=data,

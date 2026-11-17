@@ -8,6 +8,7 @@ export interface SystemConfig {
   inactive_days_limit: number
   idle_timeout_minutes: number
   allowed_login_ips: string
+  ntp_servers: string
   updated_at: string | null
 }
 

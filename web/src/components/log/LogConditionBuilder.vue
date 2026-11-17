@@ -5,12 +5,15 @@ import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLogExplorerStore } from '@/stores/logExplorer'
 import KqlInput from '@/components/common/KqlInput.vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 import type { LogFieldMapping } from '@/types'
 import { ES_FIELD_MAPPING } from '@/constants/esFieldMapping'
 import { kqlEnumValues, type KqlFieldDef } from '@/constants/kqlFields'
 
 const store = useLogExplorerStore()
 const { conditions, kqlMode, kqlText, keyword, fieldMappings } = storeToRefs(store)
+
+const { spinning: resetSpinning, spin: spinReset } = useButtonSpin()
 
 // 字段类型对应可用操作符
 const OPERATOR_BY_TYPE: Record<string, { value: string; label: string }[]> = {
@@ -55,6 +58,7 @@ const OPERATOR_BY_TYPE: Record<string, { value: string; label: string }[]> = {
 // 其他分组（Suricata、其他等）全部隐藏
 const ALLOWED_FIELDS: Record<string, string> = {
   '_id': '原始日志ID',
+  'probe_id': '探针',
   'source.ip': '源地址',
   'source.port': '源端口',
   'destination.ip': '目的地址',
@@ -100,9 +104,18 @@ const allFields = computed(() => {
     group: '基础',
     available: true,
   }
+  // probe_id（F12）：存量索引 mapping 可能没有该字段，本地兜底始终可用
+  const probeIdField = {
+    name: 'probe_id',
+    alias: '探针',
+    type: 'keyword' as const,
+    example: 'center',
+    group: '基础',
+    available: true,
+  }
   // 去重（按 name）
   const seen = new Set<string>()
-  const merged = [idField, ...fromEs, ...local].filter((f) => {
+  const merged = [idField, probeIdField, ...fromEs, ...local].filter((f) => {
     if (seen.has(f.name)) return false
     seen.add(f.name)
     return true
@@ -183,6 +196,7 @@ function search() {
 }
 
 function reset() {
+  spinReset()
   store.clearConditions()
   emit('reset')
 }
@@ -303,7 +317,7 @@ function reset() {
       <el-button type="primary" @click="search">
         <el-icon><Search /></el-icon>检索
       </el-button>
-      <el-button @click="reset">
+      <el-button :class="{ 'refresh-loading': resetSpinning }" @click="reset">
         <el-icon><RefreshLeft /></el-icon>重置
       </el-button>
     </div>

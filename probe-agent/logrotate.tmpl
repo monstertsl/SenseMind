@@ -1,0 +1,60 @@
+# SenseMind 探针原始日志轮转配置（F2/F6 补充）
+# 提取自中心 ai-analyzer/logrotate-sensemind-raw-logs（同款轮转/清理语义），
+# 差异点：
+#   1. zeek restart 的容器名为 probe-zeek（中心为 zeek，由 ai-analyzer 容器执行）
+#   2. rotate/maxage 使用 __MAXAGE__ 占位符，由 entrypoint 按中心清单下发的
+#      raw_log_file_retention_days 动态生成（与中心 scheduler.RAW_LOG_FILE_RETENTION_DAYS 同源）
+# 中心侧此文件不做修改（中心轮转由 ai-analyzer 内 scheduler 每日调用）。
+# 本模板不直接被 logrotate 消费，由 entrypoint.sh 渲染为 /etc/logrotate.d/sensemind-raw-logs。
+
+/data/suricata/logs/eve.json
+{
+    daily
+    rotate __MAXAGE__
+    maxage __MAXAGE__
+    copytruncate
+    compress
+    missingok
+    notifempty
+    nocreate
+    dateext
+    dateyesterday
+    dateformat -%Y%m%d
+    su root root
+}
+
+# fast.log/stats.log/suricata.log 仅保留当天活跃文件，轮转后归档直接删除（rotate 0）
+/data/suricata/logs/fast.log
+/data/suricata/logs/stats.log
+/data/suricata/logs/suricata.log
+{
+    daily
+    rotate 0
+    copytruncate
+    missingok
+    notifempty
+    nocreate
+    su root root
+}
+
+/data/zeek/logs/conn.log
+/data/zeek/logs/http.log
+{
+    daily
+    rotate __MAXAGE__
+    maxage __MAXAGE__
+    create 0644 root root
+    compress
+    missingok
+    notifempty
+    dateext
+    dateyesterday
+    dateformat -%Y%m%d
+    su root root
+    postrotate
+        # zeek 不支持 SIGHUP reopen，通过 docker socket API restart probe-zeek 容器，
+        # restart:unless-stopped 策略确保拉起，zeek 重新打开新日志文件偏移归零。
+        # （与中心同语义，中心为 ai-analyzer 容器经 docker.sock restart zeek）
+        curl -s --unix-socket /var/run/docker.sock -X POST "http://docker/containers/probe-zeek/restart" > /dev/null 2>&1 || true
+    endscript
+}

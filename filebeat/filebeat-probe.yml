@@ -1,0 +1,57 @@
+# SenseMind 探针 Filebeat 配置（F4/F8）
+# 与单机版采集范围一致（suricata eve + zeek conn/http）；输出指向中心 5044。
+# TLS + mTLS：verification_mode=full 严格校验中心服务端证书（防中间人）；
+# 客户端证书由中心注册接口签发（CN=内部 probe_id）。
+
+filebeat.config.modules:
+  path: /etc/filebeat/modules.d/*.yml
+  reload.enabled: false
+
+filebeat.modules:
+
+- module: suricata
+  eve:
+    enabled: true
+    var.paths: ["/var/log/suricata/eve.json"]
+
+- module: zeek
+  connection:
+    enabled: true
+    var.paths: ["/var/log/zeek/conn.log"]
+  dns:
+    enabled: false
+  http:
+    enabled: true
+    var.paths: ["/var/log/zeek/http.log"]
+  ssl:
+    enabled: false
+
+# 来源标识（F4）：每条事件带内部 probe_id（双 ID 设计，永不改变）
+fields:
+  probe_id: "${PROBE_UID}"
+fields_under_root: true
+
+# =========================
+# OUTPUT：中心节点
+# =========================
+output.logstash:
+  hosts:
+    - "${CENTER_HOST}:5044"
+  ssl:
+    enabled: true
+    # 中心 CA（公钥证书，随部署物料分发）
+    certificate_authorities: ["/usr/share/filebeat/certs/ca.crt"]
+    verification_mode: full
+    # 探针客户端证书（mTLS 认证，F8）
+    certificate: "/usr/share/filebeat/certs/client.crt"
+    key: "/usr/share/filebeat/certs/client.key"
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+logging.to_stderr: true
+logging.level: info
+
+processors:
+  - drop_fields:
+      fields: ["event.original"]
+      ignore_missing: true

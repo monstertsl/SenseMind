@@ -3,6 +3,7 @@
 import uuid
 import logging
 import httpx
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -22,6 +23,37 @@ router = APIRouter(prefix="/api/v1/llm-config", tags=["LLM配置"])
 _DEFAULT_TEMPERATURE = 0.1
 _DEFAULT_MAX_TOKENS = 8000
 _DEFAULT_TIMEOUT = 300
+
+
+def _validate_endpoint(value: str) -> str:
+    """校验 API Endpoint 格式：必须有 http/https 协议头且能解析出主机。
+
+    只管格式，不保证连通（连通性由 /test 接口负责）。
+    """
+    endpoint = (value or "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="API Endpoint 不能为空")
+    # 统一格式错误文案：协议头缺失 / 主机缺失 / 纯数字主机名
+    if not endpoint.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="API Endpoint 格式无效：需以 http:// 或 https:// 开头的URL地址",
+        )
+    parsed = urlparse(endpoint)
+    if not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="API Endpoint 格式无效：需以 http:// 或 https:// 开头的URL地址",
+        )
+    # 纯数字且不含点的主机名（如 http://1232424）不可能是真实 API 服务器，直接拦截；
+    # 域名、IP（含点）、localhost、容器服务名（如 ollama）均放行
+    hostname = parsed.hostname or ""
+    if hostname and "." not in hostname and hostname.isdigit():
+        raise HTTPException(
+            status_code=400,
+            detail="API Endpoint 格式无效：需以 http:// 或 https:// 开头的URL地址",
+        )
+    return endpoint
 
 
 class LLMConfigUpdate(BaseModel):
@@ -115,7 +147,11 @@ def update_llm_config(body: LLMConfigUpdate, db: Session = Depends(get_db),
                       current_user: AuthContext = Depends(require_role("admin"))):
     cfg = _get_or_create_config(db)
     if body.api_endpoint is not None:
-        cfg.llm_api_endpoint = body.api_endpoint.strip()
+        # 空字符串=清空配置（允许）；非空则必须通过格式校验
+        endpoint = body.api_endpoint.strip()
+        if endpoint:
+            endpoint = _validate_endpoint(endpoint)
+        cfg.llm_api_endpoint = endpoint
     if body.api_key is not None:
         cfg.llm_api_key = body.api_key.strip()
     if body.model is not None:
@@ -153,6 +189,7 @@ def test_llm_connection(body: LLMTestRequest, db: Session = Depends(get_db),
     endpoint = body.api_endpoint.strip()
     if not endpoint:
         raise HTTPException(status_code=400, detail="API Endpoint 不能为空")
+    endpoint = _validate_endpoint(endpoint)
 
     api_key = body.api_key.strip()
     model = body.model.strip()
@@ -214,6 +251,7 @@ def list_models(
 
     if not ep:
         return ApiResponse(code=0, message="ok", data=[], request_id=str(uuid.uuid4()))
+    ep = _validate_endpoint(ep)
 
     headers = {"Accept": "application/json"}
     if key:

@@ -479,6 +479,9 @@ class ESClient:
             "event": {"kind": "ai_analysis", "module": "ai-analyzer"},
             "ai": analysis,
         }
+        # probe_id 提升到 root（F12）：分析中心按探针过滤查的是 root 字段（keyword mapping）
+        if analysis.get("probe_id"):
+            doc["probe_id"] = analysis["probe_id"]
 
         resp = self.client.index(index=index_name, document=doc, refresh=True)
         doc_id = resp["_id"]

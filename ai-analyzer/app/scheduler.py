@@ -331,6 +331,17 @@ def cleanup_audit_logs() -> None:
             pass
 
 
+def _publish_probe_config() -> None:
+    """探针配置发布（失败不中断 scheduler）"""
+    try:
+        from .core.probe_config import publish_probe_config
+
+        m = publish_probe_config()
+        logger.info("探针配置清单已更新: %d 项资源", len(m.get("resources", {})))
+    except Exception as e:  # noqa: BLE001
+        logger.error("探针配置发布失败: %s", e, exc_info=True)
+
+
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
@@ -342,8 +353,11 @@ def start_scheduler() -> None:
     _scheduler.add_job(cleanup_audit_logs, "cron", hour=2, minute=45, id="cleanup_audit_logs")
     _scheduler.add_job(cleanup_system_metrics, "cron", hour=2, minute=50, id="cleanup_system_metrics")
     _scheduler.add_job(deactivate_inactive_users, "cron", hour=3, minute=0, id="deactivate_inactive_users")
+    # 探针配置发布节流（F6/F13）：每 5 分钟检查规则/NTP 内容有变才打包发布
+    _scheduler.add_job(_publish_probe_config, "interval", minutes=5,
+                       id="publish_probe_config", next_run_time=datetime.now())
     _scheduler.start()
-    logger.info("定时任务已启动（02:00 原始日志 / 02:30 soc索引 / 02:32 soc-ai索引 / 02:45 审计日志 / 03:00 未登录禁用）")
+    logger.info("定时任务已启动（02:00 清理系列 / 03:00 未登录禁用 / 每5分钟 探针配置发布）")
 
 
 def shutdown_scheduler() -> None:

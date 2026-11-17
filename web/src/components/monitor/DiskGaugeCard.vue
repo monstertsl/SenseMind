@@ -8,7 +8,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import BaseChart from '@/components/common/BaseChart.vue'
-import { getSystemInfo } from '@/api/metrics'
+import { getSystemInfo, getSystemMetrics } from '@/api/metrics'
 import type { SystemInfo } from '@/types'
 import type { EChartsOption } from 'echarts'
 import { CHART_FONT_MONO } from '@/constants/chart'
@@ -16,6 +16,11 @@ import { CHART_FONT_MONO } from '@/constants/chart'
 const props = defineProps<{
   /** 配合全局刷新间隔自动更新（与趋势图一致，不自建轮询） */
   refreshKey?: number
+  /** 探针设备ID：传入则磁盘值取该探针时序最后一点（探针只报百分比，无容量）；空=中心自身 */
+  probeId?: string
+  /** 探针磁盘容量（字节，来自健康快照）：传入则在仪表盘下方显示 已用/总量 */
+  diskUsed?: number | null
+  diskTotal?: number | null
 }>()
 
 const info = ref<SystemInfo | null>(null)
@@ -23,7 +28,15 @@ const loading = ref(true)
 
 async function load() {
   try {
-    info.value = await getSystemInfo()
+    if (props.probeId) {
+      // 探针模式：磁盘是探针时序列，取最近一点的使用率（无 used/total 容量信息）
+      const d = await getSystemMetrics('1h', props.probeId)
+      const last = d.points.length ? d.points[d.points.length - 1] : null
+      const v = last?.disk_percent
+      info.value = v == null ? null : { disk_percent: v, disk_total: 0, disk_used: 0 }
+    } else {
+      info.value = await getSystemInfo()
+    }
   } catch {
     // 静默失败，保留旧数据
   } finally {
@@ -33,7 +46,7 @@ async function load() {
 
 // 跟随全局刷新间隔刷新，不再自建 5 秒轮询
 watch(
-  () => props.refreshKey,
+  () => [props.refreshKey, props.probeId],
   () => {
     load()
   },
@@ -55,7 +68,11 @@ const percent = computed(() => info.value?.disk_percent ?? 0)
 
 const subtitle = computed(() => {
   if (!info.value) return ''
-  return `${formatGb(info.value.disk_used)} / ${formatGb(info.value.disk_total)}`
+  // 探针模式容量来自健康快照 props；中心模式来自 system/info
+  const used = props.probeId ? props.diskUsed : info.value.disk_used
+  const total = props.probeId ? props.diskTotal : info.value.disk_total
+  if (used == null || total == null || total <= 0) return ''
+  return `${formatGb(used)} / ${formatGb(total)}`
 })
 
 const option = computed<EChartsOption>(() => ({
@@ -101,10 +118,11 @@ const option = computed<EChartsOption>(() => ({
       <h3 class="chart-title">磁盘使用率</h3>
     </div>
     <div v-if="loading && !info" class="skeleton-block chart-skeleton"></div>
+    <div v-else-if="!info" class="disk-empty">暂无磁盘数据</div>
     <template v-else>
       <BaseChart :option="option" height="200px" />
-      <!-- 容量数值放在仪表盘下方，与百分比分离，避免重叠 -->
-      <div class="disk-footer">
+      <!-- 容量数值放在仪表盘下方，与百分比分离，避免重叠（无容量数据时隐藏） -->
+      <div v-if="subtitle" class="disk-footer">
         <span class="disk-capacity">{{ subtitle }}</span>
       </div>
     </template>
@@ -143,6 +161,16 @@ const option = computed<EChartsOption>(() => ({
 .chart-skeleton {
   width: 100%;
   height: 210px;
+}
+
+// 探针无磁盘数据占位
+.disk-empty {
+  height: 210px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: $color-text-placeholder;
+  font-size: 13px;
 }
 
 // 仪表盘下方：容量数值（与百分比分离，避免重叠）

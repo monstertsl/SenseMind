@@ -36,11 +36,13 @@ RANGES = {
 }
 
 
-def query_metrics(range_key: str = "24h") -> dict:
+def query_metrics(range_key: str = "24h", probe_id: str | None = None) -> dict:
     """按档位查询聚合后的时序数据。
 
     Args:
         range_key: "1h" | "24h" | "7d"
+        probe_id: 探针设备ID；None=中心自身（probe_id IS NULL），
+                  传入则只查该探针的时序（设备管理健康详情用）
 
     Returns:
         {
@@ -49,7 +51,8 @@ def query_metrics(range_key: str = "24h") -> dict:
           "points": [
             {"ts": "2026-08-28T14:30:00+08:00",
              "cpu_percent": 12.4, "memory_percent": 38.8,
-             "traffic_mbps": 934.9, "drops": 387312},
+             "traffic_mbps": 934.9, "drops": 387312,
+             "disk_percent": null},
             ...
           ]
         }
@@ -65,6 +68,13 @@ def query_metrics(range_key: str = "24h") -> dict:
     start = now - timedelta(seconds=span_seconds)
 
     with SessionLocal() as db:
+        # 行归属过滤：中心（probe_id IS NULL）与探针（probe_id=uid）同表共存，
+        # 必须显式区分，否则中心趋势图会混入所有探针的行
+        if probe_id:
+            owner = SystemMetric.probe_id == probe_id
+        else:
+            owner = SystemMetric.probe_id.is_(None)
+
         if bucket == 0:
             # 不聚合：直接取原始点
             rows = db.execute(
@@ -74,8 +84,9 @@ def query_metrics(range_key: str = "24h") -> dict:
                     SystemMetric.memory_percent,
                     SystemMetric.traffic_mbps,
                     SystemMetric.drops_delta,
+                    SystemMetric.disk_percent,
                 )
-                .where(SystemMetric.created_at >= start)
+                .where(SystemMetric.created_at >= start, owner)
                 .order_by(SystemMetric.created_at.asc())
             ).all()
             points = [
@@ -85,6 +96,7 @@ def query_metrics(range_key: str = "24h") -> dict:
                     "memory_percent": round(r[2] or 0.0, 1),
                     "traffic_mbps": round(r[3] or 0.0, 1),
                     "drops": int(r[4] or 0),
+                    "disk_percent": round(float(r[5]), 1) if r[5] is not None else None,
                 }
                 for r in rows
             ]
@@ -104,8 +116,9 @@ def query_metrics(range_key: str = "24h") -> dict:
                     func.avg(SystemMetric.memory_percent),
                     func.avg(SystemMetric.traffic_mbps),
                     func.sum(SystemMetric.drops_delta),  # 丢包必须 SUM
+                    func.avg(SystemMetric.disk_percent),  # 探针磁盘（桶内均值，中心行为 NULL）
                 )
-                .where(SystemMetric.created_at >= start)
+                .where(SystemMetric.created_at >= start, owner)
                 .group_by("bkt")
                 .order_by("bkt")
             ).all()
@@ -116,6 +129,7 @@ def query_metrics(range_key: str = "24h") -> dict:
                     "memory_percent": round(float(r[2] or 0), 1),
                     "traffic_mbps": round(float(r[3] or 0), 1),
                     "drops": int(r[4] or 0),
+                    "disk_percent": round(float(r[5]), 1) if r[5] is not None else None,
                 }
                 for r in rows
             ]

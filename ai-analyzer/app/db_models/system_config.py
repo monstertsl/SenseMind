@@ -28,6 +28,9 @@ class SystemConfig(Base):
     # 允许登录 IP 白名单（逗号分隔，空字符串=全部允许）
     allowed_login_ips: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
+    # NTP 服务器列表（逗号分隔，空字符串=未配置；多探针场景随配置下发给探针）
+    ntp_servers: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
     # LLM 配置（通过系统设置页面配置）
     llm_api_endpoint: Mapped[str] = mapped_column(Text, default="", nullable=False)
     llm_api_key: Mapped[str] = mapped_column(Text, default="", nullable=False)

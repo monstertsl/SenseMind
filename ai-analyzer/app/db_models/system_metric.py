@@ -1,10 +1,16 @@
-"""系统资源时序表：5 秒粒度采集，供监测中心趋势图使用
+"""系统资源时序表：10 秒粒度采集，供监测中心趋势图使用
 
-仅记录趋势图需要的 4 个指标：
+仅记录趋势图需要的 5 个指标：
   cpu_percent    CPU 使用率
   memory_percent 内存使用率
-  traffic_mbps   流量（Mbps）
+  traffic_mbps   流量（Mbps，Suricata 抓包面）
   drops_delta    丢包增量（该采样周期内 kernel_drops 的新增包数）
+  disk_percent   磁盘使用率（仅探针行填写；中心磁盘为单值快照不经此表）
+
+行归属（probe_id）：
+  NULL = 中心自身采集（metric_collector）
+  非空 = 探针上报（POST /probe/health 批量时序，probe_id 即 probe_uid）
+  中心/探针共用保留策略 metric_retention_days（按 created_at 全表清理自动覆盖）。
 
 注意：
 - drops_delta 存的是"增量"而非累计值，查询长时间范围时必须 SUM，
@@ -13,7 +19,7 @@
 """
 
 from datetime import datetime
-from sqlalchemy import BigInteger, Float, Integer, DateTime
+from sqlalchemy import BigInteger, Float, Integer, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 from ..core.database import Base
 
@@ -29,3 +35,7 @@ class SystemMetric(Base):
     memory_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     traffic_mbps: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     drops_delta: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # 探针行归属（NULL=中心自身）；查询仪表盘时 WHERE probe_id IS NULL
+    probe_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 数据盘使用率（探针监控 /data；中心磁盘走 system_service 单值快照，此列为 NULL）
+    disk_percent: Mapped[float | None] = mapped_column(Float, nullable=True)

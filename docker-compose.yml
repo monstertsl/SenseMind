@@ -155,7 +155,9 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:5044:5044"
+      # 5044 对外发布（F8）：探针日志通道，TLS + 强制 mTLS（仅探针 CA 签发的客户端证书）
+      # 5045 不发布：中心自身 filebeat 的内网明文通道（docker 网络内可达）
+      - "5044:5044"
 
     volumes:
       - ./logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
@@ -164,6 +166,10 @@ services:
       - ./logstash/ai-push.conf:/usr/share/logstash/pipeline/ai-push.conf:ro
       - ./logstash/soc_categories.json:/usr/share/logstash/config/soc_categories.json:ro
       - ./certs/ca.crt:/usr/share/logstash/config/certs/ca.crt:ro
+      # F8 TLS/mTLS：5044 服务端证书（ES CA 签发，SAN 含本机 IP）+ 探针 CA（校验客户端证书）
+      - ./certs/logstash.crt:/usr/share/logstash/config/certs/logstash.crt:ro
+      - ./certs/logstash.key:/usr/share/logstash/config/certs/logstash.key:ro
+      - ./certs/probe-ca.crt:/usr/share/logstash/config/certs/probe-ca.crt:ro
 
     environment:
       - LOGSTASH_API_KEY=${LOGSTASH_API_KEY}
@@ -210,6 +216,11 @@ services:
       - ./ai-analyzer/config.yaml:/usr/share/ai-analyzer/config.yaml:ro
       - ./ai-analyzer/knowledge:/usr/share/ai-analyzer/knowledge:ro
       - ./certs/ca.crt:/usr/share/ai-analyzer/certs/ca.crt:ro
+      # 探针 CA：为探针客户端证书签发/续签（F3/F9；由 deploy.sh 初始化生成，此处手动预置）
+      - ./certs/probe-ca.crt:/usr/share/ai-analyzer/certs/probe-ca.crt:ro
+      - ./certs/probe-ca.key:/usr/share/ai-analyzer/certs/probe-ca.key:ro
+      # 探针配置发布产物（F6/F13）：发布器打包规则包/NTP，探针经 8080 拉取
+      - ./data/probe-config:/usr/share/ai-analyzer/probe-config:rw
       - /data/suricata/lib/rules:/suricata/rules:rw
       - /data/suricata/logs:/data/suricata/logs:rw
       - /data/zeek/logs:/data/zeek/logs:rw
@@ -296,6 +307,8 @@ services:
     volumes:
       - ./certs/web.crt:/etc/nginx/ssl/web.crt:ro
       - ./certs/web.key:/etc/nginx/ssl/web.key:ro
+      # 探针 CA（F9 续签）：nginx 校验探针客户端证书并转发给后端
+      - ./certs/probe-ca.crt:/etc/nginx/ssl/probe-ca.crt:ro
 
     depends_on:
       ai-analyzer:
