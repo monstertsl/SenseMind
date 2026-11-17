@@ -655,7 +655,7 @@ onBeforeUnmount(() => {
     <div v-show="activeTab === 'devices'" class="tab-panel">
       <div class="section-block">
         <div class="block-title">设备管理</div>
-        <DeviceManage />
+        <DeviceManage :active="activeTab === 'devices'" />
       </div>
     </div>
   </div>

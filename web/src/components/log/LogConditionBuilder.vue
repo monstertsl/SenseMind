@@ -5,12 +5,15 @@ import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLogExplorerStore } from '@/stores/logExplorer'
 import KqlInput from '@/components/common/KqlInput.vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 import type { LogFieldMapping } from '@/types'
 import { ES_FIELD_MAPPING } from '@/constants/esFieldMapping'
 import { kqlEnumValues, type KqlFieldDef } from '@/constants/kqlFields'
 
 const store = useLogExplorerStore()
 const { conditions, kqlMode, kqlText, keyword, fieldMappings } = storeToRefs(store)
+
+const { spinning: resetSpinning, spin: spinReset } = useButtonSpin()
 
 // 字段类型对应可用操作符
 const OPERATOR_BY_TYPE: Record<string, { value: string; label: string }[]> = {
@@ -193,6 +196,7 @@ function search() {
 }
 
 function reset() {
+  spinReset()
   store.clearConditions()
   emit('reset')
 }
@@ -313,7 +317,7 @@ function reset() {
       <el-button type="primary" @click="search">
         <el-icon><Search /></el-icon>检索
       </el-button>
-      <el-button @click="reset">
+      <el-button :class="{ 'refresh-loading': resetSpinning }" @click="reset">
         <el-icon><RefreshLeft /></el-icon>重置
       </el-button>
     </div>

@@ -60,7 +60,7 @@ def _new_probe_uid(db: Session) -> str:
         ).scalar_one_or_none()
         if not exists:
             return uid
-    raise HTTPException(status_code=500, detail="内部 ID 生成失败，请重试")
+    raise HTTPException(status_code=500, detail="设备ID 生成失败，请重试")
 
 
 def _load_ca():
@@ -78,7 +78,7 @@ def _load_ca():
 
 
 def _sign_csr(csr_pem: bytes, probe_uid: str):
-    """用探针 CA 为 CSR 签发客户端证书（CN=内部 ID，clientAuth，180 天）。"""
+    """用探针 CA 为 CSR 签发客户端证书（CN=设备ID，clientAuth，180 天）。"""
     try:
         csr = x509.load_pem_x509_csr(csr_pem)
     except ValueError:
@@ -205,7 +205,7 @@ def _validate_name(name: str, field: str) -> str:
 class TokenCreateBody(BaseModel):
     name: str
     site: str = ""
-    rebind_uid: str = ""  # 重装场景：绑定已有内部 ID，覆盖签发（F9 ④）
+    rebind_uid: str = ""  # 重装场景：绑定已有设备ID，覆盖签发（F9 ④）
 
 
 @admin_router.get("")
@@ -223,13 +223,13 @@ def list_probes(db: Session = Depends(get_db), current_user: AuthContext = Depen
 def create_token(body: TokenCreateBody, request: Request,
                  db: Session = Depends(get_db),
                  current_user: AuthContext = Depends(require_role("admin"))):
-    name = _validate_name(body.name, "备注名")
+    name = _validate_name(body.name, "设备名称")
     site = _validate_name(body.site, "站点")
     token = secrets.token_urlsafe(24)
     now = dt.datetime.utcnow()
 
     if body.rebind_uid:
-        # 重装：绑定已有内部 ID，覆盖签发（旧证书序列号加入吊销标记，F9 ④）
+        # 重装：绑定已有设备ID，覆盖签发（旧证书序列号加入吊销标记，F9 ④）
         probe = _get_probe(db, body.rebind_uid)
         if probe.status == "pending":
             raise HTTPException(status_code=400, detail="该探针尚未完成注册，直接使用已有 token 即可")
@@ -275,7 +275,7 @@ def update_probe(probe_uid: str, body: ProbeUpdateBody, request: Request,
     probe = _get_probe(db, probe_uid)
     changed = {}
     if body.name is not None:
-        probe.name = _validate_name(body.name, "备注名")
+        probe.name = _validate_name(body.name, "设备名称")
         changed["name"] = probe.name
     if body.site is not None:
         probe.site = _validate_name(body.site, "站点")
@@ -284,7 +284,7 @@ def update_probe(probe_uid: str, body: ProbeUpdateBody, request: Request,
         raise HTTPException(status_code=400, detail="没有需要修改的字段")
     db.commit()
     write_system_log(db, action="probe_update", target_type="probe",
-                     detail=f"修改探针备注: {probe_uid} {changed}",
+                     detail=f"修改探针设备信息: {probe_uid} {changed}",
                      operator=current_user.username, ip_address=_client_ip(request))
     return ApiResponse(code=0, message="ok", data=_probe_to_dict(probe, dt.datetime.utcnow()),
                        request_id=str(uuid.uuid4()))
@@ -365,7 +365,7 @@ class RenewBody(BaseModel):
 
 
 def _auth_probe(request: Request, db: Session, check_serial: bool = True):
-    """mTLS 探针身份校验（续签/配置下发共用）：nginx 转发的客户端证书 → CN=内部 ID → 注册表。
+    """mTLS 探针身份校验（续签/配置下发共用）：nginx 转发的客户端证书 → CN=设备ID → 注册表。
 
     check_serial=True（续签）时同时拒绝已标记吊销的旧证书序列号；
     配置下发场景为 False（证书有效即可拉配置，吊销走清单 revoked 字段触发自我停服）。
@@ -454,13 +454,19 @@ def config_manifest(request: Request, db: Session = Depends(get_db)):
 
 
 class HealthPoint(BaseModel):
-    """单个健康采样点（与 system_metrics 列对齐）。ts 为探针侧 UTC ISO 时间。"""
+    """单个健康采样点（与 system_metrics 列对齐）。ts 为探针侧 UTC ISO 时间。
+
+    disk_used/disk_total 不入时序表（无对应列），仅进注册表 last_health 快照，
+    供设备管理健康详情的磁盘仪表盘展示容量比例。
+    """
     ts: str
     cpu_percent: float
     memory_percent: float
     traffic_mbps: float = 0.0
     drops_delta: int = 0
     disk_percent: Optional[float] = None
+    disk_used: Optional[int] = None
+    disk_total: Optional[int] = None
 
 
 class HealthReportBody(BaseModel):
@@ -473,7 +479,7 @@ def report_health(body: HealthReportBody, request: Request, db: Session = Depend
 
     探针 agent 10 秒粒度采集（与中心 metric_collector 同一份共享模块、同 Suricata 口径），
     本地暂存未上报点，每 5 分钟心跳时批量推送；断网期间累积、恢复后补报。
-    中心逐点范围校验后写入 system_metrics（probe_id=探针内部 ID），与中心自身
+    中心逐点范围校验后写入 system_metrics（probe_id=探针设备ID），与中心自身
     时序同表共存，保留策略共用 metric_retention_days。最后一点同时更新注册表
     last_health 快照（设备管理页"健康状态"列展示，P7 语义不变）。
     """
@@ -492,7 +498,12 @@ def report_health(body: HealthReportBody, request: Request, db: Session = Depend
         mem = _ok(pt.memory_percent, 0, 100)
         if cpu is None or mem is None:
             continue  # 必填项非法的点整点丢弃（防脏数据）
+        # 磁盘容量：新 agent 只报 used/total（percent 由中心计算）；旧 agent 只报 percent，两者兼容
+        disk_used = int(pt.disk_used) if pt.disk_used is not None and 0 <= pt.disk_used <= 2**47 else None
+        disk_total = int(pt.disk_total) if pt.disk_total is not None and 0 < pt.disk_total <= 2**47 else None
         disk = _ok(pt.disk_percent, 0, 100) if pt.disk_percent is not None else None
+        if disk is None and disk_used is not None and disk_total:
+            disk = _ok(disk_used / disk_total * 100, 0, 100)
         traffic = _ok(pt.traffic_mbps, 0, 1e6)
         drops = max(int(pt.drops_delta), 0) if 0 <= pt.drops_delta <= 2**31 else 0
         try:
@@ -513,6 +524,11 @@ def report_health(body: HealthReportBody, request: Request, db: Session = Depend
                 "traffic_mbps": traffic if traffic is not None else 0.0,
                 "kernel_drops_delta": drops,
             }
+            # 磁盘容量（旧 agent 上报无此字段则快照不带，前端容量行自动隐藏）
+            if disk_used is not None:
+                last_snapshot["disk_used"] = disk_used
+            if disk_total is not None:
+                last_snapshot["disk_total"] = disk_total
 
     if rows:
         db.add_all(rows)

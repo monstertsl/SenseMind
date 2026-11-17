@@ -1,4 +1,4 @@
-import { watch, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { watch, onActivated, onDeactivated, onBeforeUnmount, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useGlobalFilterStore } from '@/stores/globalFilter'
 import type { RefreshInterval } from '@/types'
@@ -14,9 +14,10 @@ const INTERVAL_MS: Record<RefreshInterval, number | null> = {
 
 /**
  * 按 store.refreshInterval 自动周期调用 callback。
- * 只在监测中心与分析中心使用；refreshInterval === 'none' 时不启动定时器。
+ * 监测中心 / 分析中心 / 系统设置-设备管理使用；refreshInterval === 'none' 时不启动定时器。
+ * enabled（可选）：联动开关，false 时暂停轮询（如 tab 切走时），恢复 true 重新拉起。
  */
-export function useAutoRefresh(callback: () => void) {
+export function useAutoRefresh(callback: () => void, enabled?: Ref<boolean>) {
   const { refreshInterval } = storeToRefs(useGlobalFilterStore())
   let timer: ReturnType<typeof setInterval> | null = null
 
@@ -29,13 +30,15 @@ export function useAutoRefresh(callback: () => void) {
 
   function setup() {
     clear()
+    if (enabled && !enabled.value) return
     const ms = INTERVAL_MS[refreshInterval.value]
     if (ms) {
       timer = setInterval(callback, ms)
     }
   }
 
-  watch(refreshInterval, setup, { immediate: true })
+  const sources: Array<Ref<unknown>> = enabled ? [refreshInterval, enabled] : [refreshInterval]
+  watch(sources, setup, { immediate: true })
   // keep-alive 缓存的页面：离开时暂停轮询、返回时恢复；未缓存的组件不触发这两个钩子
   onActivated(setup)
   onDeactivated(clear)

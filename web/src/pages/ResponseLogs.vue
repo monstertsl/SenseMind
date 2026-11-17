@@ -2,7 +2,8 @@
 // 联动日志：记录设备联动的每一次处置，成功/失败都留痕（失败带设备报错）
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Search } from '@element-plus/icons-vue'
+import { Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 import {
   listResponseRecordDevices,
   listResponseRecords,
@@ -15,6 +16,7 @@ import SkeletonTable from '@/components/common/SkeletonTable.vue'
 import { formatDateTime } from '@/utils/format'
 
 const loading = ref(false)
+const { spinning: listSpinning, spin: spinList } = useButtonSpin()
 const records = ref<ResponseRecordItem[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -33,8 +35,11 @@ function errorText(error: unknown, fallback: string): string {
   return detail || (error as Error)?.message || fallback
 }
 
+let firstLoad = true // 首屏加载由骨架屏反馈，刷新按钮不转
 async function load() {
   loading.value = true
+  if (!firstLoad) spinList()
+  firstLoad = false
   try {
     const data = await listResponseRecords({
       ip: filters.ip.trim() || undefined,
@@ -118,7 +123,7 @@ onMounted(() => {
       <div class="block-title-row">
         <div class="block-title">联动日志</div>
         <div class="row-actions">
-          <el-button :icon="Refresh" @click="load">刷新</el-button>
+          <el-button :icon="Refresh" :class="{ 'refresh-loading': loading || listSpinning }" @click="load">刷新</el-button>
         </div>
       </div>
 
@@ -152,7 +157,7 @@ onMounted(() => {
         </el-select>
         <div class="filter-actions">
           <el-button type="primary" :icon="Search" @click="search">查询</el-button>
-          <el-button @click="reset">重置</el-button>
+          <el-button :icon="RefreshLeft" :class="{ 'refresh-loading': loading || listSpinning }" @click="reset">重置</el-button>
         </div>
       </div>
 

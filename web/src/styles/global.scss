@@ -143,6 +143,21 @@ body {
   animation: count-fade-in 0.4s ease-out;
 }
 
+// 刷新/重置按钮加载旋转动画（按钮绑定 refresh-loading 类触发）
+.refresh-loading .el-icon {
+  animation: refresh-spin 0.8s linear infinite;
+}
+
+@keyframes refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 // 骨架屏 shimmer
 @keyframes shimmer {
   0% {

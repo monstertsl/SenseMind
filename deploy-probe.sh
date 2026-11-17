@@ -357,9 +357,32 @@ docker compose -f "$BASE_DIR/docker-compose-probe.yml" up -d --force-recreate
 
 unset PUID PGID INTERFACE CENTER_HOST PROBE_UID
 
+# Suricata 配置补丁（与中心 deploy.sh 同一补丁脚本）：jasonish/suricata 容器首次启动
+# 会把默认 suricata.yaml 复制到挂载目录，等它落盘后打补丁——否则 rule-files 仍是
+# 默认的空 suricata.rules，探针 Suricata 一条规则都不加载（ Eve 日志有、告警无）
+SURICATA_YAML="/data/suricata/etc/suricata.yaml"
+if [ ! -f "$SURICATA_YAML" ]; then
+    echo "[*] 等待 Suricata 首次启动生成默认配置..."
+    for _ in $(seq 1 30); do
+        [ -f "$SURICATA_YAML" ] && break
+        sleep 1
+    done
+fi
+if [ -f "$SURICATA_YAML" ]; then
+    python3 "$BASE_DIR/suricata/patch_yaml.py" "$SURICATA_YAML" || {
+        echo "[-] 错误：Suricata 配置补丁未成功应用，请检查 yaml 结构"
+        exit 1
+    }
+    # 立即热加载补丁后的规则（探针 agent 每 5 分钟心跳也会 reload，这里不等）
+    docker exec probe-suricata suricatasc -c reload-rules >/dev/null 2>&1 || true
+    echo "[+] Suricata 配置补丁已应用并热加载"
+else
+    echo "[-] 警告：Suricata 配置文件未生成，跳过补丁（规则将无法加载，请手动执行 suricata/patch_yaml.py）"
+fi
+
 echo "[+] =============================================="
 echo "[+] 探针部署完成！"
-echo "[+] 内部 ID: $PROBE_UID"
+echo "[+] 设备ID: $PROBE_UID"
 echo "[+] 日志通道: ${CENTER_HOST}:5044（TLS+mTLS）"
 echo "[+] 状态查看: 中心 Web → 系统设置 → 设备管理"
 echo "[+] 更换中心地址/证书：重新运行本脚本即可"

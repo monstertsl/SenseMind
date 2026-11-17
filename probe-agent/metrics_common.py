@@ -46,6 +46,12 @@ def collect_disk_percent(path: str = "/") -> float:
     return psutil.disk_usage(path).percent
 
 
+def collect_disk_usage(path: str = "/") -> tuple:
+    """磁盘 (percent, used_bytes, total_bytes)，供探针健康上报携带容量信息。"""
+    u = psutil.disk_usage(path)
+    return u.percent, u.used, u.total
+
+
 def _exec_in_container(container: str, cmd: list, timeout: int = 20) -> tuple:
     """通过 Docker Engine API 在指定容器内执行命令。
 

@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { Search, RefreshLeft, Collection } from '@element-plus/icons-vue'
 import KqlInput from '@/components/common/KqlInput.vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 import { listProbes } from '@/api/probes'
 import type { ProbeItem } from '@/api/probes'
 import {
@@ -27,6 +28,8 @@ const emit = defineEmits<{
 // 可信度筛选：比较符 3 选 1 + 一个阈值，与日志中心语义一致
 type ConfidenceOp = 'gte' | 'eq' | 'lte'
 
+const { spinning: resetSpinning, spin: spinReset } = useButtonSpin()
+
 const form = reactive({
   kql: '',
   probe_id: '',
@@ -41,7 +44,7 @@ const form = reactive({
   confidence_value: undefined as number | undefined,
 })
 
-// 探针选项（F12）：注册表映射，label=备注名（内部ID）
+// 探针选项（F12）：注册表映射，label=设备名称（设备ID）
 const probeOptions = ref<ProbeItem[]>([])
 onMounted(async () => {
   try {
@@ -106,6 +109,7 @@ function emitSearch() {
 }
 
 function reset() {
+  spinReset()
   form.kql = ''
   form.probe_id = ''
   form.source_ip = ''
@@ -174,7 +178,7 @@ watch(
         <el-button type="primary" @click="emitSearch">
           <el-icon><Search /></el-icon>搜索
         </el-button>
-        <el-button title="重置" @click="reset">
+        <el-button title="重置" :class="{ 'refresh-loading': resetSpinning }" @click="reset">
           <el-icon><RefreshLeft /></el-icon>
         </el-button>
         <el-button title="保存检索" @click="emit('save')">

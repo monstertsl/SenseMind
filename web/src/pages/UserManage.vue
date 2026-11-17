@@ -9,12 +9,14 @@ import {
 } from '@/api/user'
 import { useAuthStore } from '@/stores/auth'
 import SkeletonTable from '@/components/common/SkeletonTable.vue'
+import { useButtonSpin } from '@/composables/useButtonSpin'
 
 const authStore = useAuthStore()
 
 const users = ref<UserItem[]>([])
 const loading = ref(false)
 const keyword = ref('')
+const { spinning: listSpinning, spin: spinList } = useButtonSpin()
 
 const filteredUsers = computed(() => {
   if (!keyword.value.trim()) return users.value
@@ -22,8 +24,11 @@ const filteredUsers = computed(() => {
   return users.value.filter((u) => u.username.toLowerCase().includes(kw))
 })
 
+let firstFetch = true // 首屏加载由骨架屏反馈，刷新按钮不转
 async function fetchUsers() {
   loading.value = true
+  if (!firstFetch) spinList()
+  firstFetch = false
   try {
     users.value = await listUsers()
   } catch (e: any) {
@@ -240,7 +245,7 @@ function copyToClipboard(text: string) {
           clearable
           class="search-input"
         />
-        <el-button :icon="Refresh" @click="fetchUsers">刷新</el-button>
+        <el-button :icon="Refresh" :class="{ 'refresh-loading': loading || listSpinning }" @click="fetchUsers">刷新</el-button>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建用户</el-button>
     </div>

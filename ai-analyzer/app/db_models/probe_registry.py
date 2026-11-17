@@ -1,4 +1,4 @@
-"""探针注册表（双 ID 设计：内部 ID 为系统唯一标识，备注名/站点仅展示用）
+"""探针注册表（双 ID 设计：设备ID 为系统唯一标识，设备名称/站点仅展示用）
 
 需求文档 F16/F9 数据基础。
 """
@@ -15,10 +15,10 @@ class ProbeRegistry(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # 内部 ID（prb- 前缀 + 短随机码），系统唯一标识，贯穿证书/事件/配置/吊销全链路，永不改变
+    # 设备ID（prb- 前缀 + 短随机码），系统唯一标识，贯穿证书/事件/配置/吊销全链路，永不改变
     probe_uid: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
 
-    # 备注名 / 站点（纯展示层，可随时修改，不影响历史数据）
+    # 设备名称 / 站点（纯展示层，可随时修改，不影响历史数据）
     name: Mapped[str] = mapped_column(String(100), default="", nullable=False)
     site: Mapped[str] = mapped_column(String(100), default="", nullable=False)
 

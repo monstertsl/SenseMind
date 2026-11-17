@@ -33,7 +33,7 @@ class AlertQueryParams(BaseModel):
     time_range: Optional[str] = "today"
     time_from: Optional[str] = None
     time_to: Optional[str] = None
-    # 探针过滤（F12）：按内部 probe_id（历史数据不受备注名改动影响），空=跨全部探针
+    # 探针过滤（F12）：按内部 probe_id（历史数据不受设备名称改动影响），空=跨全部探针
     probe_id: Optional[str] = None
     source_ip: Optional[str] = None
     destination_ip: Optional[str] = None

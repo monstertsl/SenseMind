@@ -20,6 +20,8 @@ export interface ProbeItem {
     rx_bps?: number // 下行字节每秒
     tx_bps?: number // 上行字节每秒
     drop_pct?: number // 网卡丢包率 %
+    disk_used?: number // 数据盘已用字节（探针升级 agent 后上报）
+    disk_total?: number // 数据盘总容量字节
   } | null
 }
 

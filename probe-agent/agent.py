@@ -29,7 +29,7 @@ import httpx
 from metrics_common import (
     SuricataCounterWindow,
     collect_cpu_percent,
-    collect_disk_percent,
+    collect_disk_usage,
     collect_memory_percent,
     warmup_cpu,
 )
@@ -106,13 +106,17 @@ def collect_sample(window: SuricataCounterWindow, warm: list) -> dict | None:
         return None
     feed = window.feed()
     traffic_mbps, drops_delta = feed if feed else (0.0, 0)
+    # 磁盘只报容量（used/total），使用率由中心按 used/total 计算——
+    # 少上报一个字段，且百分比与容量天然一致（psutil percent 本就是 used/total）
+    _, disk_used, disk_total = collect_disk_usage("/data")
     return {
         "ts": now_iso(),
         "cpu_percent": round(collect_cpu_percent(), 1),
         "memory_percent": round(collect_memory_percent(), 1),
         "traffic_mbps": traffic_mbps,
         "drops_delta": drops_delta,
-        "disk_percent": round(collect_disk_percent("/data"), 1),
+        "disk_used": int(disk_used),
+        "disk_total": int(disk_total),
     }
 
 

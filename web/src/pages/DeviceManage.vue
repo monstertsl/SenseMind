@@ -1,13 +1,14 @@
-<!-- 设备管理页（F16）：探针全生命周期管理——列表 / 添加探针 / 编辑备注 / 吊销 / 手动删除 -->
+<!-- 设备管理页（F16）：探针全生命周期管理——列表 / 添加探针 / 编辑设备 / 吊销 / 手动删除 -->
 <template>
   <div class="device-manage">
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openAddDialog">添加探针</el-button>
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
+      <el-button :icon="Refresh" :class="{ 'refresh-loading': loading }" @click="load">刷新</el-button>
     </div>
 
-    <el-table :data="probes" v-loading="loading" class="probe-table">
-      <el-table-column label="备注名" min-width="140">
+    <SkeletonTable v-if="loading" :rows="5" :columns="9" />
+    <el-table v-else :data="probes" class="probe-table">
+      <el-table-column label="设备名称" min-width="140">
         <template #default="{ row }">
           <span class="probe-name">{{ row.name || '-' }}</span>
         </template>
@@ -15,7 +16,7 @@
       <el-table-column label="站点" min-width="100">
         <template #default="{ row }">{{ row.site || '-' }}</template>
       </el-table-column>
-      <el-table-column label="内部 ID" min-width="150">
+      <el-table-column label="设备ID" min-width="150">
         <template #default="{ row }">
           <span class="font-mono">{{ row.probe_uid }}</span>
         </template>
@@ -30,23 +31,19 @@
           <span class="font-mono">{{ formatTime(row.last_report_at) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="健康状态" min-width="190">
+      <el-table-column label="健康状态" min-width="120">
         <template #default="{ row }">
           <template v-if="row.online && row.health">
-            <div class="health-cells">
-              <span class="health-cell" :class="healthLevel(row.health.cpu)">
-                CPU {{ fmtPct(row.health.cpu) }}</span>
-              <span class="health-cell" :class="healthLevel(row.health.mem)">
-                内存 {{ fmtPct(row.health.mem) }}</span>
-              <span class="health-cell" :class="healthLevel(row.health.disk)">
-                磁盘 {{ fmtPct(row.health.disk) }}</span>
-            </div>
             <el-tooltip placement="top">
               <template #content>
-                <div>下行 {{ fmtBps(row.health.rx_bps) }} / 上行 {{ fmtBps(row.health.tx_bps) }}</div>
-                <div>丢包率 {{ row.health.drop_pct != null ? row.health.drop_pct + '%' : '-' }}</div>
+                <div>CPU {{ fmtPct(row.health.cpu) }} / 内存 {{ fmtPct(row.health.mem) }} / 磁盘 {{ fmtPct(row.health.disk) }}</div>
+                <!-- 收发拆分/丢包率是旧心跳协议字段，新 agent 时序上报不产出，只显示真实存在的总流量 -->
+                <div>流量 {{ fmtMbps(row.health.traffic_mbps) }}</div>
+                <div>点击查看资源趋势详情</div>
               </template>
-              <span class="health-detail-hint">流量/丢包</span>
+              <el-tag :type="healthTagType(row)" size="small" class="health-tag" @click="openHealthDetail(row)">
+                {{ healthLabel(row) }}
+              </el-tag>
             </el-tooltip>
           </template>
           <span v-else class="health-none">-</span>
@@ -78,7 +75,7 @@
     <!-- 添加探针（生成一次性 token） -->
     <el-dialog v-model="addVisible" title="添加探针" width="520px" destroy-on-close class="device-dialog">
       <el-form label-width="90px" label-position="left">
-        <el-form-item label="备注名">
+        <el-form-item label="设备名称">
           <el-input v-model="addForm.name" maxlength="100" placeholder="如 总部-边界1（必填）" />
         </el-form-item>
         <el-form-item label="站点">
@@ -93,7 +90,7 @@
                 :label="`${p.name || p.probe_uid}（${p.probe_uid}）`" :value="p.probe_uid" />
             </el-select>
           </div>
-          <div class="field-help">重装场景：IP 未变时绑定原内部 ID 覆盖签发，旧证书自动标记吊销</div>
+          <div class="field-help">重装场景：IP 未变时绑定原设备ID 覆盖签发，旧证书自动标记吊销</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -107,7 +104,7 @@
       <el-alert type="warning" :closable="false" class="token-warn"
         title="token 仅此一次展示，关闭后无法再查看" description="请立即复制并随部署包交给装机人员；token 24 小时内有效、仅可使用一次。" />
       <div class="token-field">
-        <div class="token-label">内部 ID</div>
+        <div class="token-label">设备ID</div>
         <div class="font-mono token-value">{{ tokenResult?.probe_uid }}</div>
       </div>
       <div class="token-field">
@@ -126,58 +123,100 @@
       </template>
     </el-dialog>
 
-    <!-- 编辑备注 -->
-    <el-dialog v-model="editVisible" title="编辑探针备注" width="460px" destroy-on-close class="device-dialog">
+    <!-- 编辑设备 -->
+    <el-dialog v-model="editVisible" title="编辑设备" width="460px" destroy-on-close class="device-dialog">
       <el-form label-width="90px" label-position="left">
-        <el-form-item label="内部 ID">
+        <el-form-item label="设备ID">
           <span class="font-mono">{{ editForm.probe_uid }}</span>
         </el-form-item>
-        <el-form-item label="备注名">
+        <el-form-item label="设备名称">
           <el-input v-model="editForm.name" maxlength="100" />
         </el-form-item>
         <el-form-item label="站点">
           <el-input v-model="editForm.site" maxlength="100" />
         </el-form-item>
       </el-form>
-      <div class="field-help">备注仅用于界面展示，修改不影响历史数据</div>
+      <div class="field-help">设备名称仅用于界面展示，修改不影响历史数据</div>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="handleSaveEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 健康详情：复用监测中心资源趋势图（探针时序） -->
+    <el-dialog v-model="healthVisible" title="设备健康详情" width="1100px" destroy-on-close class="device-dialog">
+      <div class="health-detail-head">
+        <span class="hd-name">{{ healthDetail?.name || '-' }}</span>
+        <span class="hd-uid font-mono">{{ healthDetail?.probe_uid }}</span>
+      </div>
+      <div class="range-switch">
+        <button
+          v-for="r in METRIC_RANGES"
+          :key="r.value"
+          class="range-btn"
+          :class="{ active: healthRange === r.value }"
+          @click="healthRange = r.value"
+        >
+          {{ r.label }}
+        </button>
+      </div>
+      <div class="trend-grid">
+        <ResourceTrendChart :range="healthRange" :probe-id="healthDetail?.probe_uid" />
+        <TrafficTrendChart :range="healthRange" :probe-id="healthDetail?.probe_uid" />
+        <DiskGaugeCard
+          :probe-id="healthDetail?.probe_uid"
+          :disk-used="healthDetail?.health?.disk_used ?? null"
+          :disk-total="healthDetail?.health?.disk_total ?? null"
+        />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Edit } from '@element-plus/icons-vue'
+import SkeletonTable from '@/components/common/SkeletonTable.vue'
+import ResourceTrendChart from '@/components/monitor/ResourceTrendChart.vue'
+import TrafficTrendChart from '@/components/monitor/TrafficTrendChart.vue'
+import DiskGaugeCard from '@/components/monitor/DiskGaugeCard.vue'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import type { MetricRange } from '@/types'
 import {
   listProbes, createProbeToken, updateProbe, revokeProbe, deleteProbe,
   type ProbeItem, type ProbeTokenResult,
 } from '@/api/probes'
 
+const props = defineProps<{ active?: boolean }>()
+
 const probes = ref<ProbeItem[]>([])
 const loading = ref(false)
-let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 // ---- 列表 ----
+// 最小转圈时长：接口太快时仍保证刷新图标至少旋转一圈，肉眼可见
+const MIN_SPIN_MS = 600
+let firstLoad = true // 首屏加载由骨架屏反馈，刷新按钮不转
 async function load() {
   loading.value = true
+  const start = Date.now()
   try {
     probes.value = await listProbes()
   } finally {
-    loading.value = false
+    // 首次加载（挂载）不保证最小时长，按钮不转；后续手动/自动刷新保证至少转一圈
+    const remain = firstLoad ? 0 : MIN_SPIN_MS - (Date.now() - start)
+    firstLoad = false
+    if (remain > 0) {
+      setTimeout(() => { loading.value = false }, remain)
+    } else {
+      loading.value = false
+    }
   }
 }
 
-onMounted(() => {
-  load()
-  refreshTimer = setInterval(load, 30_000)
-})
-onBeforeUnmount(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
-})
+onMounted(load)
+// 自动刷新跟随右上角全局刷新间隔（none/5s/10s/30s/1m/2m），仅在本 tab 可见时轮询
+useAutoRefresh(load, computed(() => props.active !== false))
 
 // ---- 状态展示 ----
 function statusTagType(row: ProbeItem) {
@@ -206,19 +245,29 @@ function fmtPct(v: number | null | undefined): string {
   return v == null ? '-' : `${v}%`
 }
 
-function fmtBps(v: number | null | undefined): string {
-  if (v == null) return '-'
-  if (v >= 1048576) return `${(v / 1048576).toFixed(1)} MB/s`
-  if (v >= 1024) return `${(v / 1024).toFixed(1)} KB/s`
-  return `${v} B/s`
+function fmtMbps(v: number | null | undefined): string {
+  return v == null ? '-' : `${v} Mbps`
 }
 
-// CPU/内存/磁盘健康分级：<70 正常 / <90 关注 / >=90 告警
-function healthLevel(v: number | null | undefined): string {
-  if (v == null) return ''
-  if (v >= 90) return 'health-danger'
-  if (v >= 70) return 'health-warn'
-  return 'health-ok'
+// 综合健康分级：取 CPU/内存/磁盘 的最高档——任一 >=90 告警 / 任一 >=70 关注 / 其余健康
+type HealthLevel = 'alert' | 'watch' | 'ok'
+
+function healthScore(row: ProbeItem): HealthLevel {
+  const h = row.health
+  const vals = [h?.cpu ?? 0, h?.mem ?? 0, h?.disk ?? 0]
+  if (vals.some((v) => v >= 90)) return 'alert'
+  if (vals.some((v) => v >= 70)) return 'watch'
+  return 'ok'
+}
+
+function healthTagType(row: ProbeItem): 'danger' | 'warning' | 'success' {
+  const s = healthScore(row)
+  return s === 'alert' ? 'danger' : s === 'watch' ? 'warning' : 'success'
+}
+
+function healthLabel(row: ProbeItem): string {
+  const s = healthScore(row)
+  return s === 'alert' ? '告警' : s === 'watch' ? '关注' : '健康'
 }
 
 // ---- 添加探针 ----
@@ -240,7 +289,7 @@ const tokenResult = ref<ProbeTokenResult | null>(null)
 
 async function handleCreateToken() {
   if (!addForm.name.trim()) {
-    ElMessage.warning('请填写备注名')
+    ElMessage.warning('请填写设备名称')
     return
   }
   if (addForm.isRebind && !addForm.rebind_uid) {
@@ -272,7 +321,7 @@ async function copyToken() {
   }
 }
 
-// ---- 编辑备注 ----
+// ---- 编辑设备 ----
 const editVisible = ref(false)
 const saving = ref(false)
 const editForm = reactive({ probe_uid: '', name: '', site: '' })
@@ -288,12 +337,28 @@ async function handleSaveEdit() {
   saving.value = true
   try {
     await updateProbe(editForm.probe_uid, { name: editForm.name.trim(), site: editForm.site.trim() })
-    ElMessage.success('备注已更新')
+    ElMessage.success('设备信息已更新')
     editVisible.value = false
     load()
   } finally {
     saving.value = false
   }
+}
+
+// ---- 健康详情弹窗（复用监测中心资源趋势图）----
+const healthVisible = ref(false)
+const healthDetail = ref<ProbeItem | null>(null)
+const healthRange = ref<MetricRange>('1h')
+const METRIC_RANGES: Array<{ label: string; value: MetricRange }> = [
+  { label: '最近1小时', value: '1h' },
+  { label: '最近24小时', value: '24h' },
+  { label: '最近7天', value: '7d' },
+]
+
+function openHealthDetail(row: ProbeItem) {
+  healthDetail.value = row
+  healthRange.value = '1h'
+  healthVisible.value = true
 }
 
 // ---- 吊销 / 删除 ----
@@ -310,7 +375,7 @@ async function handleRevoke(row: ProbeItem) {
 
 async function handleDelete(row: ProbeItem) {
   await ElMessageBox.confirm(
-    `确认从注册表中彻底删除「${row.name || row.probe_uid}」？历史事件数据不受影响，但该内部 ID 将无法继续续签管理。`,
+    `确认从注册表中彻底删除「${row.name || row.probe_uid}」？历史事件数据不受影响，但该设备ID 将无法继续续签管理。`,
     '删除确认',
     { confirmButtonText: '删除', cancelButtonText: '取消', type: 'error' },
   )
@@ -325,41 +390,70 @@ async function handleDelete(row: ProbeItem) {
   padding: 6px 0 2px;
 }
 
-.health-cells {
+// 综合健康标签：可点击查看趋势详情
+.health-tag {
+  cursor: pointer;
+}
+
+// 健康详情弹窗头部：设备名称 + 设备ID
+.health-detail-head {
   display: flex;
-  gap: 6px;
-  align-items: center;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+
+  .hd-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: $color-text-primary;
+  }
+
+  .hd-uid {
+    font-size: 12px;
+    color: $color-text-secondary;
+  }
 }
 
-.health-cell {
-  font-family: $font-mono;
-  font-feature-settings: 'tnum';
-  font-size: 12px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 3px;
+// 时间档位切换（与监测中心资源趋势区同款样式）
+.range-switch {
+  display: flex;
+  gap: 4px;
+  background: $color-bg-soft;
+  padding: 3px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  width: fit-content;
 }
 
-.health-ok {
-  color: $color-success;
-  background: rgba($color-success, 0.08);
-}
-
-.health-warn {
-  color: $color-warning;
-  background: rgba($color-warning, 0.08);
-}
-
-.health-danger {
-  color: $color-danger;
-  background: rgba($color-danger, 0.08);
-}
-
-.health-detail-hint {
-  font-size: 11px;
+.range-btn {
+  border: none;
+  background: transparent;
   color: $color-text-secondary;
-  cursor: default;
-  border-bottom: 1px dashed currentColor;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+
+  &:hover {
+    color: $color-text-regular;
+  }
+
+  &.active {
+    background: #fff;
+    color: $color-primary;
+    font-weight: 600;
+    box-shadow: $shadow-sm;
+  }
+}
+
+// 三个趋势图布局（与监测中心一致）
+.trend-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  align-items: stretch;
 }
 
 .health-none {

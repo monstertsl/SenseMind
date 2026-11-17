@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, ref } from 'vue'
+import { computed, watch, ref, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/atom-one-dark.css'
@@ -11,6 +11,8 @@ import { maskPayload } from '@/utils/desensitize'
 import SkeletonLines from '@/components/common/SkeletonLines.vue'
 import { renderHighlighted } from '@/utils/highlight'
 import { getRuleContents } from '@/api/alerts'
+import { listProbes } from '@/api/probes'
+import type { ProbeItem } from '@/api/probes'
 import { listResponseDevices, type ResponseDeviceItem } from '@/api/responseDevice'
 import { runResponseAction } from '@/api/responseAction'
 import { useCrossPageRouter } from '@/composables/useCrossPageRouter'
@@ -81,6 +83,31 @@ const responseBodyHtml = computed(() =>
 )
 
 const { goToLogExplorer } = useCrossPageRouter()
+
+// ---- 数据来源（F12/F10）：probe_id → 设备名称；center → 中心节点 ----
+
+const probeOptions = ref<ProbeItem[]>([])
+
+onMounted(async () => {
+  try {
+    // 同 AlertSearchBar：pending 设备不可选/不可见
+    probeOptions.value = (await listProbes()).filter((p) => p.status !== 'pending')
+  } catch {
+    // 静默失败：映射不到设备名时回退显示 probe_id 本身
+  }
+})
+
+const dataSource = computed(() => {
+  const pid = props.detail?.ai?.probe_id || 'center'
+  if (pid === 'center') return '中心节点'
+  const probe = probeOptions.value.find((p) => p.probe_uid === pid)
+  return probe?.name || pid
+})
+
+const dataSourceId = computed(() => {
+  const pid = props.detail?.ai?.probe_id || 'center'
+  return pid === 'center' ? '' : pid
+})
 
 // 语义检测（无对应规则）的 alert_signature_id 为 0，此时不展示 sid 前缀
 const signatureSid = computed(() => {
@@ -197,7 +224,13 @@ async function submitAction() {
       <template v-else-if="detail">
         <!-- 基本信息 -->
         <section class="detail-section">
-          <h4 class="section-h">基本信息</h4>
+          <div class="section-head-inline">
+            <h4 class="section-h">基本信息</h4>
+            <!-- 数据来源徽标紧跟标题，与下方内容左对齐，不用 space-between 推到最右 -->
+            <span class="source-badge" :title="dataSourceId || undefined">
+              <span class="source-label">数据来源</span>{{ dataSource }}
+            </span>
+          </div>
           <div class="info-grid">
             <div class="info-item">
               <span class="info-label">时间</span>
@@ -381,6 +414,17 @@ async function submitAction() {
   }
 }
 
+// 标题 + 徽标同行但不分散（区别于 section-head-row 的 space-between）
+.section-head-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: $space-md;
+  .section-h {
+    margin-bottom: 0;
+  }
+}
+
 .http-status-badge {
   font-size: 12px;
   font-weight: 600;
@@ -389,6 +433,28 @@ async function submitAction() {
   padding: 2px 8px;
   border-radius: 4px;
   font-family: $font-mono;
+}
+
+// 数据来源徽标：与 http-status-badge 同风格（13px，低于抽屉标题避免抢层级）
+.source-badge {
+  font-size: 13px;
+  font-weight: 600;
+  color: $color-text-regular;
+  background: $color-bg-inset;
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  .source-label {
+    font-weight: 400;
+    color: $color-text-secondary;
+  }
 }
 
 .info-grid {

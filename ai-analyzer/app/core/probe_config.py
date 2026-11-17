@@ -1,7 +1,7 @@
 """探针配置发布器（F6/F13，P6）
 
 中心侧将下发资源打包为探针可拉取的形式：
-  - rules-baseline：规则目录下除 local.rules 外的全部 .rules 文件（基线规则包，大、极少变）
+  - rules-baseline：combined.rules 单文件基线包（suricata.rules 不下发，大、极少变）
   - rules-local：local.rules 单文件（AI 生成规则，小、常变）
   - ntp：NTP 服务器配置（来自 system_config）
 
@@ -39,7 +39,8 @@ RESOURCE_NAMES = ("rules-baseline", "rules-local", "ntp")
 # 探针 agent 最低脚本版本（F13：新增配置类型需探针包升级支持时提升）
 MIN_AGENT_VERSION = 1
 
-_BASELINE_EXCLUDE = {LOCAL_RULES_NAME}
+# suricata.rules 不下发给探针：项目仅依赖 combined.rules + local.rules 两个规则库
+_BASELINE_EXCLUDE = {LOCAL_RULES_NAME, "suricata.rules"}
 # 备份/临时文件不进基线包
 _BASELINE_SUFFIX_EXCLUDE = (".bak", ".tmp", ".swp")
 

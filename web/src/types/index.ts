@@ -60,6 +60,8 @@ export interface MetricPoint {
   traffic_mbps: number
   /** 丢包增量（该桶内 SUM 合计） */
   drops: number
+  /** 磁盘使用率（仅探针时序行有值，中心行为 null） */
+  disk_percent?: number | null
 }
 
 export interface SystemMetrics {
@@ -94,6 +96,8 @@ export interface AlertAi {
   mitre_id: string
   protocol: string
   alert_count?: number
+  /** 数据来源：prb-*=探针设备ID（filebeat 注入 / Logstash 富化），center=中心节点，缺失=历史数据按中心处理 */
+  probe_id?: string
 }
 
 export interface AlertItem {

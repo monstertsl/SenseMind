@@ -16,6 +16,8 @@ import { CHART_FONT_FAMILY } from '@/constants/chart'
 const props = defineProps<{
   range: MetricRange
   refreshKey?: number
+  /** 探针设备ID：传入则拉取该探针的时序（设备管理健康详情）；空=中心自身 */
+  probeId?: string
 }>()
 
 const data = ref<SystemMetrics | null>(null)
@@ -31,7 +33,7 @@ const C_GRID = '#e2e8f0'
 
 async function load() {
   try {
-    const d = await getSystemMetrics(props.range)
+    const d = await getSystemMetrics(props.range, props.probeId)
     // 若加载期间档位又变了（快速连点），丢弃过期响应，避免旧档数据覆盖
     if (d.range !== props.range) return
     data.value = d
@@ -43,12 +45,14 @@ async function load() {
   }
 }
 
-let prevRange: MetricRange | undefined = undefined
+/** 档位+数据源组合键：任一变化都触发「清空→重拉→展开动画」 */
+let prevKey = ''
 watch(
-  () => [props.range, props.refreshKey],
-  ([range]) => {
-    // 切档位（非单纯刷新）：立即清空旧数据，图表瞬间归空，不做形变过渡
-    if (prevRange !== undefined && range !== prevRange) {
+  () => [props.range, props.refreshKey, props.probeId],
+  ([range, , probeId]) => {
+    const key = `${range}|${probeId ?? ''}`
+    // 切档位/切数据源（非单纯刷新）：立即清空旧数据，图表瞬间归空，不做形变过渡
+    if (prevKey !== '' && key !== prevKey) {
       switching.value = true
       data.value = null
       // 关键：真正把旧曲线从图表上「撤下」，让 series 进入空状态。
@@ -56,7 +60,7 @@ watch(
       // 否则 notMerge 重建被当作「更新」走 animationDurationUpdate(=0) 瞬间跳变。
       chartRef.value?.clearSeries()
     }
-    prevRange = range as MetricRange
+    prevKey = key
     loading.value = true
     load()
   },
