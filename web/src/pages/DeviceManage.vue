@@ -75,10 +75,11 @@
     <!-- 添加探针（生成一次性 token） -->
     <el-dialog v-model="addVisible" title="添加探针" width="520px" destroy-on-close class="device-dialog">
       <el-form label-width="90px" label-position="left">
-        <el-form-item label="设备名称">
+        <!-- 重装覆盖沿用原设备名称/站点，无需重填 -->
+        <el-form-item v-if="!addForm.isRebind" label="设备名称">
           <el-input v-model="addForm.name" maxlength="100" placeholder="如 总部-边界1（必填）" />
         </el-form-item>
-        <el-form-item label="站点">
+        <el-form-item v-if="!addForm.isRebind" label="站点">
           <el-input v-model="addForm.site" maxlength="100" placeholder="如 总部机房（可选）" />
         </el-form-item>
         <el-form-item label="重装覆盖">
@@ -102,15 +103,15 @@
     <!-- token 一次性展示 -->
     <el-dialog v-model="tokenVisible" title="接入 token 已生成" width="560px" :close-on-click-modal="false" class="device-dialog">
       <el-alert type="warning" :closable="false" class="token-warn"
-        title="token 仅此一次展示，关闭后无法再查看" description="请立即复制并随部署包交给装机人员；token 24 小时内有效、仅可使用一次。" />
+        title="部署凭证仅此一次展示，关闭后无法再查看" description="请立即复制并随部署包交给装机人员；token 24 小时内有效、仅可使用一次。" />
       <div class="token-field">
         <div class="token-label">设备ID</div>
         <div class="font-mono token-value">{{ tokenResult?.probe_uid }}</div>
       </div>
       <div class="token-field">
-        <div class="token-label">token</div>
+        <div class="token-label">部署凭证（token@CA指纹）</div>
         <div class="token-row">
-          <span class="font-mono token-value">{{ tokenResult?.token }}</span>
+          <span class="font-mono token-value">{{ deployToken }}</span>
           <el-button size="small" type="primary" @click="copyToken">复制</el-button>
         </div>
       </div>
@@ -288,7 +289,7 @@ const tokenVisible = ref(false)
 const tokenResult = ref<ProbeTokenResult | null>(null)
 
 async function handleCreateToken() {
-  if (!addForm.name.trim()) {
+  if (!addForm.isRebind && !addForm.name.trim()) {
     ElMessage.warning('请填写设备名称')
     return
   }
@@ -299,8 +300,8 @@ async function handleCreateToken() {
   creating.value = true
   try {
     tokenResult.value = await createProbeToken({
-      name: addForm.name.trim(),
-      site: addForm.site.trim(),
+      name: addForm.isRebind ? '' : addForm.name.trim(),
+      site: addForm.isRebind ? '' : addForm.site.trim(),
       rebind_uid: addForm.isRebind ? addForm.rebind_uid : undefined,
     })
     addVisible.value = false
@@ -311,11 +312,18 @@ async function handleCreateToken() {
   }
 }
 
+// 部署凭证 = token@CA指纹：探针部署脚本按 @ 拆分，指纹用于钉扎引导期拉取的 CA
+const deployToken = computed(() => {
+  const t = tokenResult.value
+  if (!t) return ''
+  return t.ca_fingerprint ? `${t.token}@${t.ca_fingerprint}` : t.token
+})
+
 async function copyToken() {
   if (!tokenResult.value) return
   try {
-    await navigator.clipboard.writeText(tokenResult.value.token)
-    ElMessage.success('token 已复制')
+    await navigator.clipboard.writeText(deployToken.value)
+    ElMessage.success('部署凭证已复制')
   } catch {
     ElMessage.warning('复制失败，请手动选择复制')
   }
@@ -375,7 +383,7 @@ async function handleRevoke(row: ProbeItem) {
 
 async function handleDelete(row: ProbeItem) {
   await ElMessageBox.confirm(
-    `确认从注册表中彻底删除「${row.name || row.probe_uid}」？历史事件数据不受影响，但该设备ID 将无法继续续签管理。`,
+    `确认从注册表中彻底删除「${row.name || row.probe_uid}」？历史告警与日志不受影响，但将无法继续管理该设备。`,
     '删除确认',
     { confirmButtonText: '删除', cancelButtonText: '取消', type: 'error' },
   )

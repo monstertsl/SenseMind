@@ -97,7 +97,7 @@ sudo bash deploy.sh <interface>   # 流量监听接口 如 eno1np0、ns192
 
 **1. 中心侧：生成接入凭证**
 
-在中心 Web 的 `设备管理` 页点击"添加探针"，获得一次性接入 token（24h 有效）；同时把中心机的 `certs/ca.crt` 拷贝到探针部署目录（CA 公钥可安全分发）。
+在中心 Web 的 `设备管理` 页点击"添加探针"，获得一次性接入 token（24h 有效）。
 
 **2. 探针侧：执行部署**
 
@@ -386,7 +386,11 @@ docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
 ## 彻底清理
 
 ```bash
+# 中心节点（仓库根目录执行）
 sudo bash remove.sh
+
+# 探针节点（探针机仓库目录执行）
+sudo bash remove.sh probe
 ```
 
 清理容器、网络、数据卷、本地数据与证书（不删除已下载镜像）。

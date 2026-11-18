@@ -31,6 +31,8 @@ export interface ProbeTokenResult {
   name: string
   site: string
   token: string
+  /** 中心 CA 公钥证书 SHA256 指纹：与 token 拼成 token@指纹 作为部署凭证 */
+  ca_fingerprint: string
   expires_at: string
 }
 

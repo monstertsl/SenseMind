@@ -97,7 +97,7 @@ sudo bash deploy.sh <interface>   # capture interface, e.g. eno1np0, ns192
 
 **1. Center side: issue the enrollment credentials**
 
-In the center web UI, open `Device Management` and click "Add Probe" to get a one-time enrollment token (valid for 24h); also copy `certs/ca.crt` from the center machine into the probe deployment directory (the CA public key is safe to distribute).
+In the center web UI, open `Device Management` and click "Add Probe" to get a one-time enrollment token (valid for 24h).
 
 **2. Probe side: run the deployment**
 
@@ -388,7 +388,11 @@ docker exec -it sensemind-postgres psql -U postgres -d sensemind -c \
 ## Full cleanup
 
 ```bash
+# Center node (run from repo root)
 sudo bash remove.sh
+
+# Probe node (run from probe repo directory)
+sudo bash remove.sh probe
 ```
 
 Removes containers, networks, data volumes, local data and certificates (downloaded images are kept).

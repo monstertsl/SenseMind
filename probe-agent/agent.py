@@ -64,6 +64,9 @@ SELF_CONTAINER = os.environ.get("SELF_CONTAINER", "probe-agent")
 COLLECT_INTERVAL = int(os.environ.get("COLLECT_INTERVAL", "10"))    # 秒（与中心 metric_collector 一致）
 REPORT_INTERVAL = int(os.environ.get("REPORT_INTERVAL", "300"))     # 秒（心跳+批量上报周期）
 ROTATE_CHECK_INTERVAL = int(os.environ.get("ROTATE_CHECK_INTERVAL", "3600"))  # 每小时检查轮转
+RENEW_CHECK_INTERVAL = int(os.environ.get("RENEW_CHECK_INTERVAL", "21600"))   # 每 6h 检查证书剩余期
+RENEW_THRESHOLD_DAYS = int(os.environ.get("RENEW_THRESHOLD_DAYS", "30"))      # 剩余不足 30 天触发续签
+RENEW_MIN_INTERVAL = 24 * 3600        # 节流：两次续签尝试最少间隔 24h（防时钟异常循环续签）
 RESOURCE_NAMES = ("rules-baseline", "rules-local", "ntp")
 
 # mTLS：显式 SSLContext 加载客户端证书（httpx cert=tuple 在部分版本对
@@ -167,6 +170,99 @@ def save_state(state: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f)
     os.replace(tmp, STATE_FILE)
+
+
+# ---- 证书自动续签（剩余 <30 天时向中心换发，私钥不变）----
+
+def _cert_remaining_days() -> float | None:
+    """读取客户端证书剩余有效期（天）；openssl 缺失或文件异常返回 None。"""
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-enddate", "-noout", "-in", CLIENT_CERT],
+            capture_output=True, text=True, check=True).stdout.strip()
+        not_after = dt.datetime.strptime(
+            out.split("=", 1)[1], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.timezone.utc)
+        return (not_after - dt.datetime.now(dt.timezone.utc)).total_seconds() / 86400
+    except Exception:
+        return None
+
+
+def _gen_csr() -> str:
+    """用现有私钥生成续签 CSR（中心按设备ID 覆盖 CN，私钥不出机）。"""
+    csr_path = f"{CERT_DIR}/renew.csr"
+    subprocess.run(
+        ["openssl", "req", "-new", "-key", CLIENT_KEY, "-out", csr_path,
+         "-subj", "/CN=sensemind-probe"],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(csr_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _reload_tls() -> None:
+    """用磁盘上的新证书重建 TLS 通道，冒烟请求成功才整体替换（失败抛异常保留旧通道）。"""
+    global _tls_ctx, _client
+    ctx = ssl.create_default_context(cafile=CA_CERT)
+    ctx.load_cert_chain(CLIENT_CERT, CLIENT_KEY)
+    cli = httpx.Client(verify=ctx, timeout=30, headers={"Accept": "application/json"})
+    cli.get(f"https://{CENTER_HOST}:8080/api/v1/probe/config/manifest")  # 冒烟验证
+    _tls_ctx, _client = ctx, cli  # 旧 client 由 GC 关闭
+
+
+def renew_cert_if_needed(state: dict) -> dict:
+    """检查客户端证书剩余期，不足阈值时向中心续签。
+
+    防护设计：
+    - 节流 24h（续签会使中心吊销旧证书序列号，循环续签不可逆）
+    - 新证书写临时文件 → openssl 验证可解析 → 原子 rename → 重建 TLS 冒烟通过才切换
+    - 落盘失败不影响运行：旧证书仅 /renew 接口拒绝（吊销序列号校验），
+      配置/健康通道继续可用；续签结果写 state，24h 后重试
+    """
+    now = time.time()
+    if now - state.get("last_renew_attempt", 0) < RENEW_MIN_INTERVAL:
+        return state
+    remain = _cert_remaining_days()
+    if remain is None:
+        # 解析失败也计入节流，避免每轮刷错误日志
+        state["last_renew_attempt"] = now
+        save_state(state)
+        log_event("证书有效期解析失败（openssl/文件异常），跳过本轮续签检查")
+        return state
+    if remain >= RENEW_THRESHOLD_DAYS:
+        return state
+
+    state["last_renew_attempt"] = now
+    save_state(state)
+    log_event("证书剩余 %.0f 天（阈值 %d 天），开始自动续签" % (remain, RENEW_THRESHOLD_DAYS))
+    try:
+        resp = _client.post(f"https://{CENTER_HOST}:8080/api/v1/probe/renew",
+                            json={"csr": _gen_csr()})
+        cert_pem = (resp.json().get("data") or {}).get("cert")
+        if resp.status_code != 200 or not cert_pem:
+            log_event("续签被拒（24h 后重试）: %s" % (resp.json().get("detail") or resp.text[:120]))
+            return state
+
+        tmp = CLIENT_CERT + ".new"
+        for attempt in (1, 2, 3):  # 落盘重试：旧证书已被中心吊销，新证书必须落盘成功
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(cert_pem)
+                    f.flush()
+                    os.fsync(f.fileno())
+                subprocess.run(["openssl", "x509", "-noout", "-in", tmp],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                os.replace(tmp, CLIENT_CERT)
+                break
+            except Exception as e:
+                if attempt == 3:
+                    raise
+                log_event("新证书落盘失败（重试 %d/3）: %s" % (attempt, e))
+                time.sleep(2)
+        os.chmod(CLIENT_CERT, 0o644)
+        _reload_tls()
+        log_event("证书续签成功，TLS 通道已热重建（剩余 %.0f 天）" % (_cert_remaining_days() or 0))
+    except Exception as e:
+        log_event("续签异常（24h 后重试）: %s" % e)
+    return state
 
 
 def apply_resource(res: str, tmp_path: str) -> bool:
@@ -323,6 +419,7 @@ def main() -> None:
 
     next_report = 0.0
     next_rotate_check = 0.0
+    next_renew_check = 0.0
     while True:
         tick = time.time()
         try:
@@ -349,6 +446,13 @@ def main() -> None:
                 run_logrotate()
             except Exception as e:
                 log_event("轮转异常（继续）: %s" % e)
+
+        if tick >= next_renew_check:
+            next_renew_check = tick + RENEW_CHECK_INTERVAL
+            try:
+                state = renew_cert_if_needed(state)
+            except Exception as e:
+                log_event("续签检查异常（继续）: %s" % e)
 
         time.sleep(max(0.0, COLLECT_INTERVAL - (time.time() - tick)))
 

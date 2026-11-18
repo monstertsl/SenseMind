@@ -21,15 +21,16 @@ import httpx  # noqa: F401  (保持与其他路由一致的依赖风格)
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import require_role, AuthContext
 from ..core.audit import write_system_log
 from ..core.database import get_db
 from ..db_models.probe_registry import ProbeRegistry
+from ..db_models.system_metric import SystemMetric
 from ..db_models.system_config import SystemConfig
 from ..schemas import ApiResponse
 
@@ -43,6 +44,16 @@ CERT_VALID_DAYS = 180           # 客户端证书有效期（F3）
 CLOCK_SKEW_MINUTES = 5          # 证书生效时间提前量，容忍时钟偏差
 
 PROBE_CA_CERT = os.environ.get("PROBE_CA_CERT", "/usr/share/ai-analyzer/certs/probe-ca.crt")
+CENTER_CA_CERT = os.environ.get("CENTER_CA_CERT", "/usr/share/ai-analyzer/certs/ca.crt")
+
+
+def _ca_fingerprint() -> str:
+    """中心 CA 公钥证书的 SHA256 指纹（hex），随 token 一起发放给部署者。
+
+    部署脚本用它钉扎引导期拉取的 CA（kubeadm discovery 同款机制）：
+    CA 本身是公开数据、可明文拉取，完整性由指纹比对保障，不依赖拉取信道加密。
+    """
+    return hashlib.sha256(open(CENTER_CA_CERT, "rb").read()).hexdigest()
 PROBE_CA_KEY = os.environ.get("PROBE_CA_KEY", "/usr/share/ai-analyzer/certs/probe-ca.key")
 
 
@@ -203,7 +214,7 @@ def _validate_name(name: str, field: str) -> str:
 # ---------- 管理端（F16） ----------
 
 class TokenCreateBody(BaseModel):
-    name: str
+    name: str = ""  # 重装覆盖场景不填，沿用原设备名称
     site: str = ""
     rebind_uid: str = ""  # 重装场景：绑定已有设备ID，覆盖签发（F9 ④）
 
@@ -223,8 +234,6 @@ def list_probes(db: Session = Depends(get_db), current_user: AuthContext = Depen
 def create_token(body: TokenCreateBody, request: Request,
                  db: Session = Depends(get_db),
                  current_user: AuthContext = Depends(require_role("admin"))):
-    name = _validate_name(body.name, "设备名称")
-    site = _validate_name(body.site, "站点")
     token = secrets.token_urlsafe(24)
     now = dt.datetime.utcnow()
 
@@ -239,11 +248,13 @@ def create_token(body: TokenCreateBody, request: Request,
         probe.cert_not_after = None
         probe.status = "pending"
         probe.registered_ip = ""
+        # 名称/站点沿用原设备记录，不随重装覆盖
+        name, site = probe.name or probe.probe_uid, probe.site or ""
     else:
+        name = _validate_name(body.name, "设备名称")
+        site = _validate_name(body.site, "站点")
         probe = ProbeRegistry(probe_uid=_new_probe_uid(db), name=name, site=site)
 
-    probe.name = name
-    probe.site = site
     probe.token_hash = _hash_token(token)
     probe.token_expires_at = now + dt.timedelta(hours=TOKEN_VALID_HOURS)
     probe.token_used_at = None
@@ -259,6 +270,7 @@ def create_token(body: TokenCreateBody, request: Request,
         "name": name,
         "site": site,
         "token": token,  # 仅此一次返回
+        "ca_fingerprint": _ca_fingerprint(),
         "expires_at": probe.token_expires_at.isoformat() + "Z",
     }, request_id=str(uuid.uuid4()))
 
@@ -314,6 +326,8 @@ def delete_probe(probe_uid: str, request: Request,
                  db: Session = Depends(get_db),
                  current_user: AuthContext = Depends(require_role("admin"))):
     probe = _get_probe(db, probe_uid)
+    # 一并删除该设备的健康时序，不留孤儿数据（ES 告警/日志有各自保留期，不受影响）
+    db.execute(delete(SystemMetric).where(SystemMetric.probe_id == probe_uid))
     db.delete(probe)
     db.commit()
     write_system_log(db, action="probe_delete", target_type="probe",
@@ -327,6 +341,21 @@ def delete_probe(probe_uid: str, request: Request,
 class RegisterBody(BaseModel):
     token: str
     csr: str  # PEM 编码 CSR
+
+
+@probe_router.get("/ca-cert")
+def get_ca_cert():
+    """下发中心 CA 公钥证书（探针引导期拉取，无需鉴权）。
+
+    CA 是公开数据，不要求加密信道；完整性由 token 随附的 SHA256 指纹钉扎
+    （部署脚本 sha256 比对，kubeadm discovery 同款机制），中间人替换 CA 会
+    被指纹校验拦下。
+    """
+    try:
+        ca_pem = open(CENTER_CA_CERT, "rb").read()
+    except OSError:
+        raise HTTPException(status_code=404, detail="中心 CA 证书不存在")
+    return Response(content=ca_pem, media_type="application/x-pem-file")
 
 
 @probe_router.post("/register")
