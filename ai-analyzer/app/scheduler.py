@@ -220,14 +220,16 @@ def cleanup_ai_es_indices() -> None:
 
 
 def cleanup_system_metrics() -> None:
-    """清理超过 metric_retention_days 的系统资源时序数据（system_metrics 表）。
+    """清理超过 audit_log_retention_days 的系统资源时序数据（system_metrics 表）。
+
+    随「系统日志保留天数」统一过期（中心/探针共用），不设独立配置项。
 
     created_at 由 default=datetime.utcnow 写入（UTC naive），故 cutoff 也用
     datetime.utcnow() 保持一致；若用北京时间 aware datetime 会差 8 小时提前删。
     """
     with SessionLocal() as db:
         cfg = _load_config(db)
-        days = getattr(cfg, "metric_retention_days", 30) if cfg else 30
+        days = getattr(cfg, "audit_log_retention_days", 180) if cfg else 180
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     try:

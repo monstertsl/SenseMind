@@ -127,10 +127,10 @@ services:
       - CENTER_HOST=${CENTER_HOST:-127.0.0.1}
 
     volumes:
-      # mTLS 身份（注册签发的探针客户端证书）+ 中心 CA
+      # mTLS 身份 + 中心 CA。probe 目录整挂（rw）：agent 证书自动续签需要
+      # 落盘新 client.crt（私钥不变，key 亦在其中）；CA 公钥只读
+      - ./certs/probe:/certs
       - ./certs/ca.crt:/certs/ca.crt:ro
-      - ./certs/probe/client.crt:/certs/client.crt:ro
-      - ./certs/probe/client.key:/certs/client.key:ro
       # agent state：配置哈希 state / 健康暂存 buffer / retention / logrotate state
       - /data/probe-agent:/data/probe-agent
       # Suricata 热加载 exec + 吊销停服 + zeek 轮转 restart（与中心 ai-analyzer 同权限语义）

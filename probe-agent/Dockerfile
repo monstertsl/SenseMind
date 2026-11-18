@@ -3,7 +3,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends logrotate curl tzdata && \
+    apt-get install -y --no-install-recommends logrotate curl tzdata openssl && \
     rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir httpx psutil
 

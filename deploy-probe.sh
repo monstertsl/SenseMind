@@ -12,7 +12,7 @@ set -e
 #
 # 前置物料（与项目文件同目录）：
 #   - docker-compose-probe.yml / filebeat/filebeat-probe.yml（项目内自带）
-#   - certs/ca.crt      中心 CA 公钥证书（公钥可安全分发，随 token 一并提供）
+#   - certs/ca.crt      中心 CA 公钥证书（可随凭证自动拉取，或手动复制）
 #   - certs/probe/      本脚本生成（client.key / client.csr / client.crt）
 if [ -z "${BASH_VERSION:-}" ]; then
     if command -v bash >/dev/null 2>&1; then
@@ -51,12 +51,13 @@ fi
 ########################################
 usage() {
     cat <<EOF
-Usage: sudo bash $0 <interface> <center_addr> <token>
+Usage: sudo bash $0 <interface> <center_addr> <部署凭证>
 
   interface    Suricata/Zeek 采集网卡（镜像口）
   center_addr  中心地址，IP[:端口]，端口缺省 8080
-  token        中心 Web 设备管理页生成的一次性接入 token
-Example: sudo bash deploy-probe.sh ens192 192.168.1.10 xxxxxx
+  部署凭证     中心 Web 设备管理页生成的 token@CA指纹（一次性 token，24h 有效）；
+               也兼容纯 token（此用法需提前复制中心 certs/ca.crt 到本机 certs/）
+Example: sudo bash deploy-probe.sh ens192 192.168.1.10 xxxx@e3b0c442...
 EOF
 }
 
@@ -68,7 +69,18 @@ fi
 
 INTERFACE=$1
 CENTER_ADDR=$2
+
+# 部署凭证拆分：token@CA指纹（kubeadm discovery 同款机制）；
+# 指纹存在时对 CA（无论拉取还是已拷贝）强制 sha256 钉扎校验
 TOKEN=$3
+CA_FP=""
+case "$3" in
+    *@*) TOKEN="${3%%@*}"; CA_FP="${3#*@}" ;;
+esac
+if [ -n "$CA_FP" ] && ! echo "$CA_FP" | grep -qE '^[0-9a-fA-F]{64}$'; then
+    echo "[-] 错误：CA 指纹格式非法（应为 64 位十六进制 SHA256），请检查凭证是否完整复制"
+    exit 1
+fi
 
 # 拆分中心地址：host 用于 5044，web 地址用于注册接口（缺省端口 8080）
 case "$CENTER_ADDR" in
@@ -85,10 +97,32 @@ echo "[+] 探针部署开始：网卡=$INTERFACE 中心=${CENTER_WEB}"
 ########################################
 # 前置物料检查
 ########################################
-if [ ! -f "$BASE_DIR/certs/ca.crt" ]; then
-    echo "[-] 错误：缺少 $BASE_DIR/certs/ca.crt（中心 CA 公钥证书，用于校验中心身份）"
-    echo "[-] 请从中心节点 certs/ 目录复制 ca.crt 到本机项目 certs/ 目录（公钥证书，可安全分发）"
-    exit 1
+CA_FILE="$BASE_DIR/certs/ca.crt"
+if [ ! -f "$CA_FILE" ]; then
+    if [ -n "$CA_FP" ]; then
+        # 无 CA 且凭证带指纹：从中心拉取公开的 CA 证书，指纹钉扎校验完整性
+        # （CA 为公开数据，信道无需加密；MITM 替换 CA 会被指纹比对拦下）
+        mkdir -p "$BASE_DIR/certs"
+        echo "[*] 本地无 ca.crt，从中心拉取（${CENTER_WEB}/api/v1/probe/ca-cert）..."
+        curl -sk --max-time 15 "$CENTER_WEB/api/v1/probe/ca-cert" -o "$CA_FILE" || true
+        if [ ! -s "$CA_FILE" ]; then
+            echo "[-] 错误：CA 证书拉取失败（网络不可达或中心接口异常）"
+            exit 1
+        fi
+    else
+        echo "[-] 错误：缺少 $BASE_DIR/certs/ca.crt（中心 CA 公钥证书，用于校验中心身份）"
+        echo "[-] 请复制中心 certs/ca.crt 到本机 certs/，或使用 token@CA指纹 格式的部署凭证（脚本自动拉取）"
+        exit 1
+    fi
+fi
+if [ -n "$CA_FP" ]; then
+    LOCAL_FP=$(sha256sum "$CA_FILE" | awk '{print $1}')
+    if [ "$LOCAL_FP" != "$(echo "$CA_FP" | tr 'A-Z' 'a-z')" ]; then
+        echo "[-] 错误：CA 指纹不匹配（本地 $LOCAL_FP，凭证 $CA_FP）"
+        echo "[-] CA 与凭证不一致，疑似中间人或凭证过期，已中止部署"
+        exit 1
+    fi
+    echo "[+] CA 指纹校验通过（${LOCAL_FP:0:16}...）"
 fi
 if [ ! -f "$BASE_DIR/docker-compose-probe.yml" ] || [ ! -f "$BASE_DIR/filebeat/filebeat-probe.yml" ]; then
     echo "[-] 错误：缺少 docker-compose-probe.yml 或 filebeat/filebeat-probe.yml"
@@ -247,7 +281,7 @@ if [ "$NEED_REGISTER" = "true" ]; then
         fi
     fi
     NTP_HINT=$(echo "$REG_RESP" | jq -r '.data.initial_config.ntp_servers // empty')
-    echo "[+] 注册成功：内部 ID = $PROBE_UID（证书已落盘）"
+    echo "[+] 注册成功：设备ID = $PROBE_UID（证书已落盘）"
     if [ -n "$NTP_HINT" ]; then
         echo "[+] 中心初始 NTP 配置：$NTP_HINT（配置下发通道将自动应用）"
     fi
@@ -355,7 +389,7 @@ docker compose -f "$BASE_DIR/docker-compose-probe.yml" build probe-agent || {
 }
 docker compose -f "$BASE_DIR/docker-compose-probe.yml" up -d --force-recreate
 
-unset PUID PGID INTERFACE CENTER_HOST PROBE_UID
+unset PUID PGID INTERFACE CENTER_HOST  # PROBE_UID 保留给末尾回显
 
 # Suricata 配置补丁（与中心 deploy.sh 同一补丁脚本）：jasonish/suricata 容器首次启动
 # 会把默认 suricata.yaml 复制到挂载目录，等它落盘后打补丁——否则 rule-files 仍是

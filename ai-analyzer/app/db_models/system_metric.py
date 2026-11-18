@@ -10,12 +10,12 @@
 行归属（probe_id）：
   NULL = 中心自身采集（metric_collector）
   非空 = 探针上报（POST /probe/health 批量时序，probe_id 即 probe_uid）
-  中心/探针共用保留策略 metric_retention_days（按 created_at 全表清理自动覆盖）。
+  保留策略随 audit_log_retention_days（「系统日志保留天数」）按 created_at 全表清理自动覆盖。
 
 注意：
 - drops_delta 存的是"增量"而非累计值，查询长时间范围时必须 SUM，
   不要用 AVG（会把集中丢包平均掉而严重低估）。
-- 保留天数由 system_config.metric_retention_days 控制（默认 30 天）。
+- 保留天数由 system_config.audit_log_retention_days 控制（默认 180 天）。
 """
 
 from datetime import datetime
