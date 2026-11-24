@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SenseMind — 自托管的 AI SOC 平台</title>
+<meta name="description" content="SenseMind 关联 Suricata 告警、Zeek 协议上下文与历史事件，AI 辅助研判攻击脉络，确认的攻击转化为本地检测规则并热加载生效。">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-section="hero">
+
+<!-- ===== 底层 · 语义色氛围光晕 + 流程线框碎片 ===== -->
+<div class="bg-glow" aria-hidden="true"></div>
+<!-- 四周淡色方块装饰，填满宽屏留白 -->
+<div class="bg-deco" aria-hidden="true">
+  <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+  <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+</div>
+<div class="bg-wires" aria-hidden="true">
+  <div class="bg-wires-track" id="bgTrack">
+    <svg viewBox="0 0 1440 2700" preserveAspectRatio="xMidYMid slice">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        </marker>
+      </defs>
+      <!-- 段 1 · 采集层：SPAN/TAP → Suricata / Zeek → Filebeat → soc-* -->
+      <g class="c-detect">
+        <rect class="wf draw" x="90" y="80" width="120" height="30" rx="15"/>
+        <text class="wf-label sm" x="106" y="100">SPAN / TAP</text>
+        <rect class="wf draw d2" x="590" y="60" width="150" height="70" rx="10"/>
+        <text class="wf-label" x="606" y="90">Zeek</text>
+        <path class="wf wf-line" d="M606 104 H714 M606 116 H690"/>
+        <circle class="wf-fill" cx="724" cy="76" r="3"/>
+        <path class="wf draw d1" d="M210 95 H 590" marker-end="url(#arrow)"/>
+        <circle class="wf-fill" cx="1250" cy="176" r="3"/>
+        <text class="wf-label sm" x="1262" y="181">mirror</text>
+      </g>
+      <g class="c-correlate">
+        <rect class="wf draw d1" x="330" y="60" width="180" height="70" rx="10"/>
+        <text class="wf-label" x="346" y="90">Suricata</text>
+        <path class="wf wf-line" d="M346 104 H484 M346 116 H440"/>
+        <circle class="wf-fill" cx="494" cy="76" r="3"/>
+        <rect class="wf draw d2" x="830" y="60" width="170" height="70" rx="10"/>
+        <text class="wf-label" x="846" y="90">Filebeat</text>
+        <path class="wf wf-line" d="M846 104 H974 M846 116 H950"/>
+        <circle class="wf-fill" cx="984" cy="76" r="3"/>
+        <path class="wf draw d3" d="M740 95 H 830" marker-end="url(#arrow)"/>
+        <path class="wf draw" d="M420 130 V 178 H 915 V 130" marker-end="url(#arrow)"/>
+        <rect class="wf draw d2" x="1060" y="300" width="110" height="30" rx="15"/>
+        <text class="wf-label sm" x="1076" y="320">soc-*</text>
+        <path class="wf draw d1" d="M915 130 V 315 H 1060" marker-end="url(#arrow)"/>
+        <rect class="wf draw d3" x="620" y="420" width="190" height="66" rx="10"/>
+        <text class="wf-label" x="636" y="448">Community ID</text>
+        <path class="wf wf-line" d="M636 462 H786 M636 474 H740"/>
+        <circle class="wf-fill" cx="794" cy="436" r="3"/>
+        <path class="wf draw d2" d="M1115 330 V 453 H 810" marker-end="url(#arrow)"/>
+      </g>
+      <g class="c-judge">
+        <rect class="wf draw d1" x="240" y="560" width="160" height="62" rx="10"/>
+        <text class="wf-label" x="256" y="588">标准化</text>
+        <path class="wf wf-line" d="M256 602 H384"/>
+        <circle class="wf-fill" cx="388" cy="576" r="3"/>
+        <path class="wf draw d3" d="M620 453 V 591 H 400" marker-end="url(#arrow)"/>
+        <path class="wf draw d1" d="M320 622 V 800 H 700 V 960" marker-end="url(#arrow)"/>
+        <text class="wf-label sm" x="740" y="830">eve.json</text>
+      </g>
+      <!-- 段 2 · 分析层：索引 → ai-push → 五阶段链 → 结论 -->
+      <g class="c-correlate">
+        <rect class="wf draw d2" x="180" y="960" width="180" height="66" rx="10"/>
+        <text class="wf-label" x="196" y="988">soc-* 索引</text>
+        <path class="wf wf-line" d="M196 1002 H336 M196 1014 H310"/>
+        <circle class="wf-fill" cx="348" cy="976" r="3"/>
+        <rect class="wf draw d1" x="440" y="1100" width="170" height="62" rx="10"/>
+        <text class="wf-label" x="456" y="1128">Logstash</text>
+        <path class="wf wf-line" d="M456 1142 H584"/>
+        <circle class="wf-fill" cx="592" cy="1116" r="3"/>
+        <path class="wf draw d2" d="M360 1026 V 1131 H 440" marker-end="url(#arrow)"/>
+        <rect class="wf draw d3" x="540" y="1240" width="150" height="56" rx="10"/>
+        <text class="wf-label" x="556" y="1266">关联查询</text>
+        <path class="wf wf-line" d="M556 1280 H666"/>
+        <circle class="wf-fill" cx="676" cy="1254" r="3"/>
+      </g>
+      <g class="c-judge">
+        <rect class="wf draw d1" x="720" y="1000" width="110" height="30" rx="15"/>
+        <text class="wf-label sm" x="736" y="1020">ai-push</text>
+        <path class="wf draw d3" d="M610 1131 H 720 V 1030" marker-end="url(#arrow)"/>
+        <rect class="wf draw" x="120" y="1240" width="150" height="56" rx="10"/>
+        <text class="wf-label" x="136" y="1266">标准化</text>
+        <path class="wf wf-line" d="M136 1280 H254"/>
+        <rect class="wf draw d2" x="330" y="1240" width="150" height="56" rx="10"/>
+        <text class="wf-label" x="346" y="1266">研判</text>
+        <path class="wf wf-line" d="M346 1280 H464"/>
+        <rect class="wf draw d1" x="750" y="1240" width="150" height="56" rx="10"/>
+        <text class="wf-label" x="766" y="1266">RAG 增强</text>
+        <path class="wf wf-line" d="M766 1280 H884"/>
+        <rect class="wf draw d3" x="1150" y="1300" width="130" height="30" rx="15"/>
+        <text class="wf-label sm" x="1166" y="1320">RAG 知识库</text>
+        <rect class="wf draw d2" x="1150" y="1500" width="170" height="62" rx="10"/>
+        <text class="wf-label" x="1166" y="1528">威胁判定</text>
+        <path class="wf wf-line" d="M1166 1542 H1300"/>
+        <circle class="wf-fill" cx="1308" cy="1516" r="3"/>
+        <path class="wf draw d1" d="M270 1268 H 330" marker-end="url(#arrow)"/>
+        <path class="wf draw d2" d="M480 1268 H 540" marker-end="url(#arrow)"/>
+        <path class="wf draw" d="M690 1268 H 750" marker-end="url(#arrow)"/>
+        <path class="wf draw d1" d="M900 1268 H 960" marker-end="url(#arrow)"/>
+        <path class="wf draw d3" d="M825 1296 V 1380 H 1215 V 1330" marker-end="url(#arrow)"/>
+        <path class="wf draw d2" d="M1280 1330 V 1500" marker-end="url(#arrow)"/>
+        <rect class="wf draw" x="300" y="1560" width="100" height="28" rx="14"/>
+        <text class="wf-label sm" x="316" y="1579">MITRE</text>
+        <path class="wf draw d1" d="M1150 1531 H 620 V 1560" marker-end="url(#arrow)"/>
+      </g>
+      <g class="c-settle">
+        <rect class="wf draw d2" x="960" y="1240" width="150" height="56" rx="10"/>
+        <text class="wf-label" x="976" y="1266">结论输出</text>
+        <path class="wf wf-line" d="M976 1280 H1094"/>
+        <circle class="wf-fill" cx="1104" cy="1254" r="3"/>
+        <path class="wf draw d1" d="M1035 1296 V 1450 H 380 V 1620" marker-end="url(#arrow)"/>
+        <text class="wf-label sm" x="420" y="1440">确认攻击 → 生成规则</text>
+      </g>
+      <!-- 段 3 · 产出与响应：local.rules / reload → 封禁 · 通知 · 设备 -->
+      <g class="c-settle">
+        <rect class="wf draw d1" x="150" y="1860" width="170" height="64" rx="10"/>
+        <text class="wf-label" x="166" y="1888">local.rules</text>
+        <path class="wf wf-line" d="M166 1902 H296 M166 1914 H270"/>
+        <circle class="wf-fill" cx="308" cy="1876" r="3"/>
+        <rect class="wf draw d3" x="400" y="1930" width="130" height="30" rx="15"/>
+        <text class="wf-label sm" x="416" y="1950">reload-rules</text>
+        <rect class="wf draw d2" x="400" y="2200" width="160" height="60" rx="10"/>
+        <text class="wf-label" x="416" y="2228">规则池</text>
+        <path class="wf wf-line" d="M416 2242 H536"/>
+        <path class="wf draw d2" d="M380 1892 H 465 V 1930" marker-end="url(#arrow)"/>
+        <path class="wf draw d1" d="M465 1960 V 2200" marker-end="url(#arrow)"/>
+        <path class="wf draw" d="M235 1860 V 1780 H 380 V 1674" marker-end="url(#arrow)"/>
+      </g>
+      <g class="c-judge">
+        <rect class="wf draw d3" x="640" y="1860" width="170" height="64" rx="10"/>
+        <text class="wf-label" x="656" y="1888">防火墙封禁</text>
+        <path class="wf wf-line" d="M656 1902 H794"/>
+        <circle class="wf-fill" cx="802" cy="1876" r="3"/>
+        <path class="wf draw d1" d="M560 1860 V 1800 H 725 V 1780" marker-end="url(#arrow)"/>
+      </g>
+      <g class="c-correlate">
+        <rect class="wf draw d1" x="880" y="1930" width="120" height="30" rx="15"/>
+        <text class="wf-label sm" x="896" y="1950">邮件 / 工单</text>
+        <path class="wf draw d2" d="M810 1892 H 880 V 1930" marker-end="url(#arrow)"/>
+        <rect class="wf draw d3" x="700" y="2260" width="160" height="60" rx="10"/>
+        <text class="wf-label" x="716" y="2288">操作日志</text>
+        <path class="wf wf-line" d="M716 2302 H846"/>
+        <path class="wf draw d1" d="M940 1960 V 2160 H 780 V 2260" marker-end="url(#arrow)"/>
+      </g>
+      <g class="c-detect">
+        <rect class="wf draw d2" x="1100" y="1860" width="180" height="70" rx="10"/>
+        <text class="wf-label" x="1116" y="1890">设备管理</text>
+        <path class="wf wf-line" d="M1116 1904 H1256 M1116 1916 H1230"/>
+        <circle class="wf-fill" cx="1266" cy="1876" r="3"/>
+        <rect class="wf draw d1" x="1150" y="2050" width="120" height="30" rx="15"/>
+        <text class="wf-label sm" x="1166" y="2070">mTLS 探针</text>
+        <path class="wf draw d3" d="M1190 1930 V 2050" marker-end="url(#arrow)"/>
+        <rect class="wf draw d2" x="150" y="2280" width="120" height="28" rx="14"/>
+        <text class="wf-label sm" x="166" y="2299">180 天日志</text>
+        <path class="wf draw" d="M235 1924 V 2280" marker-end="url(#arrow)"/>
+        <rect class="wf draw d1" x="940" y="2480" width="140" height="56" rx="10"/>
+        <text class="wf-label" x="956" y="2506">持续生长</text>
+        <path class="wf wf-line" d="M956 2520 H1056"/>
+        <path class="wf draw d2" d="M1010 2536 V 2620 H 480 V 2660" marker-end="url(#arrow)"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<!-- ===== 顶层 · 玻璃导航栏：只保留 GitHub ===== -->
+<header class="nav" id="nav">
+  <a class="nav-brand" href="https://github.com/monstertsl/SenseMind" target="_blank" rel="noopener">
+    <img src="logo.png" alt="SenseMind" class="nav-logo">SenseMind
+  </a>
+  <a class="nav-gh" href="https://github.com/monstertsl/SenseMind" target="_blank" rel="noopener">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+    GitHub
+  </a>
+</header>
+
+<main>
+
+<!-- ===== 屏 1 · Hero ===== -->
+<section class="screen hero" id="hero">
+  <div class="hero-grid">
+    <div class="hero-inner reveal">
+      <p class="hero-kicker"><span class="kicker-dot"></span>开源 · 自托管 · MIT License</p>
+      <h1 class="hero-title">自托管的 <span class="accent">AI SOC</span> 平台</h1>
+      <p class="hero-sub">单条告警往往只呈现攻击的一段线索。SenseMind 把 Suricata 告警、Zeek 协议日志与历史事件关联成完整脉络，由 AI 辅助研判；确认过的攻击会转化为本地检测规则，回放复核后热加载生效。检测能力随自身流量积累，不依赖外部规则集与人工逐条编写。</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/monstertsl/SenseMind" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn-ghost" href="#deploy">Get Started</a>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><strong>AI 5 阶段</strong><span>研判 Chain</span></div>
+        <div class="stat"><strong>类语义检测</strong><span>5 层递归解码</span></div>
+        <div class="stat"><strong>联动处置</strong><span>封禁 · 隔离 · 邮件 · 工单</span></div>
+        <div class="stat"><strong>多节点部署</strong><span>探针 mTLS 接入</span></div>
+        <div class="stat"><strong>4 步闭环</strong><span>发现 → 关联 → 研判 → 规则沉淀</span></div>
+      </div>
+      <p class="hero-meta">Suricata · Zeek · ELK 8.19.16 · Python 3.12 + LangChain · Vue 3 · PostgreSQL 16</p>
+    </div>
+    <div class="hero-stack reveal" id="heroStack" aria-label="界面预览">
+      <figure class="stack-card" data-pos="0">
+        <img src="shot-dashboard.png" alt="SenseMind 监控中心界面" width="2867" height="1570">
+        <figcaption>监控中心 — SOC 攻击分类、威胁判定分布、威胁分析来源</figcaption>
+      </figure>
+      <figure class="stack-card" data-pos="1">
+        <img src="shot-analysis.png" alt="AI 研判详情界面" width="2867" height="1570" loading="lazy">
+        <figcaption>AI 研判详情 — 攻击确认、溯源分析、处置建议、Payload 命中高亮</figcaption>
+      </figure>
+      <figure class="stack-card" data-pos="2">
+        <img src="shot-probe.png" alt="多探针节点管理界面" width="2867" height="1570" loading="lazy">
+        <figcaption>多节点接入 — 中心「设备管理」：探针在线 / 健康状态、证书有效期、注册 IP</figcaption>
+      </figure>
+      <figure class="stack-card" data-pos="3">
+        <img src="shot-response.png" alt="联动外发界面" width="2867" height="1570" loading="lazy">
+        <figcaption>联动管理 — 邮件告警、攻击 IP 自动封禁、IP 白名单与操作日志</figcaption>
+      </figure>
+      <div class="stack-dots">
+        <button class="stack-dot on" type="button" aria-label="第 1 张"></button>
+        <button class="stack-dot" type="button" aria-label="第 2 张"></button>
+        <button class="stack-dot" type="button" aria-label="第 3 张"></button>
+        <button class="stack-dot" type="button" aria-label="第 4 张"></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 屏 2 · 工作闭环 ===== -->
+<section class="screen flow" id="flow">
+  <div class="section-head reveal">
+    <p class="section-kicker">它如何工作</p>
+    <h2>一条持续生长的检测闭环</h2>
+    <p class="section-sub">发现 → 关联 → 研判 → 规则沉淀。一次确认过的攻击不仅得到分析结论，也会变成持续生效的本地检测能力。</p>
+  </div>
+
+  <div class="pipeline" id="pipeline">
+    <div class="pl-node" style="--c:var(--detect); --i:0">
+      <span class="pl-dot"></span>
+      <div class="pl-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
+      <h3>发现</h3>
+      <p>Suricata 输出告警与 payload，Zeek 输出 conn / http 协议元数据。监听网卡接镜像口（SPAN）、分光器或 TAP。</p>
+      <div class="pl-tags"><span>eve.json</span><span>conn.log</span></div>
+    </div>
+    <svg class="pl-link" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><path class="pl-wire" d="M0 12 H72" marker-end="url(#arrowFlow)"/><defs><marker id="arrowFlow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10" fill="none" stroke="currentColor" stroke-width="1.4"/></marker></defs></svg>
+    <div class="pl-node" style="--c:var(--correlate); --i:1">
+      <span class="pl-dot"></span>
+      <div class="pl-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.2 7.6 10.4 15.6M15.8 7.6 13.6 15.6M9 6h6"/></svg></div>
+      <h3>关联</h3>
+      <p>Community ID 精确关联、源/目的 IP 时间窗口、24 小时历史告警三个维度。Logstash 按 SOC 14 大类打标并映射 MITRE ATT&amp;CK 战术阶段。</p>
+      <div class="pl-tags"><span>Suricata</span><span>Zeek</span><span>Community ID</span></div>
+    </div>
+    <svg class="pl-link" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><path class="pl-wire" d="M0 12 H72" marker-end="url(#arrowFlow)"/></svg>
+    <div class="pl-node" style="--c:var(--judge); --i:2">
+      <span class="pl-dot"></span>
+      <div class="pl-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3a6 6 0 0 1 3.6 10.8c-.6.5-.6 1.2-.6 2.2h-6c0-1-.05-1.7-.6-2.2A6 6 0 0 1 12 3Z"/><path d="M10 19h4M10.5 21h3"/></svg></div>
+      <h3>研判</h3>
+      <p>五阶段依次执行：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 输出结论，给出攻击确认、溯源分析、处置建议与 Payload 命中高亮。</p>
+      <div class="pl-tags"><span>LangChain</span><span>RAG</span></div>
+    </div>
+    <svg class="pl-link" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><path class="pl-wire" d="M0 12 H72" marker-end="url(#arrowFlow)"/></svg>
+    <div class="pl-node" style="--c:var(--settle); --i:3">
+      <span class="pl-dot"></span>
+      <div class="pl-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M4 12h16M4 17h10"/><path d="m17 15 2 2 4-4" stroke-width="1.6"/></svg></div>
+      <h3>规则沉淀</h3>
+      <p>生成 Suricata 规则（HTTP sticky buffer 精确匹配 + 动态地址组），经历史流量回放复核误报后写入规则池并热加载，无需重启引擎。</p>
+      <div class="pl-tags"><span>local.rules</span><span>reload-rules</span></div>
+    </div>
+  </div>
+
+  <div class="mechanism-grid reveal">
+    <div class="mini-card"><h4>采集与管道</h4><p>Filebeat → Logstash 主管道：字段裁剪、ECS 转换、SOC 分类 → Elasticsearch <code>soc-*</code>；命中重点分类的告警经 <code>ai-push</code> 管道推送 AI 分析中心。</p></div>
+    <div class="mini-card"><h4>知识与增强</h4><p><code>ai-analyzer/knowledge</code> 内置 MITRE 与 SOC Playbook 基础 RAG 知识库，可持续维护以提高研判准确性；LLM 填写任意 OpenAI 兼容接口即可（vLLM / DashScope）。</p></div>
+    <div class="mini-card"><h4>结果回写</h4><p>研判结论写入 <code>soc-ai-*</code> 索引并由 Web 可视化；规则回写 <code>/data/suricata/lib/rules/</code>，仅加载 <code>combined.rules</code> 与 <code>local.rules</code>。</p></div>
+  </div>
+  <div class="arch reveal">
+    <span>Suricata / Zeek</span><i>→</i><span>Filebeat</span><i>→</i><span>Logstash 主管道</span><i>→</i><span>ES <code>soc-*</code></span><br>
+    <span class="arch-alt">matched → AI 推送管道 → 五阶段 Chain → <code>soc-ai-*</code> → Web 可视化 / 规则生成 → 热加载</span>
+  </div>
+</section>
+
+<!-- ===== 屏 3 · 核心价值 ===== -->
+<section class="screen value" id="value">
+  <div class="section-head reveal">
+    <p class="section-kicker">核心价值</p>
+    <h2>研判自生长，处置全自动</h2>
+  </div>
+  <div class="value-grid" id="valueGrid">
+    <article class="glass-card value-card" style="--c:var(--settle)">
+      <div class="fc-head"><span class="fc-dot"></span><h3>AI 研判与规则自生长</h3></div>
+      <p>通过 AI 辅助研判攻击脉络，确认的攻击会转化为本地检测规则。沿着「发现 → 关联 → 研判 → 规则沉淀」的闭环，规则检测能力随自身流量持续积累，不依赖外部规则集与人工逐条编写。</p>
+      <ul class="check-list">
+        <li>确认攻击 → 自动生成 Suricata 规则，含精确匹配与动态地址组</li>
+        <li>历史流量回放复核误报，仅保留有效规则</li>
+        <li><code>reload-rules</code> 热加载生效，规则池持续沉淀</li>
+      </ul>
+      <div class="pl-tags"><span>AI 研判</span><span>本地规则</span><span>能力自积累</span></div>
+    </article>
+    <article class="glass-card value-card" style="--c:var(--judge)">
+      <div class="fc-head"><span class="fc-dot"></span><h3>设备联动与自动处置</h3></div>
+      <p>基于院内既有安全设备，完成多厂商设备与处置通道的整合：防火墙封禁、终端隔离、邮件与工单通知。把「发现 → 研判 → 处置 → 归档」打通为规则触发的全自动流程，替代人工逐条确认处置。</p>
+      <ul class="check-list">
+        <li>复用既有设备接口，按各厂商官方 API 文档重写对接脚本</li>
+        <li>邮件告警、攻击 IP 自动封禁、IP 白名单与操作日志统一收口</li>
+        <li>多节点探针注册后，规则与日志保留策略由中心自动下发</li>
+        <li>支持的设备与响应方式、接入配置见 <a class="text-link" href="https://github.com/monstertsl/SenseMind/blob/main/DEVICE_INTEGRATION.md" target="_blank" rel="noopener">设备接入指南 →</a></li>
+      </ul>
+      <div class="pl-tags"><span>防火墙封禁</span><span>终端隔离</span><span>邮件 / 工单</span></div>
+    </article>
+  </div>
+  <div class="flow-compare reveal">
+    <span class="compare-old">人工逐条确认告警 · 逐条编写规则 · 逐条处置</span>
+    <i>→</i>
+    <span class="compare-new">规则触发的全自动闭环</span>
+  </div>
+</section>
+
+<!-- ===== 屏 4 · 核心能力 ===== -->
+<section class="screen features" id="features">
+  <div class="section-head reveal">
+    <p class="section-kicker">核心能力</p>
+    <h2>从告警到能力，全程闭环</h2>
+  </div>
+  <div class="feature-grid">
+    <article class="glass-card" style="--c:var(--judge)">
+      <div class="fc-head"><span class="fc-dot"></span><h3>AI 研判</h3></div>
+      <p>五阶段依次执行：标准化 → 研判 → 动态关联查询 → RAG 知识增强 → 输出结论。以 Community ID、IP 时间窗口与 24h 历史告警三维度关联 Suricata 与 Zeek 数据并映射 MITRE ATT&amp;CK，还原完整攻击链路，输出攻击确认、溯源分析与处置建议，研判详情支持 Payload 命中高亮。</p>
+      <div class="pl-tags"><span>FastAPI</span><span>LangChain</span><span>MITRE ATT&amp;CK</span></div>
+    </article>
+    <article class="glass-card" style="--c:var(--correlate)">
+      <div class="fc-head"><span class="fc-dot"></span><h3>语义检测引擎</h3></div>
+      <p>不调用 LLM：关键词匹配 + 5 层递归解码（URL / HTML / Base64 / Hex）+ 语法分析（SQL 注释清除、Shell 命令解析、路径规范化、XSS 标签检测），用于捕获编码绕过与变形攻击。</p>
+      <div class="pl-tags"><span>5 层解码</span><span>零 LLM 调用</span></div>
+    </article>
+    <article class="glass-card" style="--c:var(--settle)">
+      <div class="fc-head"><span class="fc-dot"></span><h3>规则生成与热加载</h3></div>
+      <p>确认攻击后自动生成 Suricata 规则（HTTP sticky buffer 精确匹配 + 动态地址组），写入规则池并热加载，无需重启引擎；经历史流量回放复核误报后仅保留有效规则，检测能力随流量持续沉淀。</p>
+      <div class="pl-tags"><span>sticky buffer</span><span>热加载</span><span>回放复核</span></div>
+    </article>
+  </div>
+
+  <div class="detail-grid reveal">
+    <div class="detail-box">
+      <h4>SOC 14 大类 · 映射 MITRE</h4>
+      <div class="chip-wrap">
+        <span>Web 应用攻击</span><span>身份认证攻击</span><span>扫描探测</span><span>漏洞利用</span><span>恶意通信 C2</span><span>横向移动</span><span>数据泄露</span><span>隧道通信</span><span>DDoS</span><span>主机攻击</span><span>命令执行</span><span>LOLBin</span><span>信息泄露</span><span>恶意文件</span>
+      </div>
+      <p class="detail-note">覆盖 SQL 注入 / XSS / RCE、Log4j / Struts2 / Fastjson、Cobalt Strike Beacon、DNS 隧道、certutil 滥用、.git 泄露等常见手法。</p>
+    </div>
+    <div class="detail-box">
+      <h4>本地生成的规则示例</h4>
+      <div class="code-block compact">
+        <pre><code>alert http any any -&gt; any any (msg:"log4j：Log4Shell JNDI LDAP 注入远程代码执行漏洞利用"; flow:established,to_server; http.uri; content:"${jndi:ldap://"; nocase; sid:93134; rev:1;)</code></pre>
+      </div>
+      <p class="detail-note">规则由 AI 生成，含 sticky buffer 精确匹配条件；经历史流量回放复核误报后才保留，避免把一次误判变成长期噪声。</p>
+      <div class="pl-tags"><span>combined.rules</span><span>local.rules</span><span>suricata -T 校验</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 屏 5 · 部署与自托管 ===== -->
+<section class="screen deploy" id="deploy">
+  <div class="section-head reveal">
+    <p class="section-kicker">部署与自托管</p>
+    <h2>一条命令，全栈启动</h2>
+    <p class="section-sub">Docker Engine + Docker Compose V2，一台能收到待检测流量的 Linux 主机，监听接口接镜像口（SPAN）、分光器或 TAP。</p>
+  </div>
+  <div class="deploy-cols">
+    <div class="code-block reveal">
+      <div class="code-bar"><span class="code-title">terminal · 中心节点</span><button class="copy-btn" id="copyBtn" type="button">复制</button></div>
+      <pre><code id="deployCode">git clone https://github.com/monstertsl/SenseMind.git
+cd SenseMind
+sudo bash deploy.sh &lt;interface&gt;   <span class="cmt"># 流量监听接口，如 eno1np0</span></code></pre>
+      <div class="code-foot">deploy.sh 自动完成网卡配置、证书生成、密码引导、规则更新与全栈启动。首次部署需拉取镜像。</div>
+    </div>
+    <div class="deploy-notes reveal">
+      <div class="note"><h4>访问</h4><p><code>https://&lt;IP&gt;:8080</code>，默认账号 <code>admin</code>，密码取 <code>.env</code> 中的 <code>ELASTIC_PASSWORD</code>：<code>cat .env | grep ELASTIC_PASSWORD</code>。对外放行 8080 与 5044；5044 默认 TLS + 强制 mTLS，仅接受中心签发的探针证书。</p></div>
+      <div class="note"><h4>探针部署（多节点）</h4><p>中心「设备管理」添加探针获取一次性 token（24h 有效），探针侧执行 <code>sudo bash deploy-probe.sh &lt;interface&gt; &lt;center_addr&gt; &lt;token&gt;</code>，自动完成镜像口配置、mTLS 注册与全栈启动；幂等可重复运行。注册成功后中心「设备管理」页可查看在线 / 健康状态、证书有效期与注册 IP，规则更新与日志保留天数由中心自动下发。</p></div>
+    </div>
+  </div>
+
+  <div class="info-grid reveal">
+    <div class="info-card">
+      <h4>环境要求</h4>
+      <ul>
+        <li>Docker Engine + Compose V2；<code>curl jq unzip openssl ethtool</code></li>
+        <li>低流量部署建议从 <strong>4 核 CPU</strong> 起</li>
+        <li>核数不足 16 时，删除 <code>patch_yaml.py</code> 中 af-packet 的 <code>threads: 16</code></li>
+        <li>监听接口必须接 SPAN / 分光器 / TAP</li>
+      </ul>
+    </div>
+    <div class="info-card">
+      <h4>端口占用</h4>
+      <table class="stack-table">
+        <tr><td>8080</td><td>Web 控制台（HTTPS，所有网卡）</td></tr>
+        <tr><td>5044</td><td>Logstash Beats 输入（所有网卡，供探针上报）</td></tr>
+        <tr><td>9090</td><td>AI 分析中心 API（127.0.0.1）</td></tr>
+        <tr><td>9200 / 5432</td><td>Elasticsearch / PostgreSQL</td></tr>
+      </table>
+    </div>
+    <div class="info-card">
+      <h4>容量参考 · 10 Gbps 镜像流量</h4>
+      <ul>
+        <li>40 线程 Xeon：CPU 平均 13.4%，峰值 23.9%</li>
+        <li>62 GiB 内存：平均 41.1%，峰值 47.0%</li>
+        <li>ES 数据卷约 367 GB，可保留告警日志 180 天</li>
+        <li>Suricata af-packet 16 线程，ES 2g / Logstash 4g JVM</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 屏 6 · Docs / Community ===== -->
+<section class="screen docs" id="docs">
+  <div class="section-head reveal">
+    <p class="section-kicker">Docs &amp; Community</p>
+    <h2>开箱即用，文档齐全</h2>
+  </div>
+  <div class="docs-grid">
+    <a class="glass-card docs-card" style="--c:var(--correlate)" href="https://github.com/monstertsl/SenseMind#readme" target="_blank" rel="noopener">
+      <h3>README</h3><p>工作闭环、SOC 14 大类、目录结构、日常操作与常见问题（白名单、账号解锁、TOTP 重置等）。</p><span class="card-arrow">↗</span>
+    </a>
+    <a class="glass-card docs-card" style="--c:var(--settle)" href="https://github.com/monstertsl/SenseMind/blob/main/DEVICE_INTEGRATION.md" target="_blank" rel="noopener">
+      <h3>设备接入指南</h3><p>支持的设备与响应方式、配置示例，以及如何按厂商官方接口文档自行接入。</p><span class="card-arrow">↗</span>
+    </a>
+    <a class="glass-card docs-card" style="--c:var(--judge)" href="https://github.com/monstertsl/SenseMind/issues" target="_blank" rel="noopener">
+      <h3>Issues / PR</h3><p>反馈问题时附上部署方式、监听接口类型、Suricata 版本与相关日志，便于定位。</p><span class="card-arrow">↗</span>
+    </a>
+    <a class="glass-card docs-card" style="--c:var(--detect)" href="https://github.com/monstertsl/SenseMind/blob/main/README_EN.md" target="_blank" rel="noopener">
+      <h3>English</h3><p>Switch to the English README for the full setup and architecture.</p><span class="card-arrow">↗</span>
+    </a>
+  </div>
+
+  <div class="daily reveal">
+    <h4>日常操作</h4>
+    <div class="code-block compact">
+      <pre><code>sudo docker exec suricata suricatasc -c reload-rules        <span class="cmt"># 热加载规则</span>
+cat /data/suricata/lib/rules/local.rules                   <span class="cmt"># 查看 AI 生成的规则</span>
+curl -X POST http://localhost:9090/api/v1/analyze/&lt;doc_id&gt;  <span class="cmt"># 手动触发分析</span>
+sudo python3 scripts/suri_monitor.py -i eno1np0            <span class="cmt"># 采样排错</span></code></pre>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <img src="logo.png" alt="SenseMind" class="footer-logo">
+    <p>SenseMind · 自托管的 AI SOC 平台 · <a href="https://github.com/monstertsl/SenseMind/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a></p>
+    <p class="footer-star">如果这个项目对你有用，欢迎点一个 <a href="https://github.com/monstertsl/SenseMind" target="_blank" rel="noopener">Star</a> ⭐</p>
+  </footer>
+</section>
+
+</main>
+<script src="script.js"></script>
+</body>
+</html>

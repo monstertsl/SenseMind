@@ -123,13 +123,13 @@ cat .env | grep ELASTIC_PASSWORD
 | 端口 | 用途 | 暴露范围 |
 |------|------|----------|
 | 8080 | Web 控制台（HTTPS） | 所有网卡 |
-| 5044 | Logstash Beats 输入 | 仅 127.0.0.1 |
+| 5044 | Logstash Beats 输入 | 所有网卡（探针接入） |
 | 9090 | AI 分析中心 API | 仅 127.0.0.1 |
 | 9091 | alert-responder API | 仅 Docker 内部 |
 | 9200 | Elasticsearch | 仅 127.0.0.1 |
 | 5432 | PostgreSQL | 仅 127.0.0.1 |
 
-对外只需放行 8080。当前 Filebeat 通过 Docker 内部网络连接 `logstash:5044`；只有确需外部 Filebeat 接入时才调整 5044 绑定，并同时限制来源 IP、配置 TLS。
+需放行 8080 与 5044（多节点探针侧 Filebeat 通过 `<center_addr>:5044` 上报日志，与 8080 一样监听所有网卡）。5044 默认启用 TLS + 强制 mTLS，仅接受中心签发的探针客户端证书（证书即白名单）；如需进一步收紧，可在防火墙上将来源限制为各探针 IP。
 
 ### 配置 LLM
 

@@ -25,7 +25,7 @@ interface NavMenu {
 
 const baseMenus: NavMenu[] = [
   { path: '/monitor/dashboard', title: '监测中心', icon: 'Grid' },
-  { path: '/analysis/alerts', title: '分析中心', icon: 'Postcard' },
+  { path: '/analysis/alerts', title: '分析中心', icon: 'List' },
   { path: '/log/explorer', title: '日志中心', icon: 'Document' },
 ]
 
@@ -34,7 +34,7 @@ const keepAlivePages = ['AnalysisAlerts']
 
 const adminMenus: NavMenu[] = [
   { path: '/outbound', title: '联动外发', icon: 'Operation' },
-  { path: '/system/settings', title: '系统设置', icon: 'SetUp' },
+  { path: '/system/settings', title: '系统设置', icon: 'Setting' },
 ]
 
 const menus = computed(() => {
