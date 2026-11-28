@@ -3,7 +3,7 @@
 <h1 align="center">SenseMind</h1>
 
 <p align="center"><strong>A self-hosted AI SOC platform</strong><br>
-Correlates Suricata alerts, Zeek protocol context, and historical events, and uses AI-assisted triage to reconstruct attack activity, with the results assembled in the monitoring dashboard. A confirmed attack becomes a local detection rule, checked against historical traffic for false positives and hot-reloaded; detection grows with the traffic it sees, without external rule sets or rule-by-rule manual authoring.</p>
+Generic detection rule sets are large in scale, and floods of noisy alerts bury real threats and drain triage effort. SenseMind correlates Suricata alerts, Zeek protocol context, and historical events, using AI to filter high-confidence alerts and reconstruct attack activity; confirmed attacks become local detection rules tailored to the local network environment, reviewed against historical traffic for false positives and hot-reloaded, so detection capability keeps growing with the traffic it sees.</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
@@ -19,7 +19,7 @@ Correlates Suricata alerts, Zeek protocol context, and historical events, and us
 
 ---
 
-An individual alert often shows only one part of an attack. SenseMind correlates Suricata alerts, Zeek protocol logs, and historical events, then uses AI to help assess threats and reconstruct attack activity. It supports response actions including email alerting and firewall-based IP blocking; confirmed attacks can produce hot-reloaded local rules. Self-hosted and focused on network detection and triage, SenseMind is not intended to replace a full enterprise SIEM. See the [Device Integration Guide](DEVICE_INTEGRATION.md) for supported devices and response methods.
+An individual alert often shows only one part of an attack. SenseMind uses AI to correlate and triage alerts into a full attack storyline, making events that deserve attention easier to spot and follow up; it also supports response actions such as email alerting and automatic firewall blocking. Self-hosted and focused on network detection and triage, SenseMind is not intended to replace a full enterprise SIEM. See the [Device Integration Guide](DEVICE_INTEGRATION.md) for supported devices and response methods.
 
 ## How it works
 

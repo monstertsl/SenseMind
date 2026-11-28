@@ -50,6 +50,7 @@ code {
   border: 1px solid var(--line);
   border-radius: 5px;
   padding: 1px 5px;
+  overflow-wrap: anywhere;
 }
 
 /* ===== 底层 · 语义色氛围光晕（色团缓慢漂移，透过玻璃卡片可见） ===== */
@@ -381,7 +382,7 @@ figcaption {
 .pipeline .pl-link:nth-of-type(3) .pl-wire { transition-delay: 670ms; }
 
 /* 关键机制 */
-.mechanism-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+.mechanism-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 20px; align-items: start; }
 .mini-card {
   border: 1px solid var(--line); border-radius: var(--radius);
   background: rgba(255,255,255,0.72); padding: 18px;
@@ -404,7 +405,7 @@ figcaption {
 .arch code { font-size: 11px; }
 
 /* ===== 屏 3 · 核心价值 ===== */
-.value-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.value-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .value-card { padding: 26px; }
 .value-card h3 { font-size: 18px; }
 .value-card p { font-size: 14px; }
@@ -463,7 +464,7 @@ figcaption {
 .feature-grid .glass-card:nth-child(3) { --d: 200ms; }
 
 /* ===== 屏 4 · 核心能力 ===== */
-.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 
 /* minmax(0,1fr)：右列代码块是 white-space:pre 超长单行，
    若不锁死最小宽度，右列会被撑到整行规则宽度、左列被压成竖条 */
@@ -513,6 +514,7 @@ figcaption {
 .code-block code {
   font-family: var(--mono); font-size: 12.5px; line-height: 1.9;
   color: var(--text); white-space: pre; background: none; border: none; padding: 0;
+  overflow-wrap: normal;
 }
 .code-block.compact pre { padding: 14px; }
 .code-block.compact code { font-size: 11.5px; }
@@ -532,7 +534,7 @@ figcaption {
 .text-link { color: var(--correlate); font-weight: 600; text-decoration: none; white-space: nowrap; }
 .text-link:hover { text-decoration: underline; }
 
-.info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+.info-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; align-items: start; }
 .info-card {
   border: 1px solid var(--line); border-radius: var(--radius);
   background: rgba(255,255,255,0.76); padding: 18px;
@@ -549,13 +551,15 @@ figcaption {
 }
 .info-card strong { color: var(--text); }
 .info-card code { font-size: 11px; }
-.info-card .stack-table td { padding: 6px 0; font-size: 12px; }
+.info-card .stack-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.info-card .stack-table td { padding: 6px 0; font-size: 12px; vertical-align: top; overflow-wrap: anywhere; }
+.info-card .stack-table td:first-child { width: 34%; padding-right: 8px; font-family: var(--mono); }
 
 /* 两张界面预览并排，避免单张大图过于占屏 */
 /* ===== 屏 6 · Docs ===== */
 
 /* ===== 屏 6 · Docs ===== */
-.docs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.docs-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .docs-card { position: relative; padding: 20px; }
 .docs-card h3 { font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
 .docs-card p { color: var(--text-dim); font-size: 12.5px; }
@@ -610,21 +614,31 @@ figcaption {
   .hero { min-height: 100svh; }
   .hero-grid { grid-template-columns: 1fr; gap: 28px; }
   .hero-title { font-size: clamp(34px, 9vw, 46px); }
-  .stat-row { grid-template-columns: repeat(2, 1fr); }
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bg-deco span:nth-child(n+9) { display: none; }
 
   .pipeline { flex-direction: column; gap: 0; }
   .pl-node { width: 100%; margin: 0; padding: 18px; }
   .pl-link { flex: 0 0 40px; width: 24px; height: 40px; align-self: flex-start; margin-left: 40px; transform: rotate(90deg); }
 
-  .mechanism-grid, .info-grid, .detail-grid,
-  .value-grid, .feature-grid, .docs-grid, .deploy-cols { grid-template-columns: 1fr; }
+  .mechanism-grid, .info-grid, .docs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detail-grid, .value-grid, .feature-grid, .deploy-cols { grid-template-columns: minmax(0, 1fr); }
 
   /* 竖屏：堆叠退化为单张 dashboard，其余隐藏、轮播由 JS 暂停 */
   .hero-stack { max-width: 620px; margin-right: auto; margin-top: 0; }
   .hero-stack .stack-card:not([data-pos="0"]) { opacity: 0; transform: none; }
 
   .pl-node:active, .glass-card:active { border-color: color-mix(in srgb, var(--c) 50%, transparent); }
+}
+
+/* ===== 手机：保持两列，收紧卡片内边距与字号避免拥挤 ===== */
+@media (max-width: 640px) {
+  .screen { padding: 64px 14px 48px; }
+  .mechanism-grid, .info-grid, .docs-grid { gap: 10px; }
+  .mini-card, .info-card { padding: 14px; }
+  .docs-card { padding: 16px; }
+  .mini-card p, .info-card li, .docs-card p { font-size: 11.5px; }
+  .mini-card h4, .info-card h4, .docs-card h3 { font-size: 13px; }
 }
 
 /* ===== 无动画偏好 ===== */

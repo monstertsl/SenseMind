@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SenseMind — 自托管的 AI SOC 平台</title>
-<meta name="description" content="SenseMind 关联 Suricata 告警、Zeek 协议上下文与历史事件，AI 辅助研判攻击脉络，确认的攻击转化为本地检测规则并热加载生效。">
+<meta name="description" content="SenseMind 关联 Suricata 告警、Zeek 协议上下文与历史事件，AI 筛选高可靠告警并研判攻击脉络，确认的攻击转化为适配本地网络环境的检测规则并热加载生效。">
 <link rel="icon" type="image/png" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -192,7 +192,7 @@
     <div class="hero-inner reveal">
       <p class="hero-kicker"><span class="kicker-dot"></span>开源 · 自托管 · MIT License</p>
       <h1 class="hero-title">自托管的 <span class="accent">AI SOC</span> 平台</h1>
-      <p class="hero-sub">单条告警往往只呈现攻击的一段线索。SenseMind 把 Suricata 告警、Zeek 协议日志与历史事件关联成完整脉络，由 AI 辅助研判；确认过的攻击会转化为本地检测规则，回放复核后热加载生效。检测能力随自身流量积累，不依赖外部规则集与人工逐条编写。</p>
+      <p class="hero-sub">通用检测规则集规模庞大，海量噪声告警淹没真实威胁、消耗研判精力。SenseMind 关联 Suricata 告警、Zeek 协议上下文与历史事件，由 AI 筛选高可靠告警并研判攻击脉络；确认过的攻击转化为适配本地网络环境的检测规则，回放复核后热加载生效，检测能力随流量持续积累。</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="https://github.com/monstertsl/SenseMind" target="_blank" rel="noopener">GitHub</a>
         <a class="btn btn-ghost" href="#deploy">Get Started</a>
@@ -305,7 +305,7 @@
     </article>
     <article class="glass-card value-card" style="--c:var(--judge)">
       <div class="fc-head"><span class="fc-dot"></span><h3>设备联动与自动处置</h3></div>
-      <p>基于院内既有安全设备，完成多厂商设备与处置通道的整合：防火墙封禁、终端隔离、邮件与工单通知。把「发现 → 研判 → 处置 → 归档」打通为规则触发的全自动流程，替代人工逐条确认处置。</p>
+      <p>基于既有安全设备，完成多厂商设备与处置通道的整合：防火墙封禁、终端隔离、邮件与工单通知。把「发现 → 研判 → 处置 → 归档」打通为规则触发的全自动流程，替代人工逐条确认处置。</p>
       <ul class="check-list">
         <li>复用既有设备接口，按各厂商官方 API 文档重写对接脚本</li>
         <li>邮件告警、攻击 IP 自动封禁、IP 白名单与操作日志统一收口</li>
